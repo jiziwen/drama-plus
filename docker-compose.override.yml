@@ -1,0 +1,25 @@
+services:
+  app:
+    image: huobao/huobao-drama:comfyui-local
+    environment:
+      HUOBAO_LOCAL_RUNTIME_ENABLED: "true"
+    ports: !override
+      - "127.0.0.1:5679:5679"
+    volumes: !override
+      - ./data:/app/data
+    labels:
+      com.centurylinklabs.watchtower.scope: huobao
+      com.centurylinklabs.watchtower.enable: "false"
+  watchtower:
+    environment:
+      DOCKER_API_VERSION: "1.44"
+    command: >
+      --http-api-update
+      --http-api-token ${WATCHTOWER_TOKEN}
+      --label-enable
+      --scope huobao
+      --cleanup
+      --rolling-restart
+      --interval 86400
+    labels:
+      com.centurylinklabs.watchtower.scope: huobao

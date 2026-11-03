@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { success, badRequest } from '../utils/response.js'
 import { saveUploadedFile, generateImageThumb } from '../utils/storage.js'
+import { extractVideoPoster } from '../utils/video-poster.js'
 
 const app = new Hono()
 
@@ -57,6 +58,7 @@ async function saveMediaUpload(
     return badRequest(c, `${label}文件大小不能超过 ${Math.round(maxBytes / 1024 / 1024)}MB`)
   }
   const path = await saveUploadedFile(buffer, 'uploads', file.name)
+  if (kind === 'video') await extractVideoPoster(path)
   return success(c, { url: `/${path}`, path })
 }
 

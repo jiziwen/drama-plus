@@ -42,6 +42,15 @@ function safeWrite(job: () => void) {
   try { job() } catch (error) { console.warn('[ApiCallLog] 记录写入失败', error instanceof Error ? error.name : 'UnknownError') }
 }
 
+function networkFailure(error: any, depth = 0): Record<string, unknown> {
+  return {
+    message: String(error?.message || error),
+    ...(typeof error?.name === 'string' ? { name: error.name } : {}),
+    ...(typeof error?.code === 'string' ? { code: error.code } : {}),
+    ...(error?.cause && depth < 3 ? { cause: networkFailure(error.cause, depth + 1) } : {}),
+  }
+}
+
 async function bodySummary(body: BodyInit | null | undefined) {
   if (body == null) return null
   if (typeof body === 'string') {
@@ -142,7 +151,7 @@ export const recordedFetch: typeof globalThis.fetch = async (input, init) => {
     }
     return response
   } catch (error: any) {
-    if (id) safeWrite(() => { db.update(schema.apiCallLogs).set({ status: 'error', durationMs: Date.now() - started, error: serialize(error.message) }).where(eq(schema.apiCallLogs.id, id!)).run() })
+    if (id) safeWrite(() => { db.update(schema.apiCallLogs).set({ status: 'error', durationMs: Date.now() - started, error: serialize(networkFailure(error)) }).where(eq(schema.apiCallLogs.id, id!)).run() })
     throw error
   }
 }

@@ -387,6 +387,21 @@ export function initSqliteSchema(sqlite: Database.Database) {
   for (const statement of sqliteSchemaStatements) {
     sqlite.exec(statement)
   }
+  // Additive migration: existing descriptions, media and generation history are preserved.
+  const mediaColumns: Record<string, Record<string, string>> = {
+    characters: { image_model: 'TEXT', image_config_id: 'INTEGER', reference_model: 'TEXT', reference_config_id: 'INTEGER', reference_images: 'TEXT', edit_prompt: 'TEXT' },
+    scenes: { image_model: 'TEXT', image_config_id: 'INTEGER', reference_model: 'TEXT', reference_config_id: 'INTEGER', reference_images: 'TEXT', edit_prompt: 'TEXT' },
+    props: { image_model: 'TEXT', image_config_id: 'INTEGER', reference_model: 'TEXT', reference_config_id: 'INTEGER', reference_images: 'TEXT', edit_prompt: 'TEXT' },
+    storyboards: { video_model: 'TEXT', video_config_id: 'INTEGER' },
+  }
+  sqlite.transaction(() => {
+    for (const [table, fields] of Object.entries(mediaColumns)) {
+      const columns = new Set((sqlite.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map(c => c.name))
+      for (const [name, type] of Object.entries(fields)) {
+        if (!columns.has(name)) sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`)
+      }
+    }
+  })()
   const callColumns = new Set((sqlite.prepare('PRAGMA table_info(api_call_logs)').all() as { name: string }[]).map(c => c.name))
   if (!callColumns.has('request_key')) sqlite.exec('ALTER TABLE api_call_logs ADD COLUMN request_key TEXT')
   sqlite.exec('CREATE INDEX IF NOT EXISTS idx_api_call_logs_request_key ON api_call_logs(request_key, id)')

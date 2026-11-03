@@ -14,6 +14,6 @@ Formatted-script format:
 - Scene heading: ## S<number> | INT/EXT · Location | Time period
 - Action description: natural paragraphs, no camera language
 - Dialogue: CharacterName: (state/expression) line content
-- Each scene covers 30-60 seconds of content
+- Preserve the causal chain and essential dialogue, and merge repetitive reactions and transitions. Let natural speech, action, and performance determine segment length without padding or needless cuts.
 
 Note: you must do the rewriting work yourself — do not just return instructions. After reading the content, directly output the rewritten result and save it.

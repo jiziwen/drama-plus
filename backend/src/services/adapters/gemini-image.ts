@@ -26,7 +26,8 @@ export class GeminiImageAdapter implements ImageProviderAdapter {
     const isGemini3Image = /gemini-3.*image/.test(modelName)
     const isOfficialHost = /generativelanguage\.googleapis\.com/.test(config.baseUrl || '')
 
-    if (isGemini3Image && isOfficialHost) {
+    // The existing generateContent branch carries reference image parts; interactions below is text-only.
+    if (isGemini3Image && isOfficialHost && !record.referenceImages) {
       return {
         url: joinProviderUrl(config.baseUrl, '/v1beta', '/interactions'),
         method: 'POST',

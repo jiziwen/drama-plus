@@ -4,6 +4,7 @@ import { db, getInsertId, schema } from '../db/index.js'
 import { success, created, badRequest, now } from '../utils/response.js'
 import { generateImage } from '../services/generation.js'
 import { withAssetImageRequest } from '../services/image-submission.js'
+import { assetMediaPatch, resolveAssetImageRequest } from '../services/media-selection.js'
 import { getDramaStylePrompt } from '../services/style-preset.js'
 import { ensureSceneFinalPrompt } from '../services/final-prompt.js'
 import { logTaskError, logTaskStart, logTaskSuccess } from '../utils/task-logger.js'
@@ -44,6 +45,9 @@ app.put('/:id', async (c) => {
   const id = Number(c.req.param('id'))
   const body = await c.req.json()
   const updates: Record<string, any> = { updatedAt: now() }
+  const [current] = await db.select().from(schema.scenes).where(eq(schema.scenes.id, id))
+  if (!current || current.deletedAt) return badRequest(c, '场景不存在')
+  try { Object.assign(updates, await assetMediaPatch(body, current)) } catch (e: any) { return badRequest(c, e.message) }
   if (body.location !== undefined) updates.location = body.location
   if (body.time !== undefined) updates.time = body.time
   if (body.prompt !== undefined) updates.prompt = body.prompt
@@ -75,9 +79,12 @@ app.post('/:id/generate-image', async (c) => {
   if (!ep) return badRequest(c, '剧集不存在')
 
   try {
+    if (scene.deletedAt || ep.dramaId !== scene.dramaId) return badRequest(c, '场景不属于此项目')
+    const request = await resolveAssetImageRequest(body, scene, ep.imageConfigId)
     logTaskStart('SceneImage', 'generate', { sceneId: id, episodeId: ep.id, dramaId: scene.dramaId, location: scene.location })
     await db.update(schema.scenes).set({ status: 'processing', updatedAt: now() }).where(eq(schema.scenes.id, id))
     const genId = await withAssetImageRequest({ sceneId: id }, async () => {
+      if (request.mode === 'reference') return generateImage({ sceneId: id, dramaId: scene.dramaId, prompt: request.editPrompt, referenceImages: request.referenceImages, model: request.model, configId: request.configId })
       const stylePrompt = await getDramaStylePrompt(scene.dramaId)
       const finalPrompt = await ensureSceneFinalPrompt(scene, ep.id, false, { model: body.text_model, configId: body.text_config_id ?? undefined })
       // 回退拼接也要守住无人物约束：场景描述(prompt)可能含人物活动，直接拼会让人混进图里
@@ -89,7 +96,7 @@ app.post('/:id/generate-image', async (c) => {
         scene.lighting || '电影感光影',
         '画面中没有任何人物，空场景，只有场景本身',
       ].filter(Boolean).join(', ')
-      return generateImage({ sceneId: id, dramaId: scene.dramaId, prompt, model: body.model, configId: body.config_id ?? ep.imageConfigId ?? undefined })
+      return generateImage({ sceneId: id, dramaId: scene.dramaId, prompt, model: request.model, configId: request.configId })
     })
     logTaskSuccess('SceneImage', 'generate', { sceneId: id, generationId: genId })
     return success(c, { image_generation_id: genId })

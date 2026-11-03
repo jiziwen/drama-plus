@@ -1,7 +1,38 @@
 {
+  "assetGeneration": {
+    "generateFailed": "画像生成に失敗しました。タスク詳細を確認してください",
+    "detail": "詳細",
+    "textRedraw": "テキストで再生成",
+    "textGenerate": "テキストで生成",
+    "referenceRedraw": "参照画像で再生成",
+    "textMode": "テキストから画像",
+    "referenceMode": "参照画像編集",
+    "model": "画像モデル",
+    "followTop": "上部の設定に従う",
+    "editDescription": "変更内容",
+    "editPlaceholder": "変更内容と維持する特徴を入力",
+    "referenceRequired": "参照画像を1枚以上追加してください",
+    "editRequired": "変更内容を入力してください",
+    "saveAndGenerate": "保存して生成",
+    "saved": "保存しました",
+    "upload": "参照画像をアップロード",
+    "uploading": "アップロード中…",
+    "useCurrent": "現在の画像を使用",
+    "history": "画像履歴",
+    "main": "メイン参照",
+    "makeMain": "メインに設定",
+    "remove": "削除",
+    "referenceHint": "最大4枚。最初の画像がメイン参照です。現在の画像は置き換わりません。",
+    "referenceN": "参照画像 {n}",
+    "chooseHistory": "この画像を選択",
+    "maxReferences": "参照画像は最大4枚です",
+    "invalidFile": "30 MB 以下の PNG、JPEG、WebP を使用してください",
+    "uploadFailed": "参照画像のアップロードに失敗しました",
+    "unavailableModel": "選択したモデルが利用できません"
+  },
   "workspaceView": {"assetDisplay": "アセットの表示方法", "list": "リスト", "grid": "サムネイル", "editorSections": "ショット編集セクション", "visuals": "映像と雰囲気"},
   "app": {
-    "title": "火宝ショートドラマ",
+    "title": "小李ショートドラマ",
     "updateAvailable": "新バージョン v{version} があります。「設定 → 更新について」でアップグレードできます"
   },
   "common": {
@@ -298,13 +329,13 @@
     "ai": {
       "title": "AI サービス設定",
       "desc": "まず推奨テンプレートで設定を作成し、サービスタイプごとに微調整します。ワークベンチで話を作成する際に選択した画像・動画能力がロックされます。",
-      "quickTitle": "火宝クイック設定",
+      "quickTitle": "小李クイック設定",
       "recommended": "おすすめ",
       "quickDesc": "Huobao API Key を入力すると、テキスト・画像・動画の 3 つの推奨設定を一括で書き込みます。",
       "getKey": "Huobao API Key を取得",
       "regionCn": "国内",
       "regionCom": "海外",
-      "applyQuick": "火宝設定を書き込む",
+      "applyQuick": "小李設定を書き込む",
       "manualTitle": "手動テンプレート",
       "manualDesc": "サービスタイプを選ぶと、推奨の `provider / base URL / model` がテンプレートから入力されます。",
       "activeCount": "{n} 件有効",
@@ -315,7 +346,7 @@
       "noBaseUrl": "Base URL 未設定",
       "test": "テスト",
       "apiKeyRequired": "Huobao API Key を入力してください",
-      "quickApplied": "火宝クイック設定を書き込みました",
+      "quickApplied": "小李クイック設定を書き込みました",
       "defaultModelSwitched": "デフォルト{type}モデルを {model} に切り替えました",
       "meta": {
         "text": "脚本リライト、キャラクター・シーン抽出、分镜分解などの Agent テキスト能力",
@@ -419,7 +450,7 @@
       "addTitle": "{type}サービスを追加",
       "sub": "まずテンプレートを選ぶと、適切な `Base URL` とデフォルトモデルが自動入力されます。",
       "name": "設定名",
-      "namePlaceholder": "例：火宝デフォルト画像サービス",
+      "namePlaceholder": "例：小李デフォルト画像サービス",
       "provider": "プロバイダー",
       "providerPlaceholder": "プロバイダーを選択",
       "priority": "優先度",
@@ -626,9 +657,9 @@
       "promptPlaceholderChar": "三面図の最終プロンプトを手動で書くか、「プロンプトを生成」で Agent に生成させます",
       "promptPlaceholderScene": "固定視点の最終プロンプトを手動で書くか、「プロンプトを生成」で Agent に生成させます",
       "promptPlaceholderProp": "白背景単品の最終プロンプトを手動で書くか、「プロンプトを生成」で Agent に生成させます",
-      "promptHintChar": "プロンプトは直接編集でき、保存後に反映されます。外見やスタイリングを変更して保存すると最終プロンプトがクリアされ、次回のイメージ生成時にプロンプト Agent が再生成します。",
-      "promptHintScene": "プロンプトは直接編集でき、保存後に反映されます。シーン説明や光影を変更して保存すると最終プロンプトがクリアされ、次回のシーン図生成時にプロンプト Agent が再生成します。",
-      "promptHintProp": "プロンプトは直接編集でき、保存後に反映されます。物品の外見を変更して保存すると最終プロンプトがクリアされ、次回の小道具図生成時にプロンプト Agent が再生成します。",
+      "promptHintChar": "プロンプトは直接編集でき、保存後に反映されます。外見やスタイリングを保存しても既存のプロンプトは保持されます。新しい情報を反映するには「プロンプトを再生成」を選択してください。",
+      "promptHintScene": "プロンプトは直接編集でき、保存後に反映されます。シーン説明や光影を保存しても既存のプロンプトは保持されます。新しい情報を反映するには「プロンプトを再生成」を選択してください。",
+      "promptHintProp": "プロンプトは直接編集でき、保存後に反映されます。物品の外見を保存しても既存のプロンプトは保持されます。新しい情報を反映するには「プロンプトを再生成」を選択してください。",
       "generatingPrompt": "最終プロンプトを生成中…",
       "promptGenerated": "最終プロンプトを生成しました",
       "promptRegenerated": "最終プロンプトを再生成しました",
@@ -796,6 +827,12 @@
       "aspectRatio": "アスペクト比"
     },
     "inspector": {
+      "shotModel": "このショットのモデル",
+      "followTop": "上部に従う：{model}",
+      "shotModelHint": "このショットの個別・一括生成に反映",
+      "invalidModel": "利用不可：{model}",
+      "modelUnavailable": "このショットのモデルを選び直してください",
+      "batchModels": "各ショットのモデルを使用",
       "videoPromptPlaceholder": "{'@'}キャラクター名 / {'@'}シーン名 で参照素材を指定（生成時に参照画像へ自動マッピング）。時間帯ごとに画面の動きとカメラを記述…",
       "noRefs": "この分镜には参照素材が紐付けられていません",
       "refMedia": "参照画像 / 動画 / 音声",
@@ -927,7 +964,7 @@
     "helpTitle": "ガイド",
     "index": {
       "welcome": {
-        "title": "👋 火宝短劇へようこそ",
+        "title": "👋 小李短劇へようこそ",
         "desc": "小説 → 脚本 → アセット → 絵コンテ → 動画 → 完成、すべてワンストップ。まず AI サービスを設定し、最初のプロジェクトを作成しましょう。"
       },
       "create": {

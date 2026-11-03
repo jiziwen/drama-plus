@@ -74,12 +74,18 @@ export const storyboardAPI = {
   del: (id: number) => api.del(`/storyboards/${id}`),
 }
 
+export interface AssetImageOptions {
+  generation_mode?: 'text' | 'reference'
+  reference_images?: string[]
+  edit_prompt?: string
+}
+
 export const characterAPI = {
   create: (data: any) => api.post('/characters', data),
   update: (id: number, data: any) => api.put(`/characters/${id}`, data),
   del: (id: number) => api.del(`/characters/${id}`),
   generatePrompt: (id: number, episodeId: number, force = false, textModel?: string, textConfigId?: number) => api.post(`/characters/${id}/generate-prompt`, { episode_id: episodeId, force, text_model: textModel || undefined, text_config_id: textConfigId || undefined }),
-  generateImage: (id: number, episodeId: number, model?: string, configId?: number, textModel?: string, textConfigId?: number) => api.post(`/characters/${id}/generate-image`, { episode_id: episodeId, model: model || undefined, config_id: configId || undefined, text_model: textModel || undefined, text_config_id: textConfigId || undefined }),
+  generateImage: (id: number, episodeId: number, model?: string, configId?: number, textModel?: string, textConfigId?: number, options: AssetImageOptions = {}) => api.post(`/characters/${id}/generate-image`, { episode_id: episodeId, model: model || undefined, config_id: configId || undefined, text_model: textModel || undefined, text_config_id: textConfigId || undefined, ...options }),
   batchImages: (ids: number[], episodeId: number, model?: string, configId?: number, textModel?: string, textConfigId?: number) => api.post('/characters/batch-generate-images', { character_ids: ids, episode_id: episodeId, model: model || undefined, config_id: configId || undefined, text_model: textModel || undefined, text_config_id: textConfigId || undefined }),
 }
 
@@ -88,7 +94,7 @@ export const sceneAPI = {
   update: (id: number, data: any) => api.put(`/scenes/${id}`, data),
   del: (id: number) => api.del(`/scenes/${id}`),
   generatePrompt: (id: number, episodeId: number, force = false, textModel?: string, textConfigId?: number) => api.post(`/scenes/${id}/generate-prompt`, { episode_id: episodeId, force, text_model: textModel || undefined, text_config_id: textConfigId || undefined }),
-  generateImage: (id: number, episodeId: number, model?: string, configId?: number, textModel?: string, textConfigId?: number) => api.post(`/scenes/${id}/generate-image`, { episode_id: episodeId, model: model || undefined, config_id: configId || undefined, text_model: textModel || undefined, text_config_id: textConfigId || undefined }),
+  generateImage: (id: number, episodeId: number, model?: string, configId?: number, textModel?: string, textConfigId?: number, options: AssetImageOptions = {}) => api.post(`/scenes/${id}/generate-image`, { episode_id: episodeId, model: model || undefined, config_id: configId || undefined, text_model: textModel || undefined, text_config_id: textConfigId || undefined, ...options }),
 }
 
 export const propAPI = {
@@ -96,7 +102,7 @@ export const propAPI = {
   update: (id: number, data: any) => api.put(`/props/${id}`, data),
   del: (id: number) => api.del(`/props/${id}`),
   generatePrompt: (id: number, episodeId: number, force = false, textModel?: string, textConfigId?: number) => api.post(`/props/${id}/generate-prompt`, { episode_id: episodeId, force, text_model: textModel || undefined, text_config_id: textConfigId || undefined }),
-  generateImage: (id: number, episodeId: number, model?: string, configId?: number, textModel?: string, textConfigId?: number) => api.post(`/props/${id}/generate-image`, { episode_id: episodeId, model: model || undefined, config_id: configId || undefined, text_model: textModel || undefined, text_config_id: textConfigId || undefined }),
+  generateImage: (id: number, episodeId: number, model?: string, configId?: number, textModel?: string, textConfigId?: number, options: AssetImageOptions = {}) => api.post(`/props/${id}/generate-image`, { episode_id: episodeId, model: model || undefined, config_id: configId || undefined, text_model: textModel || undefined, text_config_id: textConfigId || undefined, ...options }),
 }
 
 // 统一生成任务（图片/视频）：POST 带 type 字段，列表按 type 过滤
@@ -106,11 +112,12 @@ export const taskAPI = {
   diagnostics: (id: number) => api.get(`/tasks/${id}/diagnostics`),
   get: (id: number) => api.get(`/tasks/${id}`),
   del: (id: number) => api.del(`/tasks/${id}`),
-  list: (params?: { type?: 'image' | 'video'; drama_id?: number; storyboard_id?: number }) => {
+  list: (params?: { type?: 'image' | 'video'; drama_id?: number; storyboard_id?: number; character_id?: number; scene_id?: number; prop_id?: number }) => {
     const query = new URLSearchParams()
     if (params?.type) query.set('type', params.type)
     if (params?.drama_id) query.set('drama_id', String(params.drama_id))
     if (params?.storyboard_id) query.set('storyboard_id', String(params.storyboard_id))
+    for (const key of ['character_id', 'scene_id', 'prop_id'] as const) if (params?.[key]) query.set(key, String(params[key]))
     return api.get(`/tasks${query.size ? `?${query.toString()}` : ''}`)
   },
   // 按集聚合生成任务（sys_task + video_merges）

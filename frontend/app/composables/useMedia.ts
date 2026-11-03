@@ -28,3 +28,12 @@ export function posterOf(url: string): string {
   if (!/\.(mp4|webm|mov)$/i.test(url)) return ''
   return url.replace(/\.[^./]+$/, '_poster.jpg')
 }
+
+/** 按需补齐旧视频封面；版本随主视频变化，URL 不携带远程地址或签名。 */
+export function videoPosterSrc(kind: 'tasks' | 'storyboards', id: number | string, source: string): string {
+  if (!source) return ''
+  if (!Number.isSafeInteger(Number(id)) || Number(id) <= 0) return posterOf(source)
+  let version = 0
+  for (const char of source) version = (Math.imul(version, 31) + char.charCodeAt(0)) >>> 0
+  return `/api/v1/${kind}/${id}/poster?v=${version.toString(36)}`
+}

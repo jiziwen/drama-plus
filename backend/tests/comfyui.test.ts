@@ -68,6 +68,9 @@ test('saved image sizes remain fixed while video sizes follow the project ratio 
 })
 
 test('custom workflow validation rejects canvas JSON, invalid nodes and missing output', () => {
+  assert.equal(validateComfySettings({ characterClarity: true }).characterClarity, true)
+  assert.equal(validateComfySettings({ characterClarity: false }).characterClarity, false)
+  for (const value of ['true', 1, null, {}]) assert.throws(() => validateComfySettings({ characterClarity: value }), /characterClarity.*布尔/)
   assert.throws(() => validateComfySettings({ workflow: { nodes: [] } }), /API 格式/)
   assert.throws(() => validateComfySettings({ timeoutMinutes: -1 }), /timeoutMinutes/)
   assert.throws(() => validateComfySettings({ workflow: { a: {} }, outputNode: 'a' }), /class_type/)
@@ -121,6 +124,12 @@ test('HTTP flow uploads references, persists the ID before submitting, polls wit
   const address = server.address() as { port: number }
   const local = { ...config, apiKey: 'local-test', baseUrl: `http://127.0.0.1:${address.port}` }
   try {
+    await assert.rejects(
+      submitComfyWorkflow(local, 'image', { prompt: 'edit' }, ['static/images/huobao_missing_reference_unit_test.png'], async () => { assert.fail('missing reference must not prepare a task') }),
+      { message: '参考图文件无法读取，请重新上传或选择历史图片' },
+    )
+    assert.equal(calls.filter(c => c === 'POST /prompt').length, 0)
+    assert.equal(calls.filter(c => c === 'POST /upload/image').length, 0)
     const id = await submitComfyWorkflow(local, 'image', { prompt: 'edit' }, ['data:image/png;base64,aGVsbG8='], async id => { savedId = id })
     assert.equal(submitted.prompt['206'].inputs['images.image_1'][0], '215')
     assert.equal(submitted.prompt['215'].inputs.image, 'huobao/uploaded.png')

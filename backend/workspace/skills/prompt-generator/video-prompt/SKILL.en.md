@@ -5,7 +5,7 @@ description: Video prompt specification — generates a time-segmented video-gen
 
 # Video Prompt (storyboard segment → video_prompt)
 
-From a single storyboard segment's description (containing the 【镜头N】 sub-shot structure and dialogue/narration) / atmosphere / duration, generate the `video_prompt` that drives AI video generation. **One storyboard segment = one 8-15-second video, with cuts allowed inside it**: consecutive segments may be different shots (change of shot size/angle/subject), joined with hard cuts; but the whole segment **never crosses scenes** and never uses flashbacks.
+Generate video_prompt from one storyboard description (sub-shots, dialogue, and narration), atmosphere, and duration. Cuts within the segment are allowed, but never cross scenes or introduce flashbacks.
 
 ## Format
 
@@ -13,9 +13,9 @@ The **first line of the `video_prompt` is the header**: first introduce which ch
 
 ```
 Characters: @Xiaoming, @Xiaohong; Scene: @Coffee Shop.
-0-3s: @Coffee Shop, close shot, static camera; @Xiaoming looks down at his phone, fingers repeatedly tapping the table, expression anxious.
-3-6s: Cut to a wide shot of the doorway; the doorbell rings as @Xiaohong pushes the door open and walks in, bringing in a gust of cold air.
-6-9s: Cut back to a medium shot; @Xiaohong walks over with a smile and sits down across from Xiaoming; Xiaoming says: "You finally made it."
+0-1.5s: @Coffee Shop, close shot, static camera; @Xiaoming looks down at his phone, fingers repeatedly tapping the table, expression anxious.
+1.5-3.5s: Cut to a wide shot of the doorway; the doorbell rings as @Xiaohong pushes the door open and walks in, bringing in a gust of cold air.
+3.5-7.5s: Cut back to a medium shot; @Xiaohong walks over with a smile and sits down across from Xiaoming; Xiaoming says: "You finally made it."
 ```
 
 Header rules:
@@ -23,13 +23,13 @@ Header rules:
 - When a prop has a notable appearance, it may be appended to the header (e.g. `; Props: @Letter`)
 - The header is its own line, ending with a period, followed by the time segments
 
-Split into 3-second segments, each segment on its own line separated by newlines, with time ranges continuous and adjoining (no overlaps, no gaps).
+Let time labels follow the saved duration as a guide, with flexible intervals suited to natural performance and one interval per line.
 
 ## Mapping to the Storyboard Description
 
 The `description` is the sole content source of the video_prompt (visuals, actions, dialogue, and narration are all in it). Conversion rules:
 
-- Each `【镜头N】` in the `description` maps to **1-2 consecutive 3-second segments** — same order, no omissions, no merging, no new sub-shots
+- Follow the sub-shot order and cut points in description, preserving essential visuals and dialogue without adding content.
 - Dialogue/narration is extracted from the "CharacterName says: "..."" / "Narration: ..." entries inside the corresponding `【镜头N】` and assigned to that sub-shot's mapped segments; **do not invent new dialogue beyond the description**
 - Visual actions follow the `description`; `atmosphere` is only used to supplement each segment's lighting, color tone, and mood descriptions
 
@@ -44,7 +44,7 @@ Organize each segment's content in this order (items with no content may be omit
 - **Shot size/camera move**: one camera state per segment (close shot / medium shot / wide shot / close-up; static / push / pull / pan / tracking); the camera move is continuous within a single sub-shot and may change after a cut
 - **Action**: one main action per segment, with concrete visible verbs (walk, turn around, look up, clench, pause)
 - **All emotion must become visible description**: no abstract words like "he is very sad / the mood is tense" — write it as "he lowers his head, fingers clench the rim of the cup, breathing grows heavier"
-- **Dialogue/narration**: write "CharacterName says: "line""; narration as "Narration: content"; a long line that cannot be spoken within 3 seconds is split across multiple segments; a segment without dialogue may note ambient/action sounds (e.g. "machines keep roaring")
+- **Dialogue/narration**: use the original lines from the corresponding sub-shot in description, preserve essential dialogue, and allow natural delivery; without dialogue, ambient or action sounds may be included.
 
 ## Reference Rules
 
@@ -56,7 +56,7 @@ Organize each segment's content in this order (items with no content may be omit
 
 ## Timeline Rules
 
-- Number of segments = storyboard-segment duration ÷ 3 seconds (rounded up); the segment time ranges must add up exactly to the total segment duration
+- Let time labels follow the saved duration as a guide, with flexible intervals suited to natural performance and one interval per line.
 - Content pacing: the first segment establishes → middle segments advance the action/conflict → the final segment lands on the result or emotional beat
 
 ## Prohibitions

@@ -10,6 +10,7 @@ import { downloadVideo, safeTaskError } from './video-download.js'
 import { getActiveConfig, getConfigById } from './ai.js'
 import { now } from '../utils/response.js'
 import { withImageTaskSubmission } from './image-submission.js'
+import { assertImageMode, resolveMediaConfig, validateReferenceImages } from './media-selection.js'
 import { downloadFile, fetchImageAsCompressedDataUrl, generateImageThumb, readImageAsCompressedDataUrl, readImageAsDataUrl, saveBase64Image } from '../utils/storage.js'
 import { extractVideoPoster } from '../utils/video-poster.js'
 import { getImageAdapter, getVideoAdapter } from './adapters/registry'
@@ -80,21 +81,9 @@ export async function generateImage(params: GenerateImageParams): Promise<number
 }
 
 async function enqueueImage(params: GenerateImageParams): Promise<number> {
-  // 指定配置（集锁定）可能已停用/删除/厂商收敛，失效时回退到当前启用配置，避免生成被旧引用卡死
-  const config = params.configId
-    ? (await getConfigById(params.configId)) ?? await getActiveConfig('image')
-    : await getActiveConfig('image')
-  if (!config) throw new Error('未配置图片模型，请先到「设置」页添加并启用 AI 服务')
-
-  let referenceImages = params.referenceImages
-  if (config.provider === 'comfyui' && !config.comfyui?.workflow && (params.model || config.model) === 'wf-qwen-image' && !referenceImages?.length && params.characterId) {
-    const [character] = await db.select().from(schema.characters).where(eq(schema.characters.id, params.characterId))
-    let savedReferences: unknown
-    try { savedReferences = character?.referenceImages ? JSON.parse(character.referenceImages) : [] } catch { savedReferences = [] }
-    referenceImages = Array.isArray(savedReferences) ? savedReferences.filter((url): url is string => typeof url === 'string' && !!url.trim()) : []
-    if (!referenceImages.length && character?.imageUrl) referenceImages = [character.imageUrl]
-    if (!referenceImages.length) throw new Error('三视图生成编辑需要参考图，请先生成或上传角色形象')
-  }
+  const config = await resolveMediaConfig('image', params)
+  const referenceImages = params.referenceImages === undefined ? [] : validateReferenceImages(params.referenceImages)
+  assertImageMode(config, referenceImages.length ? 'reference' : 'text')
 
   const id = await createTask('image', config, {
     storyboardId: params.storyboardId,
@@ -138,11 +127,7 @@ export async function generateVideo(params: GenerateVideoParams): Promise<number
       if (latest?.status === 'processing') throw new Error('该分镜已有运行中的任务，请等待结果')
       if (latest?.status === 'failed' && params.forceNew !== true) throw new Error('请先恢复原任务；重新生成需确认可能再次计费')
     }
-    // 指定配置（集锁定）可能已停用/删除/厂商收敛，失效时回退到当前启用配置
-    const config = params.configId
-      ? (await getConfigById(params.configId)) ?? await getActiveConfig('video')
-      : await getActiveConfig('video')
-    if (!config) throw new Error('未配置视频模型，请先到「设置」页添加并启用 AI 服务')
+    const config = await resolveMediaConfig('video', params)
 
     const id = await createTask('video', config, {
       storyboardId: params.storyboardId,
@@ -671,15 +656,9 @@ export async function resumeInterruptedTasks() {
 async function normalizeReferenceImages(refs: string[] | null | undefined): Promise<string[]> {
   if (!Array.isArray(refs) || !refs.length) return []
 
-  const deduped = Array.from(
-    new Set(
-      refs
-        .map((item) => String(item || '').trim())
-        .filter(Boolean),
-    ),
-  )
-
-  const normalized = await Promise.all(deduped.map(async (value) => {
+  // Keep the explicit order: a missing main image must never promote another image
+  // or silently turn an edit into a chargeable text-to-image request.
+  const normalized = await Promise.all(refs.map(async (value) => {
     if (value.startsWith('data:image/')) return value
     if (value.startsWith('static/') || value.startsWith('/static/')) {
       const localPath = value.startsWith('/static/') ? value.slice(1) : value
@@ -691,7 +670,7 @@ async function normalizeReferenceImages(refs: string[] | null | undefined): Prom
         })
       } catch (err) {
         logTaskWarn('ImageTask', 'reference-read-failed', { path: localPath, error: (err as Error).message })
-        return null
+        throw new Error('参考图文件无法读取，请重新上传或选择历史图片')
       }
     }
     // 远程 URL：下载压缩为 data URL，保证 multipart 上传（OpenAI edits）/ inline_data（Gemini）都可用
@@ -704,13 +683,13 @@ async function normalizeReferenceImages(refs: string[] | null | undefined): Prom
         })
       } catch (err) {
         logTaskWarn('ImageTask', 'reference-fetch-failed', { url: value, error: (err as Error).message })
-        return null
+        throw new Error('参考图下载失败，请检查地址或重新上传')
       }
     }
     return value
   }))
 
-  return normalized.filter((item): item is string => !!item).slice(0, 6)
+  return normalized
 }
 
 async function normalizeVideoReferenceUrl(value: string | null | undefined): Promise<string | null> {
@@ -724,7 +703,7 @@ async function normalizeVideoReferenceUrl(value: string | null | undefined): Pro
       return readImageAsDataUrl(localPath)
     } catch (err) {
       logTaskWarn('VideoTask', 'reference-read-failed', { path: localPath, error: (err as Error).message })
-      return null
+      throw new Error('视频参考图文件无法读取，请重新上传或选择历史图片')
     }
   }
   return raw

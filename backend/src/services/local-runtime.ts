@@ -25,7 +25,7 @@ export async function localRuntimeStatus(): Promise<Record<string, any>> {
 export async function requestComfyStartup(): Promise<Record<string, any>> {
   if (!localRuntimeEnabled()) return { started: false, enabled: false }
   const state = await localRuntimeStatus()
-  if (!state.available) return { started: false, available: false, message: '本机启动助手未运行，请使用“火宝短剧”快捷方式打开' }
+  if (!state.available) return { started: false, available: false, message: '本机启动助手未运行，请使用“小李短剧”快捷方式打开' }
   if (state.status === 'ready' || state.status === 'starting') return { started: state.status === 'starting', ...state }
   await fs.mkdir(dir, { recursive: true })
   const target = path.join(dir, 'request.json')
@@ -51,7 +51,7 @@ export async function waitForLocalComfy(baseUrl: string) {
   const deadline = Date.now() + 300_000
   while (Date.now() < deadline) {
     const current = await localRuntimeStatus()
-    if (!current.available) throw new Error('本机启动助手离线，请使用桌面火宝快捷方式重新打开')
+    if (!current.available) throw new Error('本机启动助手离线，请使用桌面小李快捷方式重新打开')
     if (current.status === 'ready') return
     if (current.status === 'error') throw new Error(`ComfyUI 启动失败：${current.error || '请检查整合包日志'}`)
     await new Promise(resolve => setTimeout(resolve, 2000))

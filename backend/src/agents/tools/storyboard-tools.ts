@@ -12,87 +12,48 @@ import { logTaskProgress, logTaskSuccess } from '../../utils/task-logger.js'
 import { getDramaId, getEpisodeId } from '../context.js'
 import { assertChinesePrompt } from '../../services/prompt-language.js'
 
-async function syncStoryboardCharacters(storyboardId: number, characterIds: number[]) {
-  await db.delete(schema.storyboardCharacters)
-    .where(eq(schema.storyboardCharacters.storyboardId, storyboardId))
+type DbWriter = Pick<typeof db, 'select' | 'insert' | 'delete' | 'update'>
 
-
-  const uniqueIds = [...new Set(characterIds.filter(Boolean))]
-  if (!uniqueIds.length) return
-
-  for (const characterId of uniqueIds) {
-    await db.insert(schema.storyboardCharacters).values({
-      storyboardId,
-      characterId,
-    })
+function syncStoryboardCharacters(storyboardId: number, characterIds: number[], connection: DbWriter = db) {
+  connection.delete(schema.storyboardCharacters).where(eq(schema.storyboardCharacters.storyboardId, storyboardId)).run()
+  for (const characterId of new Set(characterIds.filter(Boolean))) {
+    connection.insert(schema.storyboardCharacters).values({ storyboardId, characterId }).run()
   }
 }
 
-async function syncStoryboardProps(storyboardId: number, propIds: number[]) {
-  await db.delete(schema.storyboardProps)
-    .where(eq(schema.storyboardProps.storyboardId, storyboardId))
-
-  const uniqueIds = [...new Set(propIds.filter(Boolean))]
-  if (!uniqueIds.length) return
-
-  for (const propId of uniqueIds) {
-    await db.insert(schema.storyboardProps).values({
-      storyboardId,
-      propId,
-    })
+function syncStoryboardProps(storyboardId: number, propIds: number[], connection: DbWriter = db) {
+  connection.delete(schema.storyboardProps).where(eq(schema.storyboardProps.storyboardId, storyboardId)).run()
+  for (const propId of new Set(propIds.filter(Boolean))) {
+    connection.insert(schema.storyboardProps).values({ storyboardId, propId }).run()
   }
 }
 
-async function getEpisodeSceneIds(episodeId: number) {
-  const links = await db.select().from(schema.episodeScenes)
-    .where(eq(schema.episodeScenes.episodeId, episodeId))
-  return new Set(links.map(link => link.sceneId))
-}
-
-async function getEpisodeCharacterIds(episodeId: number) {
-  const links = await db.select().from(schema.episodeCharacters)
-    .where(eq(schema.episodeCharacters.episodeId, episodeId))
-  return new Set(links.map(link => link.characterId))
-}
-
-async function getEpisodePropIds(episodeId: number) {
-  const links = await db.select().from(schema.episodeProps)
-    .where(eq(schema.episodeProps.episodeId, episodeId))
-  return new Set(links.map(link => link.propId))
-}
-
-async function validateStoryboardBindings(episodeId: number, dramaId: number, sceneId: number | null | undefined, characterIds: number[] | undefined, propIds?: number[] | undefined) {
-  const episodeSceneIds = await getEpisodeSceneIds(episodeId)
-  const episodeCharacterIds = await getEpisodeCharacterIds(episodeId)
-  const episodePropIds = await getEpisodePropIds(episodeId)
-
-  // 场景/角色/道具属于本剧但尚未关联到当前集时，自动补关联（拆分时即完成绑定）
-  if (sceneId != null && !episodeSceneIds.has(sceneId)) {
-    const [scene] = await db.select().from(schema.scenes).where(eq(schema.scenes.id, sceneId))
-    if (!scene || scene.dramaId !== dramaId || scene.deletedAt) {
-      throw new Error(`scene_id ${sceneId} 不属于当前项目`)
-    }
-    await db.insert(schema.episodeScenes).values({ episodeId, sceneId, createdAt: now() })
+// Validation is read-only. Auto-linking happens only inside the successful save transaction.
+function validateStoryboardBindings(dramaId: number, sceneId: number | null | undefined, characterIds: number[] | undefined, propIds?: number[]) {
+  if (sceneId != null) {
+    const row = db.select().from(schema.scenes).where(eq(schema.scenes.id, sceneId)).get()
+    if (!row || row.dramaId !== dramaId || row.deletedAt) throw new Error(`scene_id ${sceneId} 不属于当前项目`)
   }
-
-  const uniqueCharacterIds = [...new Set((characterIds || []).filter(Boolean))]
-  for (const characterId of uniqueCharacterIds) {
-    if (episodeCharacterIds.has(characterId)) continue
-    const [character] = await db.select().from(schema.characters).where(eq(schema.characters.id, characterId))
-    if (!character || character.dramaId !== dramaId || character.deletedAt) {
-      throw new Error(`character_id ${characterId} 不属于当前项目`)
-    }
-    await db.insert(schema.episodeCharacters).values({ episodeId, characterId, createdAt: now() })
+  for (const characterId of new Set(characterIds || [])) {
+    const row = db.select().from(schema.characters).where(eq(schema.characters.id, characterId)).get()
+    if (!row || row.dramaId !== dramaId || row.deletedAt) throw new Error(`character_id ${characterId} 不属于当前项目`)
   }
+  for (const propId of new Set(propIds || [])) {
+    const row = db.select().from(schema.props).where(eq(schema.props.id, propId)).get()
+    if (!row || row.dramaId !== dramaId || row.deletedAt) throw new Error(`prop_id ${propId} 不属于当前项目`)
+  }
+}
 
-  const uniquePropIds = [...new Set((propIds || []).filter(Boolean))]
-  for (const propId of uniquePropIds) {
-    if (episodePropIds.has(propId)) continue
-    const [prop] = await db.select().from(schema.props).where(eq(schema.props.id, propId))
-    if (!prop || prop.dramaId !== dramaId || prop.deletedAt) {
-      throw new Error(`prop_id ${propId} 不属于当前项目`)
-    }
-    await db.insert(schema.episodeProps).values({ episodeId, propId, createdAt: now() })
+function linkEpisodeAssets(connection: DbWriter, episodeId: number, sceneId: number | null | undefined, characterIds: number[] = [], propIds: number[] = []) {
+  const sceneIds = new Set(connection.select().from(schema.episodeScenes).where(eq(schema.episodeScenes.episodeId, episodeId)).all().map(row => row.sceneId))
+  if (sceneId != null && !sceneIds.has(sceneId)) connection.insert(schema.episodeScenes).values({ episodeId, sceneId, createdAt: now() }).run()
+  const characterSet = new Set(connection.select().from(schema.episodeCharacters).where(eq(schema.episodeCharacters.episodeId, episodeId)).all().map(row => row.characterId))
+  for (const characterId of new Set(characterIds)) {
+    if (!characterSet.has(characterId)) connection.insert(schema.episodeCharacters).values({ episodeId, characterId, createdAt: now() }).run()
+  }
+  const propSet = new Set(connection.select().from(schema.episodeProps).where(eq(schema.episodeProps.episodeId, episodeId)).all().map(row => row.propId))
+  for (const propId of new Set(propIds)) {
+    if (!propSet.has(propId)) connection.insert(schema.episodeProps).values({ episodeId, propId, createdAt: now() }).run()
   }
 }
 
@@ -115,7 +76,7 @@ const readStoryboardContext = createTool({
     const { episodeId, dramaId } = ids
     const [ep] = await db.select().from(schema.episodes)
       .where(eq(schema.episodes.id, episodeId))
-    if (!ep) return { error: 'Episode not found' }
+    if (!ep || ep.dramaId !== dramaId || ep.deletedAt) return { error: 'Episode not found' }
     const script = ep.scriptContent || ep.content
     if (!script) return { error: 'Episode has no script' }
 
@@ -248,101 +209,67 @@ const storyboardFields = z.object({
 
 const saveStoryboards = createTool({
   id: 'save_storyboards',
-  description: 'Save storyboards for this episode. Call in batches of at most 8 storyboards: the first batch must set replace_existing: true (clears all old storyboards for the episode, then writes), every following batch omits replace_existing (appends). Rows are upserted by shot_number, so overlapping batches and retries never create duplicates.',
+  description: 'Save storyboards for this episode. Call in batches of at most 8 storyboards: the first batch sets replace_existing:true, following batches append. Rows are upserted by shot_number, so overlapping batches and retries never create duplicates.',
   inputSchema: z.object({
     replace_existing: z.boolean().optional(),
     storyboards: z.array(storyboardFields),
   }),
   execute: async ({ storyboards, replace_existing }, context) => {
-    for (const sb of storyboards) {
-      if (sb.video_prompt?.trim()) assertChinesePrompt(sb.video_prompt)
-      if (sb.image_prompt?.trim()) assertChinesePrompt(sb.image_prompt)
-    }
     const ids = requireIds(context)
     if ('error' in ids) return ids
     const { episodeId, dramaId } = ids
+    const episode = db.select().from(schema.episodes).where(eq(schema.episodes.id, episodeId)).get()
+    if (!episode || episode.dramaId !== dramaId || episode.deletedAt) return { error: '当前集不存在或不属于当前项目。' }
+
+    // Validate all asset links before replacing any old rows. Generation timing is left to the prompt.
+    try {
+      for (const sb of storyboards) {
+        if (sb.video_prompt?.trim()) assertChinesePrompt(sb.video_prompt)
+        if (sb.image_prompt?.trim()) assertChinesePrompt(sb.image_prompt)
+        validateStoryboardBindings(dramaId, sb.scene_id, sb.character_ids, sb.prop_ids)
+      }
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : '分镜字段或资产关联无效。' }
+    }
     const ts = now()
-    logTaskProgress('StoryboardTool', 'save-begin', {
-      episodeId,
-      dramaId,
-      replaceExisting: replace_existing === true,
-      count: storyboards.length,
-      shotNumbers: storyboards.map(sb => sb.shot_number).join(','),
-    })
-    if (replace_existing === true) {
-      const existingStoryboardRows = await db.select().from(schema.storyboards)
-        .where(eq(schema.storyboards.episodeId, episodeId))
-      for (const storyboardId of existingStoryboardRows.map(sb => sb.id)) {
-        await db.delete(schema.storyboardCharacters)
-          .where(eq(schema.storyboardCharacters.storyboardId, storyboardId))
-        await db.delete(schema.storyboardProps)
-          .where(eq(schema.storyboardProps.storyboardId, storyboardId))
-      }
-      await db.delete(schema.storyboards).where(eq(schema.storyboards.episodeId, episodeId))
+    let totalDuration = 0
+    try {
+      db.transaction(tx => {
+        const existingRows = tx.select().from(schema.storyboards).where(eq(schema.storyboards.episodeId, episodeId)).all()
+        if (replace_existing === true) {
+          for (const row of existingRows) {
+            tx.delete(schema.storyboardCharacters).where(eq(schema.storyboardCharacters.storyboardId, row.id)).run()
+            tx.delete(schema.storyboardProps).where(eq(schema.storyboardProps.storyboardId, row.id)).run()
+          }
+          tx.delete(schema.storyboards).where(eq(schema.storyboards.episodeId, episodeId)).run()
+        }
+        const shotToId = new Map((replace_existing === true ? [] : existingRows.filter(row => !row.deletedAt)).map(row => [row.storyboardNumber, row.id]))
+        for (const sb of storyboards) {
+          const fields = {
+            title: sb.title, shotType: sb.shot_type, angle: sb.angle, movement: sb.movement,
+            location: sb.location, time: sb.time, description: sb.description, result: sb.result,
+            atmosphere: sb.atmosphere, imagePrompt: sb.image_prompt, videoPrompt: sb.video_prompt,
+            bgmPrompt: sb.bgm_prompt, soundEffect: sb.sound_effect, sceneId: sb.scene_id,
+            duration: sb.duration || 10, updatedAt: ts,
+          }
+          let id = shotToId.get(sb.shot_number)
+          if (id !== undefined) tx.update(schema.storyboards).set(fields).where(eq(schema.storyboards.id, id)).run()
+          else {
+            id = getInsertId(tx.insert(schema.storyboards).values({ ...fields, episodeId, storyboardNumber: sb.shot_number, createdAt: ts }).run())
+            shotToId.set(sb.shot_number, id)
+          }
+          linkEpisodeAssets(tx, episodeId, sb.scene_id, sb.character_ids, sb.prop_ids)
+          syncStoryboardCharacters(id, sb.character_ids || [], tx)
+          syncStoryboardProps(id, sb.prop_ids || [], tx)
+        }
+        totalDuration = tx.select().from(schema.storyboards).where(eq(schema.storyboards.episodeId, episodeId)).all().filter(row => !row.deletedAt).reduce((sum, row) => sum + (row.duration || 0), 0)
+        tx.update(schema.episodes).set({ duration: Math.ceil(totalDuration / 60), updatedAt: ts }).where(eq(schema.episodes.id, episodeId)).run()
+      })
+    } catch (error) {
+      return { error: '本批保存失败，原数据已保留：' + (error instanceof Error ? error.message : '数据库写入失败') }
     }
-
-    // shot_number → id 索引（含本次调用内新增的行），保证按分镜号幂等 upsert
-    const existingRows = await db.select().from(schema.storyboards)
-      .where(eq(schema.storyboards.episodeId, episodeId))
-    const shotToId = new Map<number, number>(
-      existingRows.filter(sb => !sb.deletedAt).map(sb => [sb.storyboardNumber, sb.id]),
-    )
-
-    for (const sb of storyboards) {
-      await validateStoryboardBindings(episodeId, dramaId, sb.scene_id, sb.character_ids, sb.prop_ids)
-      const existingId = shotToId.get(sb.shot_number)
-      if (existingId !== undefined) {
-        await db.update(schema.storyboards).set({
-          title: sb.title, shotType: sb.shot_type,
-          angle: sb.angle, movement: sb.movement,
-          location: sb.location, time: sb.time,
-          description: sb.description, result: sb.result,
-          atmosphere: sb.atmosphere, imagePrompt: sb.image_prompt,
-          videoPrompt: sb.video_prompt, bgmPrompt: sb.bgm_prompt,
-          soundEffect: sb.sound_effect,
-          sceneId: sb.scene_id, duration: sb.duration || 10,
-          updatedAt: ts,
-        }).where(eq(schema.storyboards.id, existingId))
-        await syncStoryboardCharacters(existingId, sb.character_ids || [])
-        await syncStoryboardProps(existingId, sb.prop_ids || [])
-      } else {
-        const res = await db.insert(schema.storyboards).values({
-          episodeId,
-          storyboardNumber: sb.shot_number,
-          title: sb.title, shotType: sb.shot_type,
-          angle: sb.angle, movement: sb.movement,
-          location: sb.location, time: sb.time,
-          description: sb.description, result: sb.result,
-          atmosphere: sb.atmosphere, imagePrompt: sb.image_prompt,
-          videoPrompt: sb.video_prompt, bgmPrompt: sb.bgm_prompt,
-          soundEffect: sb.sound_effect,
-          sceneId: sb.scene_id, duration: sb.duration || 10,
-          createdAt: ts, updatedAt: ts,
-        })
-        const newId = getInsertId(res)
-        shotToId.set(sb.shot_number, newId)
-        await syncStoryboardCharacters(newId, sb.character_ids || [])
-        await syncStoryboardProps(newId, sb.prop_ids || [])
-      }
-    }
-
-    // 整集时长 = 当前全部存活分镜时长之和（分批保存时不能再按单批累加）
-    const allRows = await db.select().from(schema.storyboards)
-      .where(eq(schema.storyboards.episodeId, episodeId))
-    const totalDuration = allRows
-      .filter(sb => !sb.deletedAt)
-      .reduce((sum, sb) => sum + (sb.duration || 0), 0)
-
-    await db.update(schema.episodes)
-      .set({ duration: Math.ceil(totalDuration / 60), updatedAt: ts })
-      .where(eq(schema.episodes.id, episodeId))
-
-    logTaskSuccess('StoryboardTool', 'save-complete', {
-      episodeId,
-      count: storyboards.length,
-      totalDuration,
-    })
-    return { message: `Saved ${storyboards.length} storyboards`, count: storyboards.length, total_duration: totalDuration }
+    logTaskSuccess('StoryboardTool', 'save-complete', { episodeId, count: storyboards.length, totalDuration })
+    return { message: 'Saved ' + storyboards.length + ' storyboards', count: storyboards.length, total_duration: totalDuration }
   },
 })
 
@@ -370,13 +297,18 @@ const updateStoryboard = createTool({
     duration: z.number().optional(),
   }),
   execute: async ({ storyboard_id, ...fields }, context) => {
-    if (fields.video_prompt?.trim()) assertChinesePrompt(fields.video_prompt)
-    if (fields.image_prompt?.trim()) assertChinesePrompt(fields.image_prompt)
     const ids = requireIds(context)
     if ('error' in ids) return ids
     const { episodeId, dramaId } = ids
+    const fail = (error: { code: string; error: string }) => error
+    try {
+      if (fields.video_prompt?.trim()) assertChinesePrompt(fields.video_prompt)
+      if (fields.image_prompt?.trim()) assertChinesePrompt(fields.image_prompt)
+    } catch (error) {
+      return fail({ code: 'INVALID_STORYBOARD_PROMPT', error: error instanceof Error ? error.message : '分镜提示词无效。' })
+    }
     const [storyboard] = await db.select().from(schema.storyboards).where(eq(schema.storyboards.id, storyboard_id))
-    if (!storyboard) return { error: `Storyboard ${storyboard_id} not found` }
+    if (!storyboard || storyboard.episodeId !== episodeId || storyboard.deletedAt) return fail({ code: 'STORYBOARD_NOT_FOUND', error: '分镜不属于当前集。' })
 
     // 过滤模型回传的垃圾值：视频提示词 Agent 常把整行字段回传，
     // 拿不准的字符串字段写成 "null"/"undefined"，直接覆盖会毁掉已有内容
@@ -405,13 +337,11 @@ const updateStoryboard = createTool({
           .where(eq(schema.storyboardProps.storyboardId, storyboard_id)))
           .map(link => link.propId)
 
-    await validateStoryboardBindings(
-      episodeId,
-      dramaId,
-      'scene_id' in fields ? fields.scene_id : storyboard.sceneId,
-      currentCharacterIds,
-      currentPropIds,
-    )
+    try {
+      validateStoryboardBindings(dramaId, 'scene_id' in fields ? fields.scene_id : storyboard.sceneId, currentCharacterIds, currentPropIds)
+    } catch (error) {
+      return fail({ code: 'INVALID_STORYBOARD', error: error instanceof Error ? error.message : '资产关联无效。' })
+    }
 
     const updates: Record<string, any> = { updatedAt: now() }
     if ('title' in fields) updates.title = fields.title
@@ -429,9 +359,20 @@ const updateStoryboard = createTool({
     if ('description' in fields) updates.description = fields.description
     if ('scene_id' in fields) updates.sceneId = fields.scene_id
     if ('duration' in fields) updates.duration = fields.duration
-    await db.update(schema.storyboards).set(updates).where(eq(schema.storyboards.id, storyboard_id))
-    if ('character_ids' in fields) await syncStoryboardCharacters(storyboard_id, fields.character_ids || [])
-    if ('prop_ids' in fields) await syncStoryboardProps(storyboard_id, fields.prop_ids || [])
+    try {
+      db.transaction(tx => {
+        tx.update(schema.storyboards).set(updates).where(eq(schema.storyboards.id, storyboard_id)).run()
+        linkEpisodeAssets(tx, episodeId, 'scene_id' in fields ? fields.scene_id : storyboard.sceneId, currentCharacterIds, currentPropIds)
+        if ('character_ids' in fields) syncStoryboardCharacters(storyboard_id, fields.character_ids || [], tx)
+        if ('prop_ids' in fields) syncStoryboardProps(storyboard_id, fields.prop_ids || [], tx)
+        if ('duration' in fields) {
+          const aggregateSeconds = tx.select().from(schema.storyboards).where(eq(schema.storyboards.episodeId, episodeId)).all().filter(row => !row.deletedAt).reduce((sum, row) => sum + (row.duration || 0), 0)
+          tx.update(schema.episodes).set({ duration: Math.ceil(aggregateSeconds / 60), updatedAt: now() }).where(eq(schema.episodes.id, episodeId)).run()
+        }
+      })
+    } catch (error) {
+      return fail({ code: 'SAVE_FAILED', error: `分镜更新失败，原数据已保留：${error instanceof Error ? error.message : '数据库写入失败'}` })
+    }
     logTaskSuccess('StoryboardTool', 'update-complete', {
       episodeId,
       storyboardId: storyboard_id,
@@ -448,12 +389,19 @@ export const updateVideoPrompt = createTool({
   description: '仅保存分镜的简体中文视频提示词，不接受或修改场景、时长、描述等其他字段。',
   inputSchema: z.object({ storyboard_id: z.number(), video_prompt: z.string() }).strict(),
   execute: async ({ storyboard_id, video_prompt }, context) => {
-    assertChinesePrompt(video_prompt)
+    const fail = (error: { code: string; error: string }) => error
+    try { assertChinesePrompt(video_prompt) } catch (error) {
+      return fail({ code: 'INVALID_VIDEO_PROMPT', error: error instanceof Error ? error.message : '视频提示词无效。' })
+    }
     const ids = requireIds(context)
     if ('error' in ids) return ids
     const [row] = await db.select().from(schema.storyboards).where(eq(schema.storyboards.id, storyboard_id))
-    if (!row || row.episodeId !== ids.episodeId) return { error: '分镜不属于当前集' }
-    await db.update(schema.storyboards).set({ videoPrompt: video_prompt, updatedAt: now() }).where(eq(schema.storyboards.id, storyboard_id))
+    if (!row || row.episodeId !== ids.episodeId || row.deletedAt) return fail({ code: 'STORYBOARD_NOT_FOUND', error: '分镜不属于当前集' })
+    try {
+      await db.update(schema.storyboards).set({ videoPrompt: video_prompt, updatedAt: now() }).where(eq(schema.storyboards.id, storyboard_id))
+    } catch {
+      return fail({ code: 'VIDEO_PROMPT_SAVE_FAILED', error: '视频提示词保存失败，请重试。' })
+    }
     return { saved: true, storyboard_id, video_prompt }
   },
 })

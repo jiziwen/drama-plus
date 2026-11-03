@@ -3,6 +3,9 @@ import { fileURLToPath } from 'node:url'
 export default defineNuxtConfig({
   srcDir: 'app/',
   ssr: false,
+  // Keep parallel dev startup non-interactive in Cursor and other terminals.
+  telemetry: false,
+  devServer: { host: '127.0.0.1' },
   devtools: { enabled: false },
   experimental: {
     appManifest: false,
@@ -27,7 +30,7 @@ export default defineNuxtConfig({
   },
   app: {
     head: {
-      title: '火宝短剧',
+      title: '小李短剧',
       meta: [{ name: 'viewport', content: 'width=device-width, initial-scale=1' }],
       link: [
         // v 参数用于 favicon 缓存穿透（浏览器对 favicon 缓存独立于 HTTP 缓存，换图必须 bump）

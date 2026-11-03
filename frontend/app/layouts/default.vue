@@ -5,12 +5,12 @@
       <div class="header-left">
         <button class="brand" @click="navigateTo('/')">
           <div class="brand-mark">
-            <img v-if="showBrandImage" :src="brandLogo" alt="火宝短剧" class="brand-logo" @error="showBrandImage = false" />
+            <img v-if="showBrandImage" :src="brandLogo" alt="小李短剧" class="brand-logo" @error="showBrandImage = false" />
             <span v-else class="brand-fallback">火</span>
           </div>
           <div class="brand-text">
-            <span class="brand-name">火宝短剧</span>
-            <span class="brand-sub">Huobao Shorts</span>
+            <span class="brand-name">小李短剧</span>
+            <span class="little-li">Little Li Shorts</span>
           </div>
         </button>
       </div>
@@ -150,7 +150,7 @@ watch(locale, checkAiConfigs)
   color: transparent;
   letter-spacing: -0.01em;
 }
-.brand-sub {
+.little-li {
   font-size: 10px; font-weight: 400;
   color: var(--text-3); margin-top: 1px;
   letter-spacing: 0.04em;

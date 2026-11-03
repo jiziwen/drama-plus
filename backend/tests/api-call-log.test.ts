@@ -80,4 +80,19 @@ test('records HTTP and network failures and masks nested credentials without hid
   assert.ok(rows.some(row => row.error && row.status === 'error'))
   assert.deepEqual(sanitizeCallData({ nested: { 'X-Api-Key': 'secret', access_token: 'token', max_tokens: 512 } }), { nested: { 'X-Api-Key': '[已隐藏]', access_token: '[已隐藏]', max_tokens: 512 } })
 })
+
+test('network failures retain the timeout cause code while redacting sensitive text', async () => {
+  const original = globalThis.fetch
+  const cause = Object.assign(new Error('headers timeout https://example.test?token=private-cause-token'), { code: 'UND_ERR_HEADERS_TIMEOUT' })
+  const failure = new TypeError('fetch failed', { cause })
+  globalThis.fetch = async () => { throw failure }
+  try {
+    await assert.rejects(recordedFetch('https://example.test/timeout'), error => error === failure)
+  } finally { globalThis.fetch = original }
+  const row = db.select().from(schema.apiCallLogs).all().find(row => row.url.endsWith('/timeout'))!
+  const detail = JSON.parse(row.error!)
+  assert.equal(detail.message, 'fetch failed')
+  assert.equal(detail.cause.code, 'UND_ERR_HEADERS_TIMEOUT')
+  assert.ok(!row.error!.includes('private-cause-token'))
+})
 after(async () => { await new Promise<void>(resolve => server.close(() => resolve())) })

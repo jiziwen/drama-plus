@@ -762,7 +762,7 @@ const cfgTesting = ref(false)
 const cfgTestResult = ref(null)
 const huobaoApiKey = ref('')
 const huobaoSaving = ref(false)
-// 火宝节点选择：默认跟随界面语言（中文→国内 .cn，其他→国外 .com），一键配置与取 Key 链接共用
+// 小李节点选择：默认跟随界面语言（中文→国内 .cn，其他→国外 .com），一键配置与取 Key 链接共用
 const huobaoRegion = ref(locale.value?.startsWith('zh') ? 'cn' : 'com')
 const huobaoSiteUrl = computed(() => `https://api.firemux.${huobaoRegion.value}`)
 const cfgForm = reactive({ name: '', provider: '', api_key: '', base_url: '', models: [], service_type: 'text', priority: 0, temperature: '', comfy_timeout: 120, comfy_resolution: 'auto', comfy_width: 1024, comfy_height: 1024, comfy_json: '' })
@@ -870,13 +870,13 @@ const providerPresets = {
 const huobaoQuickConfigs = computed(() => {
   const base = huobaoSiteUrl.value
   return [
-    { service_type: 'text', provider: 'gemini', name: '火宝文本服务 · Gemini', base_url: base, model: ['gemini-3.8-flash', 'gemini-3.1-pro-preview', 'gemini-3-flash-preview'], priority: 101 },
-    { service_type: 'text', provider: 'openai', name: '火宝文本服务 · OpenAI', base_url: base, model: ['deepseek-v4-pro', 'deepseek-v4-flash', 'gpt-5.6-terra'], priority: 100 },
-    { service_type: 'image', provider: 'openai', name: '火宝图片服务 · OpenAI', base_url: base, model: ['gpt-image-2'], priority: 99 },
-    { service_type: 'image', provider: 'gemini', name: '火宝图片服务 · Gemini', base_url: base, model: ['gemini-3-pro-image', 'gemini-3.1-flash-image'], priority: 97 },
-    { service_type: 'video', provider: 'aliyun', name: '火宝视频服务 · Wan 3.0', base_url: `${base}/qwen`, model: ['wan3.0-video', 'wan3.0-video-prime'], priority: 97 },
-    { service_type: 'video', provider: 'volcengine', name: '火宝视频服务 · Seedance', base_url: `${base}/volcengine`, model: ['doubao-seedance-2-0-mini-260615', 'doubao-seedance-2-0-fast-260128', 'doubao-seedance-2-0-260128'], priority: 96 },
-    { service_type: 'video', provider: 'minimax', name: '火宝视频服务 · MiniMax', base_url: `${base}/minimax`, model: ['MiniMax-H3'], priority: 98 },
+    { service_type: 'text', provider: 'gemini', name: '小李文本服务 · Gemini', base_url: base, model: ['gemini-3.8-flash', 'gemini-3.1-pro-preview', 'gemini-3-flash-preview'], priority: 101 },
+    { service_type: 'text', provider: 'openai', name: '小李文本服务 · OpenAI', base_url: base, model: ['deepseek-v4-pro', 'deepseek-v4-flash', 'gpt-5.6-terra'], priority: 100 },
+    { service_type: 'image', provider: 'openai', name: '小李图片服务 · OpenAI', base_url: base, model: ['gpt-image-2'], priority: 99 },
+    { service_type: 'image', provider: 'gemini', name: '小李图片服务 · Gemini', base_url: base, model: ['gemini-3-pro-image', 'gemini-3.1-flash-image'], priority: 97 },
+    { service_type: 'video', provider: 'aliyun', name: '小李视频服务 · Wan 3.0', base_url: `${base}/qwen`, model: ['wan3.0-video', 'wan3.0-video-prime'], priority: 97 },
+    { service_type: 'video', provider: 'volcengine', name: '小李视频服务 · Seedance', base_url: `${base}/volcengine`, model: ['doubao-seedance-2-0-mini-260615', 'doubao-seedance-2-0-fast-260128', 'doubao-seedance-2-0-260128'], priority: 96 },
+    { service_type: 'video', provider: 'minimax', name: '小李视频服务 · MiniMax', base_url: `${base}/minimax`, model: ['MiniMax-H3'], priority: 98 },
   ]
 })
 
@@ -1555,7 +1555,7 @@ onBeforeUnmount(stopUsagePoll)
 .settings-title { font-size: 22px; font-weight: 800; letter-spacing: -0.02em; }
 .settings-desc { font-size: 13px; color: var(--text-2); margin-top: 6px; }
 
-/* 火宝快捷配置 */
+/* 小李快捷配置 */
 .quick-card {
   padding: 20px;
   margin-bottom: 16px;

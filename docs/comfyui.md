@@ -1,15 +1,15 @@
 # ComfyUI 本地生成
 
-火宝通过 ComfyUI 原生 HTTP API 提交 API 格式工作流；生成任务仍进入 `sys_task`，完成后下载到 `data/static`，回写角色、场景、道具或分镜。ComfyUI 独立运行，不打包进 Electron。
+小李通过 ComfyUI 原生 HTTP API 提交 API 格式工作流；生成任务仍进入 `sys_task`，完成后下载到 `data/static`，回写角色、场景、道具或分镜。ComfyUI 独立运行，不打包进 Electron。
 
 ## 当前机器
 
 - 整合包：`D:\comfyui\Comfyui-WF-2026.8.8`
 - ComfyUI：`http://127.0.0.1:8188`
-- Docker 内的火宝访问地址：`http://host.docker.internal:8188`
-- 火宝：`http://localhost:5679`
+- Docker 内的小李访问地址：`http://host.docker.internal:8188`
+- 小李：`http://localhost:5679`
 
-重启电脑后可双击桌面的「火宝短剧」快捷方式，同时启动 Docker 应用和本地 ComfyUI。也可以手动运行 `powershell -ExecutionPolicy Bypass -File scripts/start-comfyui.ps1` 后执行 `docker compose up -d app`。
+重启电脑后可双击桌面的「小李短剧」快捷方式，同时启动 Docker 应用和本地 ComfyUI。也可以手动运行 `powershell -ExecutionPolicy Bypass -File scripts/start-comfyui.ps1` 后执行 `docker compose up -d app`。
 
 本机运行镜像为 `huobao/huobao-drama:comfyui-local`，由本地 compose override 选择，已排除 Watchtower 自动替换。原镜像备份标签为 `huobao/huobao-drama:before-comfyui-20261028`。数据目录仍挂载仓库的 `data/`，接入前有 SQLite 在线备份 `data/huobao.sqlite3.bak-before-comfyui-20261028`。
 
@@ -48,7 +48,7 @@
 
 宽高保存在 `comfyui.width / height`。角色和场景改原有尺寸常量；三视图通过原选择器的比例及像素面积接收尺寸，仅支持原选择器的比例；视频使用两者乘积控制清晰度，并跟随项目比例换算宽高。例如基准 `832×480` 配合项目 `9:16`，实际提交 `480×832`。角色最终文件尺寸由原 SeedVR 节点决定，任务中记录的是基础生成尺寸。自定义 API 工作流继续支持 `{{width}}`、`{{height}}`。原任务恢复仍读取持久化的输出节点（包括旧 `241`），不改动既有任务。最长等待默认 120 分钟，包含排队。
 
-当前视频预设接收参考图片；视频、音频素材输入及首尾帧约束模式尚未接入，会明确报错。图片上传保留原素材，不走云服务压缩和公网 URL 转换。素材会保存在 ComfyUI 的 `input/huobao`，生成结果在 ComfyUI 的 `output/Huobao` 和火宝数据目录各有一份。
+当前视频预设接收参考图片；视频、音频素材输入及首尾帧约束模式尚未接入，会明确报错。图片上传保留原素材，不走云服务压缩和公网 URL 转换。素材会保存在 ComfyUI 的 `input/huobao`，生成结果在 ComfyUI 的 `output/Huobao` 和小李数据目录各有一份。
 
 ## 自定义 API 工作流
 
@@ -69,7 +69,7 @@
 
 上面只展示参数结构，实际 `workflow` 必须含完整可运行节点及存在的输出节点 `9`。字符串占位符支持 `prompt / width / height / seed / frames / fps / duration`；整个字段是数字占位符时会保留数字类型。导入后需要将固定提示词等输入换成占位符。
 
-对于支持动态多图输入的节点，可设置 `referenceNode`、`referencePrefix`、`referenceStart`、`maxReferences`。火宝上传素材并创建 LoadImage 节点，再连接这些动态输入。例如 Qwen Image 使用 `referenceNode: "206"`、`referencePrefix: "images.image_"`、`referenceStart: 1`。普通固定 LoadImage 输入的自定义工作流需要按其节点输入结构调整，目前导入功能不会自动推断映射。
+对于支持动态多图输入的节点，可设置 `referenceNode`、`referencePrefix`、`referenceStart`、`maxReferences`。小李上传素材并创建 LoadImage 节点，再连接这些动态输入。例如 Qwen Image 使用 `referenceNode: "206"`、`referencePrefix: "images.image_"`、`referenceStart: 1`。普通固定 LoadImage 输入的自定义工作流需要按其节点输入结构调整，目前导入功能不会自动推断映射。
 
 任务会在提交前持久化客户端生成的 `prompt_id`；中断后图片任务可自动继续查询，视频可以恢复原任务。配置删除、停用或地址变更后，不会自动切换到其他 ComfyUI 实例恢复。ComfyUI 自身历史被清空时无法恢复输出定位。
 
@@ -89,7 +89,7 @@
 
 GET 查询没有请求体。详情会展开 URL 中的路径参数（例如 ComfyUI `prompt_id`）和查询参数；ComfyUI 进度查询还会关联同任务的 `POST /prompt`，点击「查看生成入参和响应」可查看真正提交的工作流。历史单次响应（包括空对象）保持原样，合并列表默认展示最新一次响应。
 
-## 打开火宝时联动启动整合包
+## 打开小李时联动启动整合包
 
 设置 → 通用 → **本地 ComfyUI 联动启动**，可开关自动启动、查看状态和手动发起启动。
 
@@ -97,11 +97,11 @@ Docker 无法直接创建 Windows 进程，因此 Windows 上的 `scripts/local-
 
 如果打开后立刻生成，本地生成任务会等待整合包就绪再提交工作流，最长等待 5 分钟；远程 ComfyUI 不受本机启动逻辑影响。
 
-本机已通过 `scripts/install-local-runtime.ps1` 安装桌面快捷方式「火宝短剧」和 Windows 登录启动项「Huobao Local Runtime」。登录时仅启动轻量助手，ComfyUI 在打开火宝后按需启动。直接打开已有火宝网页也会触发联动。助手状态由本地文件心跳提供；若助手离线，使用桌面快捷方式即可启动助手。
+本机已通过 `scripts/install-local-runtime.ps1` 安装桌面快捷方式「小李短剧」和 Windows 登录启动项「Huobao Local Runtime」。登录时仅启动轻量助手，ComfyUI 在打开小李后按需启动。直接打开已有小李网页也会触发联动。助手状态由本地文件心跳提供；若助手离线，使用桌面快捷方式即可启动助手。
 
 更换整合包位置后执行 `powershell -ExecutionPolicy Bypass -File scripts/install-local-runtime.ps1 -PackagePath "新路径"` 并重启本机助手。关闭联动开关不会停止已经运行的 ComfyUI。卸载助手可删除 Windows 启动文件夹中的 `Huobao Local Runtime.lnk` 和桌面快捷方式，再结束对应 `local-runtime-host.ps1` 进程。
 
-本次功能验收：33 项后端测试、4 项前端翻译测试、后端类型检查及前端构建通过。真实文本模型已生成并保存中文图片与视频提示词，视频提示词更新前后比较确认场景绑定、时长、描述和已有视频地址均保留。中文生图任务 24 已完成，对应 17 条 ComfyUI 请求记录已保存，详情弹框已在浏览器确认。停止空闲测试 ComfyUI 后重新打开火宝页面，本机助手成功启动新进程，8188 恢复响应。
+本次功能验收：33 项后端测试、4 项前端翻译测试、后端类型检查及前端构建通过。真实文本模型已生成并保存中文图片与视频提示词，视频提示词更新前后比较确认场景绑定、时长、描述和已有视频地址均保留。中文生图任务 24 已完成，对应 17 条 ComfyUI 请求记录已保存，详情弹框已在浏览器确认。停止空闲测试 ComfyUI 后重新打开小李页面，本机助手成功启动新进程，8188 恢复响应。
 
 ## 本机验收（2026-10-28）
 

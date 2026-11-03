@@ -133,6 +133,12 @@ export function buildWorkFisher(config: ComfyConnection, type: 'image' | 'video'
     if (typeof node.inputs.filename_prefix === 'string') node.inputs.filename_prefix = node.inputs.filename_prefix.replace(/%date:yyyy-MM-dd%/g, new Date().toISOString().slice(0, 10))
   }
   const settings = config.comfyui || {}
+  // Controlled comparisons documented in docs/image-clarity-debug.md isolate these
+  // style LoRAs as the softening source. Keep the source graph, sampler and SeedVR.
+  if (settings.characterClarity === true && model === 'wf-z-image' && params.assetType !== 'prop') {
+    workflow['240'].inputs.strength_model = 0
+    workflow['249'].inputs.strength_model = 0
+  }
   if (settings.outputNode && settings.outputNode !== mode.output) throw new Error(`原始模式「${mode.group}」最终输出节点必须为 ${mode.output}，请清除旧 outputNode 设置`)
   workflow[mode.prompt[0]].inputs[mode.prompt[1]] = params.prompt
   workflow[mode.seed[0]].inputs[mode.seed[1]] = seed

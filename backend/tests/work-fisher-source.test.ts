@@ -55,6 +55,34 @@ test('automatic scene selection uses the original separate scene group', () => {
   assert.deepEqual([built.width, built.height], [1920, 1080])
 })
 
+test('opt-in character clarity changes only the two style strengths and exports identical overrides to the canvas', () => {
+  const beforeSource = JSON.stringify(workFisherSource)
+  const params = { prompt: '项目原三视图提示词：正脸特写、正面、侧面、背面', size: '1920x1080', assetType: 'character' as const }
+  const original = buildWorkFisher(connection, 'image', params, [], 42)
+  const disabled = buildWorkFisher({ ...connection, comfyui: { characterClarity: false } }, 'image', params, [], 42)
+  const enabled = buildWorkFisher({ ...connection, comfyui: { characterClarity: true } }, 'image', params, [], 42)
+  assert.deepEqual(disabled.workflow, original.workflow)
+  const expected = structuredClone(original.workflow)
+  expected['240'].inputs.strength_model = 0
+  expected['249'].inputs.strength_model = 0
+  assert.deepEqual(enabled.workflow, expected)
+  assert.equal(enabled.outputNode, '239')
+  for (const id of [240, 249]) {
+    const node = enabled.canvasWorkflow.nodes.find((n: any) => n.id === id)
+    assert.equal(node.widgets_values_named.strength_model, 0)
+    assert.equal(node.widgets_values[1], 0)
+  }
+  assert.equal(JSON.stringify(workFisherSource), beforeSource)
+  for (const assetType of ['scene', 'prop'] as const) {
+    const base = buildWorkFisher(connection, 'image', { ...params, assetType }, [], 42)
+    const clear = buildWorkFisher({ ...connection, comfyui: { characterClarity: true } }, 'image', { ...params, assetType }, [], 42)
+    assert.deepEqual(clear.workflow, base.workflow)
+  }
+  const editBase = buildWorkFisher(connection, 'image', params, ['main.png'], 42)
+  const editClear = buildWorkFisher({ ...connection, comfyui: { characterClarity: true } }, 'image', params, ['main.png'], 42)
+  assert.deepEqual(editClear.workflow, editBase.workflow)
+})
+
 test('three-view switch and 1024 reference encoding survive; only caller references enter the request', () => {
   const built = buildWorkFisher(connection, 'image', { prompt: '三视图' }, ['a.png', 'b.png'], 42)
   assert.equal(built.workflow['206'].inputs.resolution, 1024)

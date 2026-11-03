@@ -4,11 +4,17 @@ import { db, schema } from '../db/index.js'
 import { success, created, badRequest } from '../utils/response.js'
 import { generateImage, generateVideo, recoverVideoTask } from '../services/generation.js'
 import { safeTaskError } from '../services/video-download.js'
-import { getActiveConfig, getConfigById } from '../services/ai.js'
+import { resolveMediaConfig } from '../services/media-selection.js'
+import { videoPosterResponse } from '../services/video-poster-response.js'
 import { getDramaStylePrompt } from '../services/style-preset.js'
 import { logTaskError, logTaskPayload, logTaskStart, logTaskSuccess } from '../utils/task-logger.js'
 
 const app = new Hono()
+
+app.get('/:id/poster', async c => {
+  const [task] = await db.select().from(schema.sysTask).where(eq(schema.sysTask.id, Number(c.req.param('id'))))
+  return videoPosterResponse(c, task?.type === 'video' ? [task.localPath, task.resultUrl] : [])
+})
 
 app.post('/:id/recover', async c => {
   try {
@@ -144,14 +150,18 @@ app.post('/', async (c) => {
         return badRequest(c, '请先恢复原任务；重新生成需明确确认可能再次计费')
       }
     }
-    // 请求显式指定 config_id（工作台模型下拉跨厂商切换）时优先；
-    // 未指定才回退到集锁定配置，避免锁定配置与所选模型错配（如锁定 Seedance 却传 MiniMax 模型名）
+    // Per-shot choice wins over the page toolbar for both single and batch requests.
     let configId: number | undefined = body.config_id
     let episodeResolution: string | undefined
     let storyboardDramaId: number | undefined
     if (body.storyboard_id) {
       const [sb] = await db.select().from(schema.storyboards).where(eq(schema.storyboards.id, Number(body.storyboard_id)))
+      if (!sb || sb.deletedAt) return badRequest(c, '镜头不存在')
       if (sb) {
+        if (type === 'video' && videoBody && (sb.videoModel || sb.videoConfigId != null)) {
+          configId = sb.videoConfigId ?? undefined
+          videoBody.model = sb.videoModel ?? undefined
+        }
         const [ep] = await db.select().from(schema.episodes).where(eq(schema.episodes.id, sb.episodeId))
         const locked = type === 'image' ? ep?.imageConfigId : ep?.videoConfigId
         if (locked != null && configId == null) configId = locked
@@ -161,9 +171,7 @@ app.post('/', async (c) => {
     }
 
     if (type === 'video' && videoBody) {
-      const effectiveConfig = configId
-        ? (await getConfigById(configId)) ?? await getActiveConfig('video')
-        : await getActiveConfig('video')
+      const effectiveConfig = await resolveMediaConfig('video', { configId, model: videoBody.model })
       const validationError = validateVideoRequest(videoBody, effectiveConfig?.provider)
       if (validationError) return badRequest(c, validationError)
     }
@@ -241,17 +249,23 @@ app.get('/:id', async (c) => {
   return success(c, row || null)
 })
 
-// GET /tasks — 按 type / storyboard_id / drama_id 过滤
+// GET /tasks — history scoped to a project, shot or asset
 app.get('/', async (c) => {
   const type = c.req.query('type')
   const storyboardId = c.req.query('storyboard_id')
   const dramaId = c.req.query('drama_id')
+  const characterId = c.req.query('character_id')
+  const sceneId = c.req.query('scene_id')
+  const propId = c.req.query('prop_id')
 
   let rows = await db.select().from(schema.sysTask)
 
   if (type) rows = rows.filter(r => r.type === type)
   if (storyboardId) rows = rows.filter(r => r.storyboardId === Number(storyboardId))
   if (dramaId) rows = rows.filter(r => r.dramaId === Number(dramaId))
+  if (characterId) rows = rows.filter(r => r.characterId === Number(characterId))
+  if (sceneId) rows = rows.filter(r => r.sceneId === Number(sceneId))
+  if (propId) rows = rows.filter(r => r.propId === Number(propId))
 
   return success(c, rows)
 })

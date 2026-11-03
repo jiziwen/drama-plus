@@ -5,6 +5,7 @@ import { buildWorkFisher, type WorkFisherParams } from './work-fisher.js'
 import { STORAGE_ROOT } from '../utils/paths.js'
 import { recordedFetch as fetch } from './api-call-log.js'
 import { waitForLocalComfy } from './local-runtime.js'
+import { logTaskWarn } from '../utils/task-logger.js'
 
 export type ComfyWorkflow = Record<string, { class_type: string; inputs: Record<string, any> }>
 export interface ComfySettings {
@@ -21,6 +22,8 @@ export interface ComfySettings {
   frameStep?: number
   frameOffset?: number
   timeoutMinutes?: number
+  /** Opt-in: keep the character workflow but disable its two soft-focus style LoRAs. */
+  characterClarity?: boolean
 }
 interface Preset extends ComfySettings { label: string; type: 'image' | 'video'; workflow: ComfyWorkflow; outputNode: string }
 export interface ComfyConnection { baseUrl: string; apiKey: string; model: string; comfyui?: ComfySettings }
@@ -33,6 +36,7 @@ export function parseComfySettings(raw: string | null | undefined): ComfySetting
 export function validateComfySettings(value: unknown): ComfySettings {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('ComfyUI 配置必须是 JSON 对象')
   const s = value as ComfySettings
+  if (s.characterClarity !== undefined && typeof s.characterClarity !== 'boolean') throw new Error('ComfyUI characterClarity 必须为布尔值')
   for (const [key, min, max] of [
     ['maxPixels', 16384, 16777216], ['fps', 1, 120], ['frameStep', 1, 120],
     ['frameOffset', 0, 120], ['timeoutMinutes', 1, 720], ['maxReferences', 0, 16], ['referenceStart', 0, 16],
@@ -161,7 +165,12 @@ async function uploadReference(config: ComfyConnection, source: string): Promise
     const file = path.resolve(STORAGE_ROOT, source.replace(/^\/?static\//, ''))
     const rel = path.relative(path.resolve(STORAGE_ROOT), file)
     if (rel.startsWith('..') || path.isAbsolute(rel)) throw new Error('参考图路径超出素材目录')
-    bytes = await fs.readFile(file)
+    try {
+      bytes = await fs.readFile(file)
+    } catch (error) {
+      logTaskWarn('ComfyUI', 'reference-read-failed', { path: file, error: (error as Error).message })
+      throw new Error('参考图文件无法读取，请重新上传或选择历史图片')
+    }
     mime = /\.jpe?g$/i.test(file) ? 'image/jpeg' : /\.webp$/i.test(file) ? 'image/webp' : 'image/png'
   } else if (/^https?:\/\//.test(source)) {
     const response = await fetch(source, { signal: AbortSignal.timeout(60_000) })

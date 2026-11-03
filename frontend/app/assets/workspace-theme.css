@@ -87,8 +87,8 @@ html:is([data-theme="dark"], [data-theme="light"]) .video-col-divider.is-right {
 html:is([data-theme="dark"], [data-theme="light"]) .step-toolbar { padding: 20px 26px; background: linear-gradient(110deg,#18151e,#15151a); }
 html:is([data-theme="dark"], [data-theme="light"]) .fill-textarea { padding: 32px; font-size: 15px; line-height: 2; background: #0b0b0e; }
 html:is([data-theme="dark"], [data-theme="light"]) .asset-section-title { font-size: 14px; margin: 12px 0; color: var(--accent); }
-html:is([data-theme="dark"], [data-theme="light"]) .asset-grid { gap: 20px; grid-template-columns: repeat(auto-fill,minmax(240px,1fr)); }
-html:is([data-theme="dark"], [data-theme="light"]) .character-asset-grid { gap: 20px; grid-template-columns: repeat(auto-fill,minmax(270px,300px)); }
+html:is([data-theme="dark"], [data-theme="light"]) .asset-grid,
+html:is([data-theme="dark"], [data-theme="light"]) .character-asset-grid { gap: 20px; grid-template-columns: repeat(auto-fill,minmax(min(100%,280px),1fr)); }
 html:is([data-theme="dark"], [data-theme="light"]) .asset-body { padding: 16px; }
 html:is([data-theme="dark"], [data-theme="light"]) .asset-meta { font-size: 12px; line-height: 1.8; }
 html:is([data-theme="dark"], [data-theme="light"]) .shell > .header { min-height: 74px; padding: 0 36px; background: linear-gradient(90deg,#141418,#121216); }

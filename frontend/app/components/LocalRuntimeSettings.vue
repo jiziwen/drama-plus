@@ -1,9 +1,9 @@
 <template>
   <section v-if="state.supported" class="card runtime-card">
-    <div><h3>本地 ComfyUI 联动启动</h3><p class="dim">开启后，每次打开火宝页面会通知 Windows 本机助手启动整合包；已运行时直接复用。</p></div>
-    <label class="runtime-toggle"><input type="checkbox" :checked="state.enabled" :disabled="saving" @change="toggle($event.target.checked)" />打开火宝时自动启动 ComfyUI</label>
+    <div><h3>本地 ComfyUI 联动启动</h3><p class="dim">开启后，每次打开小李页面会通知 Windows 本机助手启动整合包；已运行时直接复用。</p></div>
+    <label class="runtime-toggle"><input type="checkbox" :checked="state.enabled" :disabled="saving" @change="toggle($event.target.checked)" />打开小李时自动启动 ComfyUI</label>
     <div class="runtime-actions"><span class="tag" :class="state.available && state.status === 'ready' ? 'tag-success' : ''">{{ label }}</span><button class="btn btn-sm" :disabled="starting || !state.available || !state.enabled" @click="start">立即启动</button><button class="btn btn-sm" @click="refresh">刷新状态</button><a class="btn btn-sm" :href="`http://127.0.0.1:${state.port || 8188}`" target="_blank" rel="noopener">打开 ComfyUI</a></div>
-    <p v-if="!state.available" class="dim">本机助手未运行，请使用桌面的“火宝短剧”快捷方式启动。</p>
+    <p v-if="!state.available" class="dim">本机助手未运行，请使用桌面的“小李短剧”快捷方式启动。</p>
     <p v-if="error || state.error" role="alert" class="runtime-error">{{ error || state.error }}</p>
   </section>
 </template>

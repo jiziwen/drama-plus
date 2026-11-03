@@ -5,6 +5,7 @@ import { success, created, badRequest, now } from '../utils/response.js'
 import { toSnakeCase } from '../utils/transform.js'
 import { generateImage } from '../services/generation.js'
 import { withAssetImageRequest } from '../services/image-submission.js'
+import { assetMediaPatch, resolveAssetImageRequest } from '../services/media-selection.js'
 import { getDramaStylePrompt } from '../services/style-preset.js'
 import { ensureCharacterFinalPrompt } from '../services/final-prompt.js'
 import { logTaskError, logTaskStart, logTaskSuccess } from '../utils/task-logger.js'
@@ -59,6 +60,9 @@ app.put('/:id', async (c) => {
   const id = Number(c.req.param('id'))
   const body = await c.req.json()
   const updates: Record<string, any> = { updatedAt: now() }
+  const [current] = await db.select().from(schema.characters).where(eq(schema.characters.id, id))
+  if (!current || current.deletedAt) return badRequest(c, '角色不存在')
+  try { Object.assign(updates, await assetMediaPatch(body, current)) } catch (e: any) { return badRequest(c, e.message) }
   for (const key of ['name', 'role', 'description', 'appearance', 'styling', 'imageUrl', 'localPath']) {
     const snakeKey = key.replace(/[A-Z]/g, m => '_' + m.toLowerCase())
     if (snakeKey in body) updates[key] = body[snakeKey]
@@ -88,14 +92,17 @@ app.post('/:id/generate-image', async (c) => {
 
   const [ep] = await db.select().from(schema.episodes).where(eq(schema.episodes.id, Number(body.episode_id)))
   if (!ep) return badRequest(c, '剧集不存在')
+  if (char.deletedAt || ep.dramaId !== char.dramaId) return badRequest(c, '角色不属于此项目')
 
   try {
+    const request = await resolveAssetImageRequest(body, char, ep.imageConfigId)
     logTaskStart('CharacterImage', 'generate', { characterId: id, episodeId: ep.id, dramaId: char.dramaId })
     const genId = await withAssetImageRequest({ characterId: id }, async () => {
+      if (request.mode === 'reference') return generateImage({ characterId: id, dramaId: char.dramaId, prompt: request.editPrompt, referenceImages: request.referenceImages, model: request.model, configId: request.configId, size: CHARACTER_IMAGE_SIZE })
       const stylePrompt = await getDramaStylePrompt(char.dramaId)
       const finalPrompt = await ensureCharacterFinalPrompt(char, ep.id, false, { model: body.text_model, configId: body.text_config_id ?? undefined })
       const prompt = finalPrompt || characterImagePrompt(char, stylePrompt)
-      return generateImage({ characterId: id, dramaId: char.dramaId, prompt, model: body.model, size: CHARACTER_IMAGE_SIZE, configId: body.config_id ?? ep.imageConfigId ?? undefined })
+      return generateImage({ characterId: id, dramaId: char.dramaId, prompt, model: request.model, size: CHARACTER_IMAGE_SIZE, configId: request.configId })
     })
     logTaskSuccess('CharacterImage', 'generate', { characterId: id, generationId: genId })
     return success(c, { image_generation_id: genId })
@@ -134,21 +141,23 @@ app.post('/batch-generate-images', async (c) => {
   const [ep] = await db.select().from(schema.episodes).where(eq(schema.episodes.id, Number(body.episode_id)))
   if (!ep) return badRequest(c, '剧集不存在')
   const results: number[] = []
+  const errors: { character_id: number; error: string }[] = []
   const stylePrompt = await getDramaStylePrompt(ep.dramaId)
   for (const cid of ids) {
     const [char] = await db.select().from(schema.characters).where(eq(schema.characters.id, cid))
-    if (!char) continue
+    if (!char || char.deletedAt || char.dramaId !== ep.dramaId) { errors.push({ character_id: cid, error: '角色不存在或不属于此项目' }); continue }
     try {
+      const request = await resolveAssetImageRequest({ ...body, generation_mode: 'text' }, char, ep.imageConfigId)
       const genId = await withAssetImageRequest({ characterId: cid }, async () => {
         const finalPrompt = await ensureCharacterFinalPrompt(char, ep.id, false, { model: body.text_model, configId: body.text_config_id ?? undefined })
         const prompt = finalPrompt || characterImagePrompt(char, stylePrompt)
-        return generateImage({ characterId: cid, dramaId: char.dramaId, prompt, model: body.model, size: CHARACTER_IMAGE_SIZE, configId: body.config_id ?? ep.imageConfigId ?? undefined })
+        return generateImage({ characterId: cid, dramaId: char.dramaId, prompt, model: request.model, size: CHARACTER_IMAGE_SIZE, configId: request.configId })
       })
       results.push(genId)
-    } catch {}
+    } catch (e: any) { errors.push({ character_id: cid, error: e.message }) }
   }
   logTaskSuccess('CharacterImage', 'batch-generate', { episodeId: ep.id, requested: ids.length, started: results.length })
-  return success(c, { count: results.length, ids: results })
+  return success(c, { count: results.length, ids: results, errors })
 })
 
 export default app

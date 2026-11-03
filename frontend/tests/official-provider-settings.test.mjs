@@ -37,7 +37,7 @@ test('settings page exposes official provider templates only', () => {
   assert.doesNotMatch(settingsPage, /https:\/\/dashscope\.aliyuncs\.com/)
   assert.doesNotMatch(settingsPage, /https:\/\/api\.vidu\.com/)
   assert.doesNotMatch(settingsPage, /\['ali'|'ali',|, 'ali'\]/)
-  assert.match(settingsPage, /火宝快捷配置/)
+  assert.match(settingsPage, /小李快捷配置/)
   assert.match(settingsPage, /https:\/\/api\.firemux\.com/)
   assert.match(settingsPage, /applyHuobaoQuickConfig/)
   assert.doesNotMatch(settingsPage, /https:\/\/api\.minimax\.io/)

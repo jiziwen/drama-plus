@@ -15,7 +15,8 @@ function setup(type) {
   const context = {
     visualChars: ref(items), scenes: ref(items), propItems: ref(items),
     pendingCharImageIds: ref([]), pendingSceneImageIds: ref([]), pendingPropImageIds: ref([]),
-    genTasks: ref([]), epId: ref(1), imageModel: ref('model'), imageModelOptions: ref([]),
+    genTasks: ref([]), epId: ref(1), imageModel: ref('model'), imageModelOptions: ref([]), imageConfigs: ref([]),
+    assetModelOptions: () => [], resolveAssetModel: () => ({ model: 'model', configId: 1 }), submittedImageTaskIds: new Set(),
     bareModelName: x => x, ownerConfigId: () => 1, chatModelOverride: () => '', chatConfigId: () => 1,
     t: x => x, toast: { info() {}, success() {} }, toastError() {}, watchAsyncResult() {},
     refresh: async () => {},

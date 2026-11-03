@@ -10,6 +10,19 @@ import { logTaskError, logTaskPayload, logTaskProgress, logTaskStart, logTaskSuc
 
 const app = new Hono()
 
+function agentFailureMessage(error: any) {
+  let cause = error
+  for (let depth = 0; cause && depth < 6; depth++, cause = cause.cause) {
+    if (['UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'UND_ERR_CONNECT_TIMEOUT', 'ETIMEDOUT'].includes(cause.code) || cause.name === 'TimeoutError') {
+      return '文字接口请求超时，本次生成未完成。请稍后重试或切换文字接口。'
+    }
+  }
+  if (error?.message === 'fetch failed' || /Cannot connect to API|Connect Timeout/i.test(error?.message || '')) {
+    return '文字接口连接失败，本次生成未完成。请检查接口地址与网络，或切换文字接口。'
+  }
+  return error?.message || 'Agent 执行失败'
+}
+
 // Mastra v1.17 的 ToolCallChunk / ToolResultChunk 结构：
 // { type: 'tool-call', payload: { toolCallId, toolName, args } }
 // { type: 'tool-result', payload: { toolCallId, toolName, result, isError } }
@@ -56,16 +69,15 @@ app.post('/:type/chat', async (c) => {
     return badRequest(c, 'Agent 不存在')
   }
 
-  const requestContext = buildAgentRequestContext({
-    episodeId: episode_id,
-    dramaId: drama_id,
-    modelOverride: body.model || undefined,
-    textConfigId: body.config_id || undefined,
-  })
-
   const startTime = performance.now()
 
   try {
+    const requestContext = buildAgentRequestContext({
+      episodeId: episode_id,
+      dramaId: drama_id,
+      modelOverride: body.model || undefined,
+      textConfigId: body.config_id || undefined,
+    })
     const result = await agent.generate(
       [{ role: 'user', content: message }],
       { maxSteps: 20, requestContext },
@@ -103,7 +115,7 @@ app.post('/:type/chat', async (c) => {
     const elapsed = ((performance.now() - startTime) / 1000).toFixed(1)
     logTaskError('Agent', agentType, { elapsedSeconds: elapsed, error: err.message })
     console.error(err.stack || err)
-    return badRequest(c, err.message || 'Agent 执行失败')
+    return badRequest(c, agentFailureMessage(err))
   }
 })
 

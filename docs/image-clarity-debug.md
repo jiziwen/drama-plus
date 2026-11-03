@@ -2,15 +2,15 @@
 
 ## 截图实际显示的是原图
 
-关联火宝任务 39，ComfyUI prompt_id 为 `5b2aa794-ebcf-4f6e-9cb2-df1799529b9b`。该任务成功执行完整角色流程。
+关联小李任务 39，ComfyUI prompt_id 为 `5b2aa794-ebcf-4f6e-9cb2-df1799529b9b`。该任务成功执行完整角色流程。
 
 用户截图 `codex-clipboard-67966d0c-5987-4efe-a571-d3609ad152c1.png` 尺寸 1992×1124；其中图片区域 `(48, 32, 1968, 1112)` 与节点 241 输出 `ComfyUI_00016_.png` 的 1920×1080 RGB 像素完全相同，MAE=0、RMSE=0。因此截图打开的是放大前的原图。
 
-本次任务的 SeedVR 最终文件为节点 239 输出 `demo_00009_.png`，4548×2560。火宝已保存为 `data/static/images/8cfec5d7-439c-4584-bdf0-58c7bdbbfa0e.png`，两个文件 SHA-256 相同：
+本次任务的 SeedVR 最终文件为节点 239 输出 `demo_00009_.png`，4548×2560。小李已保存为 `data/static/images/8cfec5d7-439c-4584-bdf0-58c7bdbbfa0e.png`，两个文件 SHA-256 相同：
 
 `749710f5007167c11176bae1b76209a4ac36a314c54277ecb799938d837f0e03`
 
-查看 ComfyUI 结果时应打开角色流程最右侧、经 SeedVR 和 RAM/VRAM 清理后的 SaveImage 239。靠近 VAE 解码的 SaveImage 241 保留基础原图，PreviewImage 243 是预缩图。火宝自身已经读取最终 239，没有遗漏 SeedVR 或下载错文件。
+查看 ComfyUI 结果时应打开角色流程最右侧、经 SeedVR 和 RAM/VRAM 清理后的 SaveImage 239。靠近 VAE 解码的 SaveImage 241 保留基础原图，PreviewImage 243 是预缩图。小李自身已经读取最终 239，没有遗漏 SeedVR 或下载错文件。
 
 ## 固定种子的两组对照
 
@@ -53,6 +53,6 @@ Windows Computer Use 在读取 Chrome 窗口时，因无法可靠确定当前浏
 
 `【Work-Fisher】AI短剧制作全流程-角色清晰对照-20261029.json`
 
-原 101 个节点的 ID、类型、全部连线均不变；生成端只关闭角色的 240/249 风格 LoRA，保留原采样设置及 SeedVR。输入为本次固定种子、提示词与 1920×1080；随机种子暂设 fixed 便于复现，原图/高清输出已标明标题并使用独立调试文件名前缀。233 的历史 `cache_model="sdpa"` 按 ComfyUI 原有 BOOLEAN 转换结果保存为 true。没有覆盖原工作流文件或项目角色图片，也没有修改火宝正式服务配置。
+原 101 个节点的 ID、类型、全部连线均不变；生成端只关闭角色的 240/249 风格 LoRA，保留原采样设置及 SeedVR。输入为本次固定种子、提示词与 1920×1080；随机种子暂设 fixed 便于复现，原图/高清输出已标明标题并使用独立调试文件名前缀。233 的历史 `cache_model="sdpa"` 按 ComfyUI 原有 BOOLEAN 转换结果保存为 true。没有覆盖原工作流文件或项目角色图片，也没有修改小李正式服务配置。
 
 完整 SeedVR 验证任务 `5fbc69fc-8dc7-4e5b-9dd3-46ce4df7815e` 已成功，原图 1920×1080，高清输出 4548×2560：`ComfyUI/output/Huobao/Clarity/clear-final_00001_.png`。PNG 同时携带可导回 ComfyUI 的完整清晰对照画布。

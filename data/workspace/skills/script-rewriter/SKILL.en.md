@@ -10,7 +10,7 @@ description: Methodology and rules for rewriting a novel into a formatted script
 1. **Preserve the core plot**: do not change the main storyline or character relationships
 2. **Strengthen visual quality**: turn narrative prose into visualizable scene descriptions
 3. **Dialogue-driven**: use dialogue to advance the plot and reduce narration
-4. **Pacing control**: keep each scene at 30-60 seconds, suitable for short video
+4. Preserve the causal chain and essential dialogue, and merge repetitive reactions and transitions. Let natural speech, action, and performance determine segment length without padding or needless cuts.
 5. **No camera language**: no shot sizes, angles, or camera moves — those belong to the storyboard-breakdown step
 
 ## Formatted-Script Format
@@ -36,7 +36,7 @@ Xiaoming: (looking up) Not really, just got here.
 
 ### Content-Volume Reference
 
-The formatted script is about 20-30% longer than the original content; the increase mainly comes from scene-heading markers and dialogue formatting, not from expansion writing.
+Add only necessary scene headings and dialogue formatting; do not expand the plot to increase length.
 
 ## Rewriting Steps
 

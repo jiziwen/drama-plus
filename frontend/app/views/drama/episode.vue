@@ -325,8 +325,8 @@
                 tabindex="0"
                 role="button"
                 @click="openAssetDetail('character', c)"
-                @keydown.enter.prevent="openAssetDetail('character', c)"
-                @keydown.space.prevent="openAssetDetail('character', c)"
+                @keydown.enter.self.prevent="openAssetDetail('character', c)"
+                @keydown.space.self.prevent="openAssetDetail('character', c)"
               >
                 <button class="asset-del-btn" :title="t('episode.asset.delChar')" @click.stop="askDeleteAsset('character', c)"><X :size="11" /></button>
                 <div class="character-asset-main">
@@ -358,15 +358,15 @@
                           <span>{{ t('episode.asset.styling') }}{{ characterStylingValue(c) }}</span>
                         </div>
                       </div>
-                      <button class="btn btn-sm character-gen-btn" :disabled="isPendingCharImage(c.id)" @click.stop="genCharImg(c.id)">
-                        <Loader2 v-if="isPendingCharImage(c.id)" :size="11" class="animate-spin" />
-                        {{ (c.image_url || c.imageUrl) ? t('episode.asset.regen') : (isPendingCharImage(c.id) ? t('episode.asset.generating') : t('episode.asset.generate')) }}
-                      </button>
-                      <button class="btn btn-sm" :title="t('episode.asset.uploadCharImage')" :disabled="isUploadingAsset('character', c.id)" @click.stop="uploadAssetImage('character', c.id)">
+                      <div class="asset-card-actions">
+                      <AssetGenerationActions :busy="isPendingCharImage(c.id)" :has-image="!!assetImageSrc(c)"
+                        @detail="openAssetDetail('character', c)" @text="genCharImg(c.id)" @reference="openAssetDetail('character', c, 'reference')" />
+                      <button class="btn btn-sm asset-upload-button" :title="t('episode.asset.uploadCharImage')" :disabled="isUploadingAsset('character', c.id)" @click.stop="uploadAssetImage('character', c.id)">
                         <Loader2 v-if="isUploadingAsset('character', c.id)" :size="11" class="animate-spin" />
                         <svg v-else width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                         {{ t('episode.asset.upload') }}
                       </button>
+                      </div>
                     </div>
                   </div>
                   <div class="asset-final-prompt" :title="c.final_prompt || c.finalPrompt || ''">
@@ -391,8 +391,8 @@
                 tabindex="0"
                 role="button"
                 @click="openAssetDetail('scene', s)"
-                @keydown.enter.prevent="openAssetDetail('scene', s)"
-                @keydown.space.prevent="openAssetDetail('scene', s)"
+                @keydown.enter.self.prevent="openAssetDetail('scene', s)"
+                @keydown.space.self.prevent="openAssetDetail('scene', s)"
               >
                 <button class="asset-del-btn" :title="t('episode.asset.delScene')" @click.stop="askDeleteAsset('scene', s)"><X :size="11" /></button>
                 <div class="asset-cover wide">
@@ -413,22 +413,19 @@
                   <div class="asset-name" :title="s.location">{{ s.location }}</div>
                   <div class="asset-meta asset-desc dim" :title="sceneDescriptionValue(s)">{{ sceneDescriptionValue(s) }}</div>
                   <div v-if="sceneLightingValue(s)" class="asset-meta asset-light dim" :title="sceneLightingValue(s)">{{ t('episode.asset.lighting') }}{{ sceneLightingValue(s) }}</div>
-                  <div class="asset-meta asset-final" :class="{ dim: !(s.final_prompt || s.finalPrompt) }" :title="s.final_prompt || s.finalPrompt || ''">
-                    <span class="afp-label">{{ t('episode.asset.finalPromptFixed') }}</span>
-                    {{ s.final_prompt || s.finalPrompt || t('episode.asset.finalPromptAutoFixed') }}
-                  </div>
                 </div>
                 <div class="asset-foot">
-                  <span :class="['dot', (s.image_url || s.imageUrl) && 'ok', isPendingSceneImage(s.id) && 'pending']" />
-                  <button class="btn btn-sm ml-auto" :title="t('episode.asset.uploadSceneImage')" :disabled="isUploadingAsset('scene', s.id)" @click.stop="uploadAssetImage('scene', s.id)">
+                  <AssetGenerationActions :busy="isPendingSceneImage(s.id)" :has-image="!!assetImageSrc(s)"
+                    @detail="openAssetDetail('scene', s)" @text="genSceneImg(s.id)" @reference="openAssetDetail('scene', s, 'reference')" />
+                  <button class="btn btn-sm asset-upload-button" :title="t('episode.asset.uploadSceneImage')" :disabled="isUploadingAsset('scene', s.id)" @click.stop="uploadAssetImage('scene', s.id)">
                     <Loader2 v-if="isUploadingAsset('scene', s.id)" :size="11" class="animate-spin" />
                     <svg v-else width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                     {{ t('episode.asset.upload') }}
                   </button>
-                  <button class="btn btn-sm" :disabled="isPendingSceneImage(s.id)" @click.stop="genSceneImg(s.id)">
-                    <Loader2 v-if="isPendingSceneImage(s.id)" :size="11" class="animate-spin" />
-                    {{ (s.image_url || s.imageUrl) ? t('episode.asset.regen') : (isPendingSceneImage(s.id) ? t('episode.asset.generating') : t('episode.asset.generate')) }}
-                  </button>
+                </div>
+                <div class="asset-meta asset-final" :class="{ dim: !(s.final_prompt || s.finalPrompt) }" :title="s.final_prompt || s.finalPrompt || ''">
+                  <span class="afp-label">{{ t('episode.asset.finalPromptFixed') }}</span>
+                  {{ s.final_prompt || s.finalPrompt || t('episode.asset.finalPromptAutoFixed') }}
                 </div>
               </div>
             </div>
@@ -446,8 +443,8 @@
                 tabindex="0"
                 role="button"
                 @click="openAssetDetail('prop', p)"
-                @keydown.enter.prevent="openAssetDetail('prop', p)"
-                @keydown.space.prevent="openAssetDetail('prop', p)"
+                @keydown.enter.self.prevent="openAssetDetail('prop', p)"
+                @keydown.space.self.prevent="openAssetDetail('prop', p)"
               >
                 <button class="asset-del-btn" :title="t('episode.asset.delProp')" @click.stop="askDeleteAsset('prop', p)"><X :size="11" /></button>
                 <div class="asset-cover wide">
@@ -470,22 +467,19 @@
                     <span class="tag">{{ p.type || t('common.prop') }}</span>
                   </div>
                   <div class="asset-meta asset-desc dim" :title="p.description || ''">{{ p.description || t('episode.asset.noDescription') }}</div>
-                  <div class="asset-meta asset-final" :class="{ dim: !(p.final_prompt || p.finalPrompt) }" :title="p.final_prompt || p.finalPrompt || ''">
-                    <span class="afp-label">{{ t('episode.asset.finalPromptWhiteBg') }}</span>
-                    {{ p.final_prompt || p.finalPrompt || t('episode.asset.finalPromptAutoWhiteBg') }}
-                  </div>
                 </div>
                 <div class="asset-foot">
-                  <span :class="['dot', (p.image_url || p.imageUrl) && 'ok', isPendingPropImage(p.id) && 'pending']" />
-                  <button class="btn btn-sm ml-auto" :title="t('episode.asset.uploadPropImage')" :disabled="isUploadingAsset('prop', p.id)" @click.stop="uploadAssetImage('prop', p.id)">
+                  <AssetGenerationActions :busy="isPendingPropImage(p.id)" :has-image="!!assetImageSrc(p)"
+                    @detail="openAssetDetail('prop', p)" @text="genPropImg(p.id)" @reference="openAssetDetail('prop', p, 'reference')" />
+                  <button class="btn btn-sm asset-upload-button" :title="t('episode.asset.uploadPropImage')" :disabled="isUploadingAsset('prop', p.id)" @click.stop="uploadAssetImage('prop', p.id)">
                     <Loader2 v-if="isUploadingAsset('prop', p.id)" :size="11" class="animate-spin" />
                     <svg v-else width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                     {{ t('episode.asset.upload') }}
                   </button>
-                  <button class="btn btn-sm" :disabled="isPendingPropImage(p.id)" @click.stop="genPropImg(p.id)">
-                    <Loader2 v-if="isPendingPropImage(p.id)" :size="11" class="animate-spin" />
-                    {{ (p.image_url || p.imageUrl) ? t('episode.asset.regen') : (isPendingPropImage(p.id) ? t('episode.asset.generating') : t('episode.asset.generate')) }}
-                  </button>
+                </div>
+                <div class="asset-meta asset-final" :class="{ dim: !(p.final_prompt || p.finalPrompt) }" :title="p.final_prompt || p.finalPrompt || ''">
+                  <span class="afp-label">{{ t('episode.asset.finalPromptWhiteBg') }}</span>
+                  {{ p.final_prompt || p.finalPrompt || t('episode.asset.finalPromptAutoWhiteBg') }}
                 </div>
               </div>
             </div>
@@ -573,14 +567,11 @@
                     >
                       <svg v-if="isVideoSbSelected(task.id)" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
                     </span>
-                    <video
+                    <img
                       v-if="hasVid(task.storyboard)"
-                      :src="'/' + getVideoUrl(task.storyboard)"
-                      :poster="posterOf('/' + getVideoUrl(task.storyboard)) || undefined"
-                      preload="none"
-                      playsinline
-                      muted
-                      tabindex="-1"
+                      :src="videoPosterSrc('storyboards', task.id, getVideoUrl(task.storyboard))"
+                      alt=""
+                      loading="lazy"
                     />
                     <div v-else class="video-task-empty">
                       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
@@ -709,6 +700,7 @@
               </div>
 
               <aside class="video-task-inspector">
+                <div class="video-inspector-scroll">
             <aside class="video-task-player">
               <div class="video-player-head">
                 <div class="video-player-head-info">
@@ -743,7 +735,7 @@
                   v-if="playerVideoUrl"
                   :key="playerVideoUrl"
                   :src="playerVideoUrl"
-                  :poster="playerIsRemote ? undefined : posterOf(playerVideoUrl) || undefined"
+                  :poster="playerPosterUrl || undefined"
                   @error="playerLoadFailed = true"
                   controls
                   preload="metadata"
@@ -788,7 +780,7 @@
                   @click="previewHistoryVideo(h)"
                   @keydown.enter.prevent="previewHistoryVideo(h)"
                 >
-                  <video :src="videoSourceUrl(taskVideoPath(h))" :poster="posterOf(videoSourceUrl(taskVideoPath(h))) || undefined" preload="none" muted playsinline tabindex="-1" />
+                  <img :src="videoPosterSrc('tasks', h.id, taskVideoPath(h))" alt="" loading="lazy" />
                   <span class="video-history-time">{{ formatHistoryTime(taskCreatedAt(h)) }}</span>
                   <span v-if="isCurrentVideo(h)" class="video-history-badge">{{ t('episode.vid.current') }}</span>
                   <button v-else type="button" class="video-history-del" :title="t('episode.vid.deleteRecord')" @click.stop="removeHistoryVideo(h)">×</button>
@@ -819,6 +811,7 @@
                     <div v-else class="video-bound-refs-empty">{{ t('episode.inspector.noBoundRefs') }}</div>
                   </section>
                 </div>
+                </div>
 
                 <!-- 分镜时长 + 生成操作常驻底部：不随检查器内容滚动 -->
                 <div class="video-inspector-footer">
@@ -839,12 +832,22 @@
                     </div>
                     <div class="video-param-hint">{{ t('episode.inspector.durationHint') }}</div>
                   </section>
-                  <div class="video-inspector-effective">
-                    {{ t('episode.inspector.effective', { model: effectiveVideoModelLabel || t('episode.vid.defaultModel'), res: episodeResolutionShort, dur: effectiveVideoDuration }) }}
-                  </div>
+                  <label class="video-inspector-model">
+                    <span class="sr-only">{{ t('episode.inspector.shotModel') }}</span>
+                    <select
+                      :value="shotVideoModelKey(selectedSb)"
+                      :disabled="videoTaskState(selectedSb) === 'pending' || savingShotVideoIds.includes(selectedSb.id)"
+                      :title="t('episode.inspector.shotModelHint')"
+                      @change="changeShotVideoModel(selectedSb, $event)"
+                    >
+                      <option value="">{{ t('episode.inspector.followTop', { model: effectiveVideoModelLabel || t('episode.vid.defaultModel') }) }} · {{ videoResolutionForConfig(selectedVideoConfig) }} · {{ effectiveVideoDuration }}s</option>
+                      <option v-if="shotVideoModelKey(selectedSb) && !shotVideoModelOptions.some(o => o.key === shotVideoModelKey(selectedSb))" :value="shotVideoModelKey(selectedSb)" disabled>{{ t('episode.inspector.invalidModel', { model: selectedSb.video_model || selectedSb.videoModel || '' }) }}</option>
+                      <option v-for="option in shotVideoModelOptions" :key="option.key" :value="option.key">{{ modelLabel(option.model) }} · {{ option.configName }} · {{ videoResolutionForConfig(option.config) }} · {{ effectiveVideoDuration }}s</option>
+                    </select>
+                  </label>
                   <button
                     class="btn btn-primary video-inspector-action"
-                    :disabled="videoTaskState(selectedSb) === 'pending'"
+                    :disabled="videoTaskState(selectedSb) === 'pending' || savingShotVideoIds.includes(selectedSb.id)"
                     @click="genVid(selectedSb)"
                   >
                     {{ videoTaskActionLabel(selectedSb) }}
@@ -1106,10 +1109,12 @@
 
       <div v-if="assetDetail.open && assetDetail.item" class="overlay asset-detail-overlay" @click.self="closeAssetDetail">
         <section
+          ref="assetDialogElement"
           class="dialog asset-detail-dialog"
           role="dialog"
           aria-modal="true"
           :aria-label="t('episode.asset.detailTitle', { type: assetTypeLabel(assetDetail.type) })"
+          @keydown.tab="trapAssetDialogFocus"
         >
           <header class="dialog-head asset-detail-head">
             <div class="asset-detail-title-block">
@@ -1127,6 +1132,20 @@
           </header>
 
           <div class="dialog-body asset-detail-body">
+            <div class="asset-generation-toolbar">
+              <div class="asset-generation-tabs" role="tablist" :aria-label="t('assetGeneration.model')">
+                <button type="button" role="tab" :aria-selected="assetGenerationMode === 'text'" :disabled="savingAssetDetail || assetReferenceUploading" @click="assetGenerationMode = 'text'">{{ t('assetGeneration.textMode') }}</button>
+                <button type="button" role="tab" :aria-selected="assetGenerationMode === 'reference'" :disabled="savingAssetDetail || assetReferenceUploading" @click="assetGenerationMode = 'reference'">{{ t('assetGeneration.referenceMode') }}</button>
+              </div>
+              <label class="asset-generation-model">
+                <span>{{ t('assetGeneration.model') }}</span>
+                <select v-model="assetGenerationModels[assetGenerationMode]" class="input" :disabled="savingAssetDetail || isAssetImagePending(assetDetail.type, assetDetail.item.id)">
+                  <option value="">{{ t('assetGeneration.followTop') }} · {{ modelLabel(bareModelName(imageModel) || defaultImageModel) }}</option>
+                  <option v-if="assetSelectedModelUnavailable" :value="assetGenerationModels[assetGenerationMode]" disabled>{{ t('assetGeneration.unavailableModel') }}</option>
+                  <option v-for="option in assetDetailModelOptions" :key="option.key" :value="option.key">{{ modelLabel(option.model) }} · {{ option.configName }}</option>
+                </select>
+              </label>
+            </div>
             <div class="asset-detail-shell">
               <aside class="asset-detail-preview-panel">
                 <div class="asset-detail-section-title">
@@ -1167,7 +1186,16 @@
                 </div>
               </aside>
 
-              <section class="asset-detail-editor-panel">
+              <section v-if="assetGenerationMode === 'reference'" class="asset-detail-editor-panel asset-reference-panel">
+                <AssetReferenceEditor :key="`${assetDetail.type}:${assetDetail.item.id}`" v-model="assetReferenceDraft"
+                  :current-image="assetImageSrc(assetDetail.item)" :history="assetReferenceHistory"
+                  :disabled="savingAssetDetail || isAssetImagePending(assetDetail.type, assetDetail.item.id)" @error="toastError" @uploading="assetReferenceUploading = $event" />
+                <label class="asset-detail-edit-field">
+                  <span>{{ t('assetGeneration.editDescription') }}</span>
+                  <textarea v-model="assetEditDraft" class="textarea asset-detail-textarea" rows="6" :placeholder="t('assetGeneration.editPlaceholder')" :disabled="savingAssetDetail" />
+                </label>
+              </section>
+              <section v-else class="asset-detail-editor-panel">
                 <div class="asset-detail-section-title">
                   <span>{{ t('episode.asset.editInfo') }}</span>
                   <span class="dim">{{ assetDetail.type === 'character' ? t('episode.asset.editHintChar') : assetDetail.type === 'prop' ? t('episode.asset.editHintProp') : t('episode.asset.editHintScene') }}</span>
@@ -1178,6 +1206,7 @@
                     <span>{{ t('episode.asset.appearanceOfObject') }}</span>
                     <textarea
                       v-model="assetDetailDraft.description"
+                      :disabled="assetTextBusy"
                       class="textarea asset-detail-textarea"
                       rows="6"
                       :placeholder="t('episode.asset.appearancePlaceholder')"
@@ -1190,6 +1219,7 @@
                     <span>{{ t('episode.asset.appearanceField') }}</span>
                     <textarea
                       v-model="assetDetailDraft.appearance"
+                      :disabled="assetTextBusy"
                       class="textarea asset-detail-textarea"
                       rows="6"
                       :placeholder="t('episode.asset.appearanceFieldPlaceholder')"
@@ -1199,6 +1229,7 @@
                     <span>{{ t('episode.asset.stylingField') }}</span>
                     <textarea
                       v-model="assetDetailDraft.styling"
+                      :disabled="assetTextBusy"
                       class="textarea asset-detail-textarea"
                       rows="6"
                       :placeholder="t('episode.asset.stylingFieldPlaceholder')"
@@ -1208,6 +1239,7 @@
                     <span>{{ t('episode.asset.sceneDescField') }}</span>
                     <textarea
                       v-model="assetDetailDraft.prompt"
+                      :disabled="assetTextBusy"
                       class="textarea asset-detail-textarea"
                       rows="5"
                       :placeholder="t('episode.asset.sceneDescPlaceholder')"
@@ -1217,6 +1249,7 @@
                     <span>{{ t('episode.asset.sceneLightField') }}</span>
                     <textarea
                       v-model="assetDetailDraft.lighting"
+                      :disabled="assetTextBusy"
                       class="textarea asset-detail-textarea"
                       rows="5"
                       :placeholder="t('episode.asset.sceneLightPlaceholder')"
@@ -1227,7 +1260,7 @@
               </section>
             </div>
 
-            <section class="asset-detail-prompt-panel">
+            <section v-if="assetGenerationMode === 'text'" class="asset-detail-prompt-panel">
               <div class="asset-detail-section-title">
                 <span>{{ assetDetail.type === 'character' ? t('episode.asset.finalPromptTurnaround') : assetDetail.type === 'scene' ? t('episode.asset.finalPromptFixed') : t('episode.asset.finalPromptWhiteBg') }}</span>
                 <div class="asset-detail-prompt-head-actions">
@@ -1254,6 +1287,7 @@
               </div>
               <textarea
                 :value="assetPromptDraft"
+                :disabled="assetTextBusy"
                 @input="onAssetPromptInput"
                 class="textarea asset-detail-prompt-textarea"
                 rows="5"
@@ -1280,6 +1314,7 @@
             </div>
             <div class="asset-detail-primary-actions">
               <button
+                v-if="assetGenerationMode === 'text'"
                 class="btn"
                 :disabled="isUploadingAsset(assetDetail.type, assetDetail.item.id)"
                 @click="uploadAssetImage(assetDetail.type, assetDetail.item.id)"
@@ -1288,33 +1323,13 @@
                 <svg v-else width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                 {{ t('episode.asset.uploadImage') }}
               </button>
-              <button
-                v-if="assetDetail.type === 'character'"
-                class="btn"
-                :disabled="isPendingCharImage(assetDetail.item.id)"
-                @click="genCharImg(assetDetail.item.id)"
-              >
-                {{ assetImageSrc(assetDetail.item) ? t('episode.asset.regenPortrait') : (isPendingCharImage(assetDetail.item.id) ? t('episode.asset.generating') : t('episode.asset.genPortrait')) }}
-              </button>
-              <button
-                v-else-if="assetDetail.type === 'scene'"
-                class="btn"
-                :disabled="isPendingSceneImage(assetDetail.item.id)"
-                @click="genSceneImg(assetDetail.item.id)"
-              >
-                {{ assetImageSrc(assetDetail.item) ? t('episode.asset.regenScene') : (isPendingSceneImage(assetDetail.item.id) ? t('episode.asset.generating') : t('episode.asset.genScene')) }}
-              </button>
-              <button
-                v-else-if="assetDetail.type === 'prop'"
-                class="btn"
-                :disabled="isPendingPropImage(assetDetail.item.id)"
-                @click="genPropImg(assetDetail.item.id)"
-              >
-                {{ assetImageSrc(assetDetail.item) ? t('episode.asset.regenProp') : (isPendingPropImage(assetDetail.item.id) ? t('episode.asset.generating') : t('episode.asset.genProp')) }}
-              </button>
-              <button class="btn btn-primary" :disabled="savingAssetDetail" @click="saveAssetDetail">
+              <button class="btn" :disabled="savingAssetDetail || assetReferenceUploading || isAssetImagePending(assetDetail.type, assetDetail.item.id)" @click="saveAssetDetail()">
                 <Loader2 v-if="savingAssetDetail" :size="12" class="animate-spin" />
                 {{ t('episode.asset.saveChanges') }}
+              </button>
+              <button class="btn btn-primary" :disabled="savingAssetDetail || assetReferenceUploading || isAssetImagePending(assetDetail.type, assetDetail.item.id)" @click="generateAssetDetail">
+                <Loader2 v-if="isAssetImagePending(assetDetail.type, assetDetail.item.id)" :size="12" class="animate-spin" />
+                {{ t('assetGeneration.saveAndGenerate') }}
               </button>
             </div>
           </footer>
@@ -1435,8 +1450,8 @@
           <div class="dialog-body batch-video-body">
             <div class="batch-video-row"><span>{{ t('episode.vid.confirmShots') }}</span><strong>{{ t('episode.vid.confirmShotsValue', { n: batchVideoConfirm.targets.length }) }}</strong></div>
             <div class="batch-video-row"><span>{{ t('episode.vid.confirmTotal') }}</span><strong>{{ t('episode.vid.confirmApprox', { n: batchVideoTotalDuration }) }}</strong></div>
-            <div class="batch-video-row"><span>{{ t('episode.vid.confirmModel') }}</span><strong>{{ effectiveVideoModelLabel || t('episode.vid.defaultModel') }}</strong></div>
-            <div class="batch-video-row"><span>{{ t('episode.vid.confirmResolution') }}</span><strong>{{ episodeResolutionLabel }}</strong></div>
+            <div class="batch-video-row"><span>{{ t('episode.vid.confirmModel') }}</span><strong :title="batchVideoModelLabels.join(' / ')">{{ batchVideoModelLabels.length === 1 ? batchVideoModelLabels[0] : t('episode.inspector.batchModels') }}</strong></div>
+            <div class="batch-video-row"><span>{{ t('episode.vid.confirmResolution') }}</span><strong>{{ batchVideoResolutionLabels.join(' / ') }}</strong></div>
             <p class="batch-video-note">{{ t('episode.vid.confirmNote') }}</p>
           </div>
           <footer class="dialog-foot">
@@ -1472,6 +1487,7 @@ import { useAgent } from '~/composables/useAgent'
 import { resolveTextModelSelection } from '~/utils/text-model-selection'
 import { toastError, mapError, MODERATION_RE } from '~/composables/useToast'
 import LocaleSwitcher from '~/components/LocaleSwitcher.vue'
+import { assetModelOptions, assetModelKey, assetModelPatch, resolveAssetModel, assetReferences } from '~/composables/useAssetGeneration'
 
 definePageMeta({ layout: 'studio' })
 const { open: openSettings, revision: settingsRevision } = useSettingsPanel()
@@ -1643,6 +1659,8 @@ const pendingVideoIds = ref([])
 const failedVideoMessages = ref({})
 // 任务列表面板：顶栏按钮触发的右侧抽屉,按集聚合 sys_task + video_merges
 const genTasks = ref([])
+const submittedImageTaskIds = reactive(new Set())
+const notifiedImageFailureIds = new Set()
 const genMerges = ref([])
 const taskDrawer = ref(false)
 let genTasksTimer = null
@@ -1680,6 +1698,19 @@ const assetDetailDraft = ref({ appearance: '', styling: '', prompt: '', lighting
 const assetPromptDraft = ref('')
 const assetPromptDirty = ref(false)
 const savingAssetDetail = ref(false)
+const assetTextBusy = computed(() => savingAssetDetail.value || (assetDetail.value.item && isGeneratingPrompt(assetDetail.value.type, assetDetail.value.item.id)))
+const assetGenerationMode = ref('text')
+const assetGenerationModels = ref({ text: '', reference: '' })
+const assetReferenceDraft = ref([])
+const assetEditDraft = ref('')
+const assetReferenceHistory = ref([])
+const assetReferenceUploading = ref(false)
+const assetDialogElement = ref(null)
+let assetDialogOpener = null
+const assetDetailModelOptions = computed(() => assetModelOptions(imageConfigs.value, assetGenerationMode.value))
+const assetSelectedModelUnavailable = computed(() => !!assetGenerationModels.value[assetGenerationMode.value]
+  && !assetDetailModelOptions.value.some(option => option.key === assetGenerationModels.value[assetGenerationMode.value]))
+let assetDetailRevision = 0
 
 function isPendingCharImage(id) {
   return pendingCharImageIds.value.includes(id) || hasActiveAssetImage('character', id)
@@ -1694,8 +1725,19 @@ function closeImageViewer() {
   imageViewer.value = { open: false, src: '', title: '' }
 }
 
-function openAssetDetail(type, item) {
+function openAssetDetail(type, item, mode = 'text') {
   if (!item) return
+  assetDialogOpener = document.activeElement
+  const revision = ++assetDetailRevision
+  assetGenerationMode.value = mode === 'reference' ? 'reference' : 'text'
+  assetGenerationModels.value = {
+    text: assetModelKey(item, 'text', assetModelOptions(imageConfigs.value, 'text')),
+    reference: assetModelKey(item, 'reference', assetModelOptions(imageConfigs.value, 'reference')),
+  }
+  assetReferenceDraft.value = assetReferences(item)
+  assetReferenceUploading.value = false
+  assetEditDraft.value = item.edit_prompt || item.editPrompt || ''
+  assetReferenceHistory.value = []
   assetDetail.value = { open: true, type, item }
   assetDetailDraft.value = {
     appearance: item.appearance || '',
@@ -1706,13 +1748,30 @@ function openAssetDetail(type, item) {
   }
   assetPromptDraft.value = item.final_prompt || item.finalPrompt || ''
   assetPromptDirty.value = false
+  nextTick(() => { if (assetDetailRevision === revision) assetDialogElement.value?.querySelector('button')?.focus() })
+  void taskAPI.list({ type: 'image', drama_id: dramaId, [`${type}_id`]: item.id }).then(result => {
+    if (assetDetailRevision !== revision) return
+    const tasks = Array.isArray(result) ? result : result?.items || []
+    assetReferenceHistory.value = [...new Set(tasks.filter(task => task.status === 'completed' && Number(task[`${type}_id`] ?? task[`${type}Id`]) === Number(item.id))
+      .map(task => task.local_path || task.localPath || task.image_url || task.result_url || task.resultUrl).filter(Boolean))]
+  }).catch(error => { if (assetDetailRevision === revision) toastError(error) })
 }
 
 function closeAssetDetail() {
+  assetDetailRevision++
   assetDetail.value = { open: false, type: '', item: null }
   assetDetailDraft.value = { appearance: '', styling: '', prompt: '', lighting: '', description: '' }
   assetPromptDraft.value = ''
   assetPromptDirty.value = false
+  if (assetDialogOpener?.isConnected) assetDialogOpener.focus()
+}
+
+function trapAssetDialogFocus(event) {
+  const nodes = [...(assetDialogElement.value?.querySelectorAll('button:not(:disabled), select:not(:disabled), input:not(:disabled), textarea:not(:disabled), [tabindex="0"]') || [])].filter(node => node.getClientRects().length)
+  const first = nodes[0], last = nodes[nodes.length - 1]
+  if (!first) return
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
 }
 
 // ─── 手动新增资产 ────────────────────────────────────────────
@@ -1844,13 +1903,17 @@ async function ensureAssetPrompt(type, id, force = false) {
 /** 弹窗内生成最终提示词（不生图）；已有最终提示词时重新生成（force） */
 async function genAssetFinalPrompt() {
   const detail = assetDetail.value
-  if (!detail.open || !detail.item?.id) return
+  if (!detail.open || !detail.item?.id || savingAssetDetail.value) return
+  const revision = assetDetailRevision
   const force = !!assetFinalPrompt.value
   try {
+    if (!await saveAssetDetail(true)) return
     const fp = await ensureAssetPrompt(detail.type, detail.item.id, force)
     if (!fp) throw new Error(t('episode.asset.promptGenFailedRetry'))
-    assetPromptDraft.value = fp
-    assetPromptDirty.value = false
+    if (revision === assetDetailRevision) {
+      assetPromptDraft.value = fp
+      assetPromptDirty.value = false
+    }
     toast.success(force ? t('episode.asset.promptRegenerated') : t('episode.asset.promptGenerated'))
   } catch (e) {
     toastError(e, { fallback: 'episode.asset.promptGenFailed' })
@@ -1868,14 +1931,18 @@ async function copyAssetFinalPrompt() {
   }
 }
 
-async function saveAssetDetail() {
+async function saveAssetDetail(silent = false) {
   const detail = assetDetail.value
-  if (!detail.open || !detail.item?.id) return
+  if (!detail.open || !detail.item?.id || savingAssetDetail.value || assetReferenceUploading.value) return false
+  const revision = assetDetailRevision
+  const mode = assetGenerationMode.value
   const item = detail.item
   // 只提交真正修改过的字段：无修改保存不应触发后端的提示词失效置空
   const payload = {}
-  let infoChanged = false
-  if (detail.type === 'character') {
+  if (mode === 'reference') {
+    payload.reference_images = [...assetReferenceDraft.value]
+    payload.edit_prompt = assetEditDraft.value.trim()
+  } else if (detail.type === 'character') {
     if (assetDetailDraft.value.appearance !== (item.appearance || '')) payload.appearance = assetDetailDraft.value.appearance
     if (assetDetailDraft.value.styling !== (item.styling || '')) payload.styling = assetDetailDraft.value.styling
   } else if (detail.type === 'scene') {
@@ -1884,33 +1951,44 @@ async function saveAssetDetail() {
   } else {
     if (assetDetailDraft.value.description !== (item.description || '')) payload.description = assetDetailDraft.value.description
   }
-  infoChanged = Object.keys(payload).length > 0
-  // 手动编辑过最终提示词才提交；空串视为清空
-  if (assetPromptDirty.value) payload.final_prompt = assetPromptDraft.value.trim() || ''
-  if (!infoChanged && !assetPromptDirty.value) {
-    toast.info(t('episode.asset.noChanges'))
-    return
-  }
+  // 参考编辑只保存自己的描述与引用，不触碰文生图草稿。
+  if (mode === 'text' && assetPromptDirty.value) payload.final_prompt = assetPromptDraft.value.trim() || ''
   savingAssetDetail.value = true
   try {
+    Object.assign(payload, assetModelPatch(assetGenerationModels.value[mode], mode, assetModelOptions(imageConfigs.value, mode)))
     if (detail.type === 'character') await characterAPI.update(item.id, payload)
     else if (detail.type === 'scene') await sceneAPI.update(item.id, payload)
     else await propAPI.update(item.id, payload)
-    // 本地同步：手动编辑的提示词以草稿为准；仅信息字段变更时提示词已被后端置空
-    const { final_prompt, ...infoPatch } = payload
-    const promptValue = assetPromptDirty.value ? (payload.final_prompt || null) : (infoChanged ? null : (item.final_prompt || item.finalPrompt || null))
-    Object.assign(item, infoPatch, { final_prompt: promptValue, finalPrompt: promptValue })
+    const patch = { ...payload }
+    if ('final_prompt' in payload) patch.finalPrompt = payload.final_prompt
+    Object.assign(item, patch)
     const list = detail.type === 'character' ? chars.value : detail.type === 'scene' ? scenes.value : propItems.value
     const target = list.find(x => x.id === item.id)
-    if (target) Object.assign(target, infoPatch, { final_prompt: promptValue, finalPrompt: promptValue })
-    if (assetPromptDirty.value) assetPromptDraft.value = payload.final_prompt || ''
-    assetPromptDirty.value = false
-    toast.success(t('episode.asset.saved'))
+    if (target) Object.assign(target, patch)
+    if (revision === assetDetailRevision && mode === 'text') {
+      if ('final_prompt' in payload) assetPromptDraft.value = payload.final_prompt
+      assetPromptDirty.value = false
+    }
+    if (!silent) toast.success(t('episode.asset.saved'))
+    return true
   } catch (e) {
     toastError(e, { fallback: 'episode.asset.saveFailed' })
+    return false
   } finally {
     savingAssetDetail.value = false
   }
+}
+
+async function generateAssetDetail() {
+  const { type, item } = assetDetail.value
+  if (!item || savingAssetDetail.value || assetReferenceUploading.value || isAssetImagePending(type, item.id)) return
+  const mode = assetGenerationMode.value
+  const options = mode === 'reference'
+    ? { generation_mode: mode, reference_images: [...assetReferenceDraft.value], edit_prompt: assetEditDraft.value.trim() }
+    : { generation_mode: 'text' }
+  if (mode === 'reference' && !options.reference_images.length) { toast.error(t('assetGeneration.referenceRequired')); return }
+  if (mode === 'reference' && !options.edit_prompt) { toast.error(t('assetGeneration.editRequired')); return }
+  if (await saveAssetDetail(true)) await submitAssetImage(type, item.id, false, options)
 }
 
 function assetImageSrc(item) {
@@ -2224,8 +2302,8 @@ const selectedVideoConfig = computed(() => {
 })
 const isWan3Video = computed(() => selectedVideoConfig.value?.provider === 'aliyun'
   || bareModelName(videoModel.value).startsWith('wan3.0-video'))
-const comfyVideoSizeLabel = computed(() => {
-  const settings = selectedVideoConfig.value?.comfyui
+function videoSizeForConfig(config) {
+  const settings = config?.comfyui
   const [rw, rh] = dramaAspectRatio.value.split(':').map(Number)
   const sourcePixels = settings?.workflow ? 213000 : 0.6 * 1048576
   if (!(rw > 0 && rh > 0)) return t('settings.comfyui.workflowSize', { mp: (sourcePixels / 1048576).toFixed(1) })
@@ -2234,10 +2312,15 @@ const comfyVideoSizeLabel = computed(() => {
   const width = Math.max(32, Math.round(rw * scale / 32) * 32)
   const height = Math.max(32, Math.round(rh * scale / 32) * 32)
   return `${width} × ${height} · ${dramaAspectRatio.value}`
-})
+}
+const comfyVideoSizeLabel = computed(() => videoSizeForConfig(selectedVideoConfig.value))
 
 // 参考图上限（Wan 3.0 官方 10 张，其他模型 9 张），绑定素材收集与 @名字 映射统一读取
-const refImageLimit = computed(() => selectedVideoConfig.value?.provider === 'comfyui' ? selectedVideoConfig.value.comfyui?.maxReferences ?? 6 : isWan3Video.value ? 10 : 9)
+function shotReferenceLimit(sb) {
+  const config = shotVideoConfig(sb)
+  return config?.provider === 'comfyui' ? config.comfyui?.maxReferences ?? 6
+    : config?.provider === 'aliyun' || shotVideoSelection(sb).model?.startsWith('wan3.0-video') ? 10 : 9
+}
 
 // 本次生成的生效配置（模型/分辨率/时长），用于右侧小结与批量确认弹窗
 const effectiveVideoModelLabel = computed(() => {
@@ -2251,11 +2334,64 @@ const episodeResolutionLabel = computed(() =>
 const episodeResolutionShort = computed(() =>
   selectedVideoConfig.value?.provider === 'comfyui' ? comfyVideoSizeLabel.value : RESOLUTION_DISPLAY[resolutionProvider.value][episodeResolution.value] || episodeResolution.value)
 const effectiveVideoDuration = computed(() => Number(selectedSb.value?.duration || 10))
+// 分镜覆盖单独持久化；顶栏仍控制没有覆盖的镜头。配置 ID 是键的一部分，避免同名模型串配置。
+const shotVideoModelOptions = computed(() => [...videoConfigs.value]
+  .filter(config => config.is_active)
+  .sort((a, b) => Number(b.id === lockedVideoConfigId.value) - Number(a.id === lockedVideoConfigId.value) || (b.priority || 0) - (a.priority || 0))
+  .flatMap(config => configModels(config).map(model => ({ key: `${config.id}/${model}`, model, configId: config.id, configName: config.name || config.provider, config }))))
+const savingShotVideoIds = ref([])
+function shotVideoModelKey(sb) {
+  const model = sb?.video_model ?? sb?.videoModel
+  const configId = sb?.video_config_id ?? sb?.videoConfigId
+  return model || configId != null ? `${configId ?? ''}/${model || ''}` : ''
+}
+function shotVideoSelection(sb) {
+  if (shotVideoModelKey(sb)) return { model: sb.video_model ?? sb.videoModel ?? undefined, configId: sb.video_config_id ?? sb.videoConfigId ?? undefined }
+  return { model: bareModelName(videoModel.value) || undefined, configId: ownerConfigId(videoModelOptions.value, videoModel.value) }
+}
+function shotVideoConfig(sb) {
+  if (!shotVideoModelKey(sb)) return selectedVideoConfig.value
+  const selection = shotVideoSelection(sb)
+  return videoConfigs.value.find(config => config.is_active && config.id === selection.configId && configModels(config).includes(selection.model))
+}
+function shotVideoModelLabel(sb) {
+  return modelLabel(shotVideoSelection(sb).model || configModels(shotVideoConfig(sb))[0] || '') || t('episode.vid.defaultModel')
+}
+function videoResolutionForConfig(config) {
+  if (config?.provider === 'comfyui') return videoSizeForConfig(config)
+  const display = RESOLUTION_DISPLAY[config?.provider] || RESOLUTION_DISPLAY.volcengine
+  const resolution = episode.value?.resolution || '720p'
+  return display[resolution] || resolution
+}
+function shotVideoResolutionLabel(sb) { return videoResolutionForConfig(shotVideoConfig(sb)) }
+async function changeShotVideoModel(sb, event) {
+  if (!sb || savingShotVideoIds.value.includes(sb.id)) return
+  const key = event.target.value
+  const option = shotVideoModelOptions.value.find(option => option.key === key)
+  if (key && !option) { event.target.value = shotVideoModelKey(sb); return }
+  const id = sb.id
+  const payload = { video_model: option?.model ?? null, video_config_id: option?.configId ?? null }
+  savingShotVideoIds.value.push(id)
+  try {
+    await storyboardAPI.update(id, payload)
+    // 轮询或切换镜头可替换对象，只同步这次保存的镜头；不提交或清空任何编辑内容。
+    for (const target of [sb, ...sbs.value.filter(item => item.id === id), selectedSb.value?.id === id ? selectedSb.value : null]) {
+      if (target) Object.assign(target, payload, { videoModel: payload.video_model, videoConfigId: payload.video_config_id })
+    }
+  } catch (error) {
+    if (selectedSb.value?.id === id) event.target.value = shotVideoModelKey(sb)
+    toastError(error)
+  } finally {
+    savingShotVideoIds.value = savingShotVideoIds.value.filter(item => item !== id)
+  }
+}
+const batchVideoModelLabels = computed(() => [...new Set(batchVideoConfirm.value.targets.map(shotVideoModelLabel))])
+const batchVideoResolutionLabels = computed(() => [...new Set(batchVideoConfirm.value.targets.map(shotVideoResolutionLabel))])
 const batchVideoTotalDuration = computed(() =>
   batchVideoConfirm.value.targets.reduce((sum, sb) => sum + (Number(sb.duration) || 5), 0))
 
 function openBatchVideoConfirm(pool) {
-  const targets = pool.filter(s => !isPendingVideo(s.id))
+  const targets = pool.filter(s => !isPendingVideo(s.id) && !savingShotVideoIds.value.includes(s.id))
   if (!targets.length) { toast.info(t('episode.vid.noneToGenerate')); return }
   batchVideoConfirm.value = { open: true, targets }
 }
@@ -2312,7 +2448,12 @@ async function loadGenTasks() {
     const previousTasks = new Map(genTasks.value.map(task => [task.id, task.status]))
     const nextTasks = data?.tasks || []
     for (const task of nextTasks) {
-      if (task.type === 'image' && task.status === 'failed' && previousTasks.has(task.id) && previousTasks.get(task.id) !== 'failed') toastError(task.error_msg)
+      if (task.type === 'image' && task.status === 'failed' && !notifiedImageFailureIds.has(task.id)
+        && (submittedImageTaskIds.has(task.id) || (previousTasks.has(task.id) && previousTasks.get(task.id) !== 'failed'))) {
+        notifiedImageFailureIds.add(task.id)
+        toastError(task.error_msg || task.errorMsg)
+      }
+      if (task.type === 'image' && ['completed', 'failed'].includes(task.status)) submittedImageTaskIds.delete(task.id)
     }
     genTasks.value = nextTasks
     genMerges.value = data?.merges || []
@@ -2454,7 +2595,7 @@ function genTaskDuration(row) {
 
 // 后端任务在刷新/重启后仍可能运行，工作台持续同步，不依赖抽屉是否打开。
 let refreshingTasks = false
-watch(genTaskActiveCount, active => {
+watch(() => genTaskActiveCount.value + submittedImageTaskIds.size, active => {
   stopGenTasksPolling()
   if (active > 0) genTasksTimer = setInterval(async () => {
     if (refreshingTasks) return
@@ -2739,6 +2880,17 @@ async function refresh() {
       try { chars.value = await episodeAPI.characters(ep.id) } catch { chars.value = [] }
       try { scenes.value = await episodeAPI.scenes(ep.id) } catch { scenes.value = [] }
       try { propItems.value = await episodeAPI.props(ep.id) } catch { propItems.value = [] }
+      if (assetDetail.value.open) {
+        const { type, item } = assetDetail.value
+        const list = type === 'character' ? chars.value : type === 'scene' ? scenes.value : propItems.value
+        const latest = list.find(asset => asset.id === item?.id)
+        if (latest) {
+          // 刷新生成结果，不覆盖弹框里尚未保存的文字或引用草稿。
+          for (const key of ['image_url', 'imageUrl', 'local_path', 'localPath']) {
+            if (key in latest) item[key] = latest[key]
+          }
+        }
+      }
       sbs.value = await episodeAPI.storyboards(ep.id)
       selectedVideoSbIds.value = selectedVideoSbIds.value.filter(id => sbs.value.some(sb => sb.id === id))
       if (sbs.value.length) {
@@ -2920,6 +3072,7 @@ function doBreakdown() {
     : '（当前集还没有道具）'
   runAgent('storyboard_breaker', `请基于当前集剧本拆分分镜，并为每个分镜段落同时生成 video_prompt（视频生成提示词）。
 本次视频模型：${effectiveVideoModelLabel.value}，请按该模型的特性与时长限制生成 video_prompt。
+请先调用 read_storyboard_context 读取当前集上下文，然后直接拆分并分批调用 save_storyboards 保存。保留剧情因果和关键台词，合并重复反应与过渡，让节奏紧凑自然；段长按动作和表演需要安排，不机械填满固定时长。每段同时写好 description 和 video_prompt，时间安排贴合该段 duration。
 
 当前集已有角色：${charList}
 当前集已有场景：${sceneList}
@@ -2943,8 +3096,8 @@ async function onBreakdownDone() {
 async function genVideoPrompt(sb) {
   if (!sb || videoPromptGeneratingIds.value.includes(sb.id)) return
   const idx = sbs.value.indexOf(sb) + 1
-  const cfg = selectedVideoConfig.value
-  const label = cfg ? `${cfg.name} (${cfg.provider})` : '默认'
+  const cfg = shotVideoConfig(sb)
+  const label = `${shotVideoModelLabel(sb)}${cfg ? ` · ${cfg.name} (${cfg.provider})` : ''}`
   const charNames = getStoryboardCharacters(sb).map(c => c.name).join('、') || '无'
   const propNames = getStoryboardProps(sb).map(p => p.name).join('、') || '无'
   videoPromptGeneratingIds.value.push(sb.id)
@@ -2954,7 +3107,7 @@ async function genVideoPrompt(sb) {
 
 该分镜信息:时长 ${sb.duration || 10}s;场景:${getSceneName(sb) || '未绑定'};角色:${charNames};道具:${propNames}。
 
-请先调用 read_storyboard_context 获取该分镜的画面描述(含【镜头N】子镜头与台词/旁白)、氛围及时长,据此生成 video_prompt(按 3 秒分段换行、用 @角色名/@场景名/@道具名 引用参考素材；段落内允许多镜头切镜,但不跨场景,切镜点对齐 description 的【镜头N】结构),然后调用 update_storyboard 保存到分镜 ID:${sb.id}。只更新 video_prompt 字段,不要改动其他字段,不要重新拆分整集。`,
+请先调用 read_storyboard_context 获取该分镜的画面描述(含【镜头N】子镜头与台词/旁白)、氛围及时长，据此生成 video_prompt。第一行列出出场人物和场景，用 @角色名/@场景名/@道具名 引用参考素材；按动作与台词安排时间区间，贴合已有 duration，切镜点对应 description 的【镜头N】结构，不跨场景、不新增台词。然后调用 update_storyboard 保存到分镜 ID:${sb.id}，参数只传 storyboard_id 和 video_prompt 两个键；保留已有 duration 和其他字段，不要重新拆分整集。`,
       drama_id: dramaId,
       episode_id: epId.value,
       model: chatModelOverride() || undefined,
@@ -3006,20 +3159,26 @@ function assetImageBatchTargets(type) {
   const { items, pending } = assetImageContext(type)
   return items.filter(item => !(item.image_url || item.imageUrl) && !pending.value.includes(item.id) && !hasActiveAssetImage(type, item.id))
 }
-async function submitAssetImage(type, id, silent = false) {
+async function submitAssetImage(type, id, silent = false, options = { generation_mode: 'text' }) {
   const { items, pending, api, suffix } = assetImageContext(type)
   if (pending.value.includes(id) || hasActiveAssetImage(type, id)) return
   pending.value.push(id) // 必须在第一个 await 前加锁，连点和批量/单个交叉点击都不能穿透。
   try {
     const item = items.find(item => item.id === id)
-    if (item && !(item.final_prompt || item.finalPrompt)) {
+    const mode = options.generation_mode === 'reference' ? 'reference' : 'text'
+    const inherited = imageModelOptions.value.find(option => option.key === imageModel.value) || (!imageModel.value ? imageModelOptions.value[0] : null)
+    const selection = resolveAssetModel(item, mode, assetModelOptions(imageConfigs.value, mode), inherited ? `${inherited.configId}/${inherited.model}` : '')
+    if (mode === 'text' && item && !(item.final_prompt || item.finalPrompt)) {
       if (!silent) toast.info(t('episode.asset.generatingPrompt'))
       try { await ensureAssetPrompt(type, id) } catch {} // 保留后端提示词兜底。
     }
-    await api.generateImage(id, epId.value, bareModelName(imageModel.value) || undefined, ownerConfigId(imageModelOptions.value, imageModel.value), chatModelOverride(), chatConfigId())
+    const generation = await api.generateImage(id, epId.value, selection.model, selection.configId, chatModelOverride(), chatConfigId(), options)
+    if (generation?.image_generation_id) submittedImageTaskIds.add(generation.image_generation_id)
     if (!silent) toast.success(t(`episode.image.generating${suffix}`))
     await refresh()
-    watchAsyncResult(() => !hasActiveAssetImage(type, id), 36)
+    watchAsyncResult(() => generation?.image_generation_id
+      ? !submittedImageTaskIds.has(generation.image_generation_id)
+      : !hasActiveAssetImage(type, id), 36)
   } catch (e) {
     toastError(e)
   } finally {
@@ -3063,6 +3222,16 @@ const playerVideoUrl = computed(() => {
   return videoSourceUrl(pendingResult || getVideoUrl(selectedSb.value))
 })
 const playerIsRemote = computed(() => /^https?:\/\//i.test(playerVideoUrl.value))
+const playerPosterUrl = computed(() => {
+  const source = playerVideoUrl.value
+  if (!source) return ''
+  const currentTask = latestVideoTask(selectedSb.value?.id)
+  const matchingTask = [...sbVideoHistory.value, currentTask]
+    .find(task => task && videoSourceUrl(taskVideoPath(task)) === source)
+  return matchingTask
+    ? videoPosterSrc('tasks', matchingTask.id, source)
+    : videoPosterSrc('storyboards', selectedSb.value?.id, source)
+})
 watch(playerVideoUrl, () => { playerLoadFailed.value = false })
 
 // 注意:/tasks 返回原始行(camelCase),/episodes/:id/generation-tasks 返回 snake_case,两种命名都兼容
@@ -3117,8 +3286,9 @@ function formatHistoryTime(iso) {
 
 function getShotReferenceImages(sb) {
   const refs = []
+  const limit = shotReferenceLimit(sb)
   const pushRef = (value) => {
-    if (!value || refs.includes(value) || refs.length >= refImageLimit.value) return
+    if (!value || refs.includes(value) || refs.length >= limit) return
     refs.push(value)
   }
   const scene = getStoryboardScene(sb)
@@ -3247,8 +3417,9 @@ const mentionOptions = computed(() => {
 function getShotReferenceIndexMap(sb) {
   const ordered = []
   const seen = new Set()
+  const limit = shotReferenceLimit(sb)
   const push = (name, url) => {
-    if (!url || seen.has(url) || ordered.length >= refImageLimit.value) return
+    if (!url || seen.has(url) || ordered.length >= limit) return
     seen.add(url)
     ordered.push({ name, imageUrl: url })
   }
@@ -3334,10 +3505,16 @@ function uploadAssetImage(kind, id) {
 }
 
 async function genVid(sb, opts = {}) {
+  if (savingShotVideoIds.value.includes(sb.id)) return
   if (!opts.forceNew && canRecoverVideo(sb.id)) return recoverVideo(sb)
   const latest = latestVideoTask(sb.id)
   const forceNew = opts.forceNew || latest?.status === 'failed'
   if (forceNew && !window.confirm(t('episode.recovery.confirmNew'))) return
+  if (shotVideoModelKey(sb) && !shotVideoConfig(sb)) {
+    toast.error(t('episode.inspector.modelUnavailable'))
+    return
+  }
+  const selection = shotVideoSelection(sb)
   const referenceImages = getShotReferenceImages(sb)
   // 参考素材完全来自分镜绑定的角色/场景/道具图片
   const params = {
@@ -3347,8 +3524,8 @@ async function genVid(sb, opts = {}) {
     duration: Number(sb.duration || 10),
     aspect_ratio: dramaAspectRatio.value,
     generate_audio: true,
-    model: bareModelName(videoModel.value) || undefined,
-    config_id: ownerConfigId(videoModelOptions.value, videoModel.value),
+    model: selection.model,
+    config_id: selection.configId,
     reference_image_urls: referenceImages,
   }
   if (!params.prompt && !referenceImages.length) {
@@ -3460,6 +3637,18 @@ onMounted(() => setTimeout(() => autoTour('episode', EPISODE_TOUR, t), 900))
 </script>
 
 <style scoped>
+.asset-generation-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; }
+.asset-generation-tabs { display: flex; gap: 4px; padding: 4px; border-radius: 8px; background: var(--bg-input); }
+.asset-generation-tabs button { border: 1px solid transparent; padding: 8px 12px; border-radius: 6px; background: transparent; color: var(--text-2); cursor: pointer; }
+.asset-generation-tabs button[aria-selected="true"] { border-color: var(--border-strong); color: var(--accent); background: var(--accent-bg); }
+.asset-generation-tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.asset-generation-tabs button:disabled { opacity: .5; cursor: wait; }
+.asset-generation-model { display: flex; gap: 8px; align-items: center; min-width: 0; max-width: 100%; font-size: 12px; }
+.asset-generation-model select { min-width: 0; max-width: 340px; }
+.asset-reference-panel { display: flex; flex-direction: column; gap: 20px; }
+.asset-card-actions { display: flex; flex: none; align-items: center; gap: 6px; flex-wrap: nowrap; min-width: 0; }
+.asset-card-actions > :deep(.asset-generation-actions), .asset-foot > :deep(.asset-generation-actions) { flex: none; }
+.asset-upload-button { flex: none; margin-left: auto; white-space: nowrap; }
 /* ===== Studio Layout ===== */
 .studio {
   display: flex;
@@ -4045,9 +4234,9 @@ onMounted(() => setTimeout(() => autoTour('episode', EPISODE_TOUR, t), 900))
   flex-direction: column;
   gap: 5px;
 }
-/* 嵌入中栏时：不自带内边距；高度封顶内部滚动，避免把下方提示词顶出首屏 */
-.storyboard-ref-list.is-embedded { overflow: visible; padding: 0; }
-.video-main-grid .storyboard-ref-list.is-embedded { max-height: 300px; overflow-y: auto; }
+/* 参考素材独占一个 tab，按内容展开；超过中栏可用高度时由 video-main-scroll 统一滚动。 */
+.storyboard-ref-list.is-embedded { max-height: none; overflow: visible; padding: 0; flex: none; }
+.video-main-col[data-editor-tab="reference"] .video-main-grid { flex: none; }
 /* 视频列表选择模式快捷操作：复用分段芯片样式，去掉顶部虚线分隔 */
 .video-quick-actions { margin: 0 12px 10px; padding-top: 0; border-top: none; }
 .storyboard-ref-group {
@@ -4381,10 +4570,10 @@ onMounted(() => setTimeout(() => autoTour('episode', EPISODE_TOUR, t), 900))
   font-size: 12px;
   text-align: center;
 }
-.asset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; align-items: stretch; }
+.asset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr)); gap: 12px; align-items: stretch; }
 .character-asset-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(230px, 260px));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
   justify-content: start;
   gap: 10px;
 }
@@ -4455,7 +4644,8 @@ onMounted(() => setTimeout(() => autoTour('episode', EPISODE_TOUR, t), 900))
 }
 .character-asset-head {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
   justify-content: space-between;
   gap: 8px;
   min-width: 0;
@@ -4523,7 +4713,8 @@ onMounted(() => setTimeout(() => autoTour('episode', EPISODE_TOUR, t), 900))
 .character-visual-summary {
   max-width: 100%;
   display: flex;
-  gap: 8px;
+  flex-direction: column;
+  gap: 2px;
   overflow: hidden;
   color: var(--text-3);
   font-size: 10.5px;
@@ -4594,7 +4785,9 @@ onMounted(() => setTimeout(() => autoTour('episode', EPISODE_TOUR, t), 900))
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.asset-foot { display: flex; align-items: center; gap: 4px; padding: 7px 11px; border-top: 1px solid var(--border); }
+.asset-foot { display: flex; align-items: center; flex-wrap: nowrap; gap: 6px; padding: 7px 11px; border-top: 1px solid var(--border); }
+.asset-card > .asset-final { margin: 0 11px 9px; padding-top: 7px; border-top: 1px solid var(--border); }
+[data-asset-view="list"] .character-visual-summary { flex-direction: row; gap: 8px; }
 
 /* Frame grid */
 .frame-grid { display: flex; flex-direction: column; gap: 8px; }
@@ -4783,7 +4976,7 @@ onMounted(() => setTimeout(() => autoTour('episode', EPISODE_TOUR, t), 900))
   transition: border-color 0.16s var(--ease-out), box-shadow 0.16s var(--ease-out);
 }
 .video-history-item:hover { border-color: var(--border-strong); }
-.video-history-item video {
+.video-history-item img {
   width: 100%;
   height: 100%;
   object-fit: cover;
@@ -5009,6 +5202,21 @@ button.video-task-metric.on { box-shadow: 0 0 0 2px var(--accent); }
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.video-inspector-model { display: block; min-width: 0; }
+.video-inspector-model select {
+  width: 100%;
+  min-height: 32px;
+  padding: 5px 8px;
+  border: 1px solid var(--accent-glow);
+  border-radius: var(--radius);
+  background: var(--accent-bg);
+  color: var(--accent-text);
+  font: 11px var(--font-body);
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.video-inspector-model select:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+.video-inspector-model select:disabled { opacity: .6; cursor: wait; }
 /* 生成参数：强调卡片，时长是当前分镜生成的核心参数 */
 .video-params-card {
   padding: 7px 10px;
@@ -5184,6 +5392,14 @@ button.video-task-metric.on { box-shadow: 0 0 0 2px var(--accent); }
 .video-task-inspector .video-task-player,
 .video-task-inspector .video-player-history {
   flex: none;
+}
+.video-inspector-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+@media (max-width: 1150px) {
+  .video-inspector-scroll { flex: none; overflow: visible; }
 }
 .video-inspector-head {
   min-height: 56px;

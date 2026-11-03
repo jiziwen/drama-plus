@@ -21,7 +21,7 @@ test('prompt generator can only update Chinese video_prompt and preserves bindin
   assert.equal(row.duration, 5)
   assert.equal(row.description, '保持原描述')
   assert.match(row.videoPrompt!, /茶壶/)
-  await assert.rejects(invoke({ storyboard_id: board.id, video_prompt: 'A red teapot on a table.' }, { requestContext }), /简体中文/)
+  assert.match((await invoke({ storyboard_id: board.id, video_prompt: 'A red teapot on a table.' }, { requestContext })).error, /简体中文/)
   const forbidden = await invoke({ storyboard_id: board.id, video_prompt: '中文提示词' }, { requestContext: buildAgentRequestContext({ episodeId: 2, dramaId: 1 }) })
   assert.match(forbidden.error, /不属于当前集/)
 })

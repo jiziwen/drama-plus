@@ -1,11 +1,23 @@
 import { Hono } from 'hono'
-import { eq } from 'drizzle-orm'
+import { and, desc, eq } from 'drizzle-orm'
 import { db, getInsertId, schema } from '../db/index.js'
 import { success, created, now, badRequest } from '../utils/response.js'
 import { toSnakeCase } from '../utils/transform.js'
+import { mediaSelectionPatch } from '../services/media-selection.js'
+import { videoPosterResponse } from '../services/video-poster-response.js'
 import { logTaskPayload, logTaskStart, logTaskSuccess } from '../utils/task-logger.js'
 
 const app = new Hono()
+
+app.get('/:id/poster', async c => {
+  const id = Number(c.req.param('id'))
+  const [shot] = await db.select().from(schema.storyboards).where(eq(schema.storyboards.id, id))
+  if (!shot || shot.deletedAt) return videoPosterResponse(c, [])
+  const history = await db.select().from(schema.sysTask).where(and(eq(schema.sysTask.storyboardId, id), eq(schema.sysTask.type, 'video'))).orderBy(desc(schema.sysTask.id))
+  const canonical = (s?: string | null) => s?.replace(/^\/(static\/)/, '$1')
+  const current = shot.videoUrl ? history.find(task => [task.localPath, task.resultUrl].some(url => canonical(url) === canonical(shot.videoUrl))) : history.find(task => task.status === 'completed')
+  return videoPosterResponse(c, [shot.videoUrl, current?.localPath, current?.resultUrl])
+})
 
 async function syncStoryboardCharacters(storyboardId: number, characterIds: number[]) {
   await db.delete(schema.storyboardCharacters)
@@ -138,6 +150,7 @@ app.put('/:id', async (c) => {
   }
 
   const updates: Record<string, any> = { updatedAt: now() }
+  try { Object.assign(updates, await mediaSelectionPatch(body, storyboard, 'video')) } catch (e: any) { return badRequest(c, e.message) }
   for (const [snakeKey, camelKey] of Object.entries(fieldMap)) {
     if (snakeKey in body) updates[camelKey] = body[snakeKey]
   }

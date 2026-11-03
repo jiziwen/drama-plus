@@ -54,7 +54,7 @@ const ts = new Date().toISOString()
 const configIds: Record<string, number> = {}
 for (const type of ['image', 'video']) {
   const row = db.insert(schema.aiServiceConfigs).values({ serviceType: type, provider: 'comfyui', name: type, baseUrl: base, apiKey: 'local-key',
-    model: JSON.stringify([type === 'image' ? 'wf-image' : 'wf-minimax-h3']), settings: '{"comfyui":{"timeoutMinutes":1}}', createdAt: ts, updatedAt: ts }).returning().get()
+    model: JSON.stringify(type === 'image' ? ['wf-image', 'wf-qwen-image'] : ['wf-minimax-h3']), settings: '{"comfyui":{"timeoutMinutes":1}}', createdAt: ts, updatedAt: ts }).returning().get()
   configIds[type] = row.id
 }
 const row = (id: number) => db.select().from(schema.sysTask).where(eq(schema.sysTask.id, id)).get()!
@@ -99,16 +99,17 @@ test('persisted image and video IDs resume without resubmitting a workflow', asy
   assert.equal(submits, before)
 })
 
-test('explicit three-view mode uses the character image as its original LoadImage input', async () => {
+test('three-view mode requires explicit reference input and never implicitly uses the current image', async () => {
   const char = db.insert(schema.characters).values({ dramaId: 1, name: '三视图参考', imageUrl: `data:image/png;base64,${png.toString('base64')}`, createdAt: ts, updatedAt: ts }).returning().get()
   const before = uploads
-  const id = await generateImage({ prompt: '中文三视图', characterId: char.id, model: 'wf-qwen-image', configId: configIds.image })
+  await assert.rejects(generateImage({ prompt: '中文三视图', characterId: char.id, model: 'wf-qwen-image', configId: configIds.image }), /参考图/)
+  const id = await generateImage({ prompt: '中文三视图', characterId: char.id, model: 'wf-qwen-image', referenceImages: [char.imageUrl!], configId: configIds.image })
   const task = await waitFor(id)
   assert.equal(uploads, before + 1)
   assert.equal(JSON.parse(task.params!).comfyui.outputNode, '212')
   assert.equal(JSON.parse(task.params!).comfyui.width, 1920)
   const missing = db.insert(schema.characters).values({ dramaId: 1, name: '缺少参考', createdAt: ts, updatedAt: ts }).returning().get()
-  await assert.rejects(generateImage({ prompt: '', characterId: missing.id, model: 'wf-qwen-image', configId: configIds.image }), /先生成或上传/)
+  await assert.rejects(generateImage({ prompt: '', characterId: missing.id, model: 'wf-qwen-image', configId: configIds.image }), /参考图/)
 })
 
 test('five batch video requests preserve legacy English style and finish without a translation call', async () => {

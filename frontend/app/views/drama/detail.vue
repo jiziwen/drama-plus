@@ -242,15 +242,14 @@
                           <span>{{ t('episode.asset.styling') }}{{ m.styling || t('detail.assets.todoShort') }}</span>
                         </div>
                       </div>
-                      <button class="btn btn-sm character-gen-btn" type="button" :disabled="isPending(m)" @click.stop="generateMaterial(m)">
-                        <span v-if="isPending(m)" class="ring-spinner sm"></span>
-                        {{ matHasImage(m) ? t('episode.asset.regen') : (isPending(m) ? t('episode.asset.generating') : t('episode.asset.generate')) }}
-                      </button>
-                      <button class="btn btn-sm" type="button" :title="t('episode.asset.uploadCharImage')" :disabled="isUploading(m)" @click.stop="uploadMaterial(m)">
+                      <div class="asset-card-actions">
+                      <AssetGenerationActions :busy="isPending(m)" :has-image="matHasImage(m)" @detail="openEdit(m)" @text="generateMaterial(m)" @reference="openEdit(m, 'reference')" />
+                      <button class="btn btn-sm asset-upload-button" type="button" :title="t('episode.asset.uploadCharImage')" :disabled="isUploading(m)" @click.stop="uploadMaterial(m)">
                         <span v-if="isUploading(m)" class="ring-spinner sm"></span>
                         <svg v-else width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                         {{ t('episode.asset.upload') }}
                       </button>
+                      </div>
                     </div>
                   </div>
                   <div class="asset-final-prompt" :title="m.finalPrompt || ''">
@@ -296,22 +295,18 @@
                     </div>
                     <div class="asset-meta asset-desc dim" :title="m.description || ''">{{ m.description || t('episode.asset.noDescription') }}</div>
                   </template>
-                  <div class="asset-meta asset-final" :class="{ dim: !m.finalPrompt }" :title="m.finalPrompt || ''">
-                    <span class="afp-label">{{ g.kindKey === 'scene' ? t('episode.asset.finalPromptFixed') : t('episode.asset.finalPromptWhiteBg') }}</span>
-                    {{ m.finalPrompt || (g.kindKey === 'scene' ? t('episode.asset.finalPromptAutoFixed') : t('episode.asset.finalPromptAutoWhiteBg')) }}
-                  </div>
                 </div>
                 <div class="asset-foot">
-                  <span :class="['dot', matHasImage(m) && 'ok', isPending(m) && 'pending']" />
-                  <button class="btn btn-sm ml-auto" type="button" :title="t('episode.asset.uploadImage')" :disabled="isUploading(m)" @click.stop="uploadMaterial(m)">
+                  <AssetGenerationActions :busy="isPending(m)" :has-image="matHasImage(m)" @detail="openEdit(m)" @text="generateMaterial(m)" @reference="openEdit(m, 'reference')" />
+                  <button class="btn btn-sm asset-upload-button" type="button" :title="t('episode.asset.uploadImage')" :disabled="isUploading(m)" @click.stop="uploadMaterial(m)">
                     <span v-if="isUploading(m)" class="ring-spinner sm"></span>
                     <svg v-else width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                     {{ t('episode.asset.upload') }}
                   </button>
-                  <button class="btn btn-sm" type="button" :disabled="isPending(m)" @click.stop="generateMaterial(m)">
-                    <span v-if="isPending(m)" class="ring-spinner sm"></span>
-                    {{ matHasImage(m) ? t('episode.asset.regen') : (isPending(m) ? t('episode.asset.generating') : t('episode.asset.generate')) }}
-                  </button>
+                </div>
+                <div class="asset-meta asset-final" :class="{ dim: !m.finalPrompt }" :title="m.finalPrompt || ''">
+                  <span class="afp-label">{{ g.kindKey === 'scene' ? t('episode.asset.finalPromptFixed') : t('episode.asset.finalPromptWhiteBg') }}</span>
+                  {{ m.finalPrompt || (g.kindKey === 'scene' ? t('episode.asset.finalPromptAutoFixed') : t('episode.asset.finalPromptAutoWhiteBg')) }}
                 </div>
               </div>
             </div>
@@ -332,7 +327,7 @@
 
       <!-- 素材详情 / 编辑对话框（与工作台资产卡片同款布局） -->
       <div v-if="editDialog && editTarget" class="overlay mat-detail-overlay" @click.self="closeEdit">
-        <section class="dialog mat-detail-dialog" :aria-label="t('detail.mat.dialogAria')">
+        <section ref="editDialogElement" class="dialog mat-detail-dialog" role="dialog" aria-modal="true" tabindex="-1" :aria-label="t('detail.mat.dialogAria')" @keydown.esc.stop="closeEdit" @keydown.tab="trapEditFocus">
           <header class="dialog-head mat-detail-head">
             <div class="mat-detail-title-block">
               <span class="mat-detail-kicker">{{ editTarget.kindKey === 'character' ? t('episode.asset.typeChar') : editTarget.kindKey === 'scene' ? t('episode.asset.typeScene') : t('episode.asset.typeProp') }}</span>
@@ -342,14 +337,34 @@
               <span v-if="editTarget.kindKey === 'character'" class="tag">{{ editTarget.role || t('common.role') }}</span>
               <span v-else-if="editTarget.kindKey === 'prop'" class="tag">{{ editTarget.type || t('common.prop') }}</span>
               <span v-else class="tag">{{ editTarget.time || t('episode.asset.noTime') }}</span>
-              <button class="btn btn-ghost btn-icon" @click="closeEdit">
+              <button class="btn btn-ghost btn-icon" :aria-label="t('common.close')" @click="closeEdit">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
               </button>
             </div>
           </header>
 
           <div class="dialog-body mat-detail-body">
-            <div class="mat-detail-shell">
+            <div class="mat-generation-settings">
+              <div class="seg" :aria-label="t('assetGeneration.model')">
+                <button v-for="mode in ['text', 'reference']" :key="mode" type="button" class="seg-item" :class="{ on: editMode === mode }" :disabled="editSaving || referenceUploading" @click="editMode = mode">{{ t(mode === 'text' ? 'assetGeneration.textMode' : 'assetGeneration.referenceMode') }}</button>
+              </div>
+              <label class="mat-model-field">
+                <span>{{ t('assetGeneration.model') }}</span>
+                <select class="input" :value="editModelKey" :disabled="editSaving || isPending(editTarget)" @change="saveMaterialModel($event.target.value)">
+                  <option value="">{{ t('assetGeneration.followTop') }}</option>
+                  <option v-if="editModelKey && !editModelOptions.some(o => o.key === editModelKey)" :value="editModelKey" disabled>{{ t('assetGeneration.unavailableModel') }}</option>
+                  <option v-for="option in editModelOptions" :key="option.key" :value="option.key">{{ modelLabel(option.model) }} · {{ option.configName }}</option>
+                </select>
+              </label>
+            </div>
+            <section v-if="editMode === 'reference'" class="mat-reference-panel">
+              <AssetReferenceEditor :key="pendingKey(editTarget)" v-model="referenceDraft" :current-image="matImage(editTarget)" :history="referenceHistory" :disabled="editSaving || isPending(editTarget)" @error="message => toast.error(message)" @uploading="referenceUploading = $event" />
+              <label class="mat-detail-edit-field">
+                <span>{{ t('assetGeneration.editDescription') }}</span>
+                <textarea v-model="editDescription" class="textarea" rows="5" :placeholder="t('assetGeneration.editPlaceholder')" />
+              </label>
+            </section>
+            <div v-else class="mat-detail-shell">
               <!-- 左侧：视觉预览 -->
               <aside class="mat-detail-preview-panel">
                 <div class="mat-detail-section-title">
@@ -455,7 +470,7 @@
             </div>
 
             <!-- 最终提示词：可生成 / 重新生成 / 手动编辑 -->
-            <section class="mat-detail-prompt-panel">
+            <section v-if="editMode === 'text'" class="mat-detail-prompt-panel">
               <div class="mat-detail-section-title">
                 <span>{{ t('detail.mat.finalPromptLabel') }}</span>
                 <span class="dim">{{ t('detail.mat.finalPromptSub') }}</span>
@@ -484,6 +499,7 @@
             </div>
             <div class="mat-detail-primary-actions">
               <button
+                v-if="editMode === 'text'"
                 class="btn"
                 :disabled="isUploading(editTarget)"
                 @click="uploadMaterial(editTarget)"
@@ -494,12 +510,12 @@
               </button>
               <button
                 class="btn"
-                :disabled="isPending(editTarget)"
-                @click="generateMaterial(editTarget)"
+                :disabled="isPending(editTarget) || editSaving || referenceUploading"
+                @click="saveAndGenerateMaterial"
               >
-                {{ matHasImage(editTarget) ? t('episode.sb.regenPrompt') : (isPending(editTarget) ? t('episode.asset.generating') + '…' : t('detail.mat.genImage')) }}
+                {{ isPending(editTarget) ? t('episode.asset.generating') : t('assetGeneration.saveAndGenerate') }}
               </button>
-              <button class="btn btn-primary" :disabled="editSaving" @click="saveEdit">
+              <button class="btn btn-primary" :disabled="editSaving || referenceUploading" @click="saveEdit()">
                 {{ editSaving ? t('detail.mat.saving') : t('episode.asset.saveChanges') }}
               </button>
             </div>
@@ -565,7 +581,8 @@
 import { toast } from 'vue-sonner'
 import { toastError } from '~/composables/useToast'
 import { useI18n } from 'vue-i18n'
-import { dramaAPI, episodeAPI, characterAPI, sceneAPI, propAPI, uploadAPI } from '~/composables/useApi'
+import { dramaAPI, episodeAPI, characterAPI, sceneAPI, propAPI, uploadAPI, aiConfigAPI, taskAPI } from '~/composables/useApi'
+import { assetModelOptions, assetModelKey, assetModelPatch, resolveAssetModel, assetReferences } from '~/composables/useAssetGeneration'
 import BaseSelect from '~/components/BaseSelect.vue'
 
 const { t, locale } = useI18n()
@@ -725,9 +742,9 @@ const materials = computed(() => {
   const d = drama.value
   if (!d) return []
   const list = []
-  for (const c of d.characters || []) list.push({ ...c, kind: t('common.role'), kindKey: 'character' })
-  for (const s of d.scenes || []) list.push({ ...s, kind: t('common.scene'), kindKey: 'scene' })
-  for (const p of d.props || []) list.push({ ...p, kind: t('common.prop'), kindKey: 'prop' })
+  for (const c of d.characters || []) list.push({ ...c, finalPrompt: ('final_prompt' in c ? c.final_prompt : c.finalPrompt) || '', kind: t('common.role'), kindKey: 'character' })
+  for (const s of d.scenes || []) list.push({ ...s, finalPrompt: ('final_prompt' in s ? s.final_prompt : s.finalPrompt) || '', kind: t('common.scene'), kindKey: 'scene' })
+  for (const p of d.props || []) list.push({ ...p, finalPrompt: ('final_prompt' in p ? p.final_prompt : p.finalPrompt) || '', kind: t('common.prop'), kindKey: 'prop' })
   return list.sort((a, b) => (KIND_ORDER[a.kindKey] - KIND_ORDER[b.kindKey]) || (a.id - b.id))
 })
 const visibleAssets = computed(() =>
@@ -748,43 +765,53 @@ const assetGroups = computed(() => {
 
 function pendingKey(m) { return `${m.kindKey}:${m.id}` }
 function isPending(m) { return pendingMaterials.value.has(pendingKey(m)) }
+function materialAPI(m) { return m.kindKey === 'character' ? characterAPI : m.kindKey === 'scene' ? sceneAPI : propAPI }
+function inheritedImageKey() { try { return localStorage.getItem('huobao:model:image') || '' } catch { return '' } }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
 
-async function generateMaterial(m) {
+async function generateMaterial(m, options = { generation_mode: 'text' }) {
   const epId = drama.value?.episodes?.[0]?.id
   if (!epId) { toast.error(t('detail.mat.needEpisodeForImage')); return }
   const key = pendingKey(m)
   if (pendingMaterials.value.has(key)) return
   pendingMaterials.value = new Set(pendingMaterials.value).add(key)
   try {
-    if (m.kindKey === 'character') await characterAPI.generateImage(m.id, epId)
-    else if (m.kindKey === 'scene') await sceneAPI.generateImage(m.id, epId)
-    else await propAPI.generateImage(m.id, epId)
+    const mode = options.generation_mode || 'text'
+    const selected = resolveAssetModel(m, mode, assetModelOptions(imageConfigs.value, mode), inheritedImageKey())
+    const result = await materialAPI(m).generateImage(m.id, epId, selected.model, selected.configId, undefined, undefined, options)
     toast.success(t('detail.mat.generating', { kind: m.kind, name: m.name }))
-    pollMaterial(m)
+    void pollMaterial(m, result.image_generation_id)
   } catch (e) {
     pendingMaterials.value = new Set([...pendingMaterials.value].filter(k => k !== key))
     toastError(e)
   }
 }
 
-// 生图为异步任务：轮询重新加载 drama，直到该素材 imageUrl 出现
-async function pollMaterial(m) {
+// Track the submitted task, not an older asset image that remains visible during redraw.
+let materialPageAlive = true
+onBeforeUnmount(() => { materialPageAlive = false })
+async function pollMaterial(m, taskId) {
   const key = pendingKey(m)
-  for (let i = 0; i < 40; i++) {
+  for (let i = 0; i < 240 && materialPageAlive; i++) {
     await sleep(2500)
-    await load()
-    const d = drama.value
-    const list = m.kindKey === 'character' ? d?.characters : m.kindKey === 'scene' ? d?.scenes : d?.props
-    const rec = list?.find(x => x.id === m.id)
-    if (rec && matImage(rec)) {
-      pendingMaterials.value = new Set([...pendingMaterials.value].filter(k => k !== key))
-      return
-    }
+    if (!materialPageAlive) return
+    try {
+      const task = await taskAPI.get(taskId)
+      if (task.status === 'completed' || task.status === 'failed') {
+        pendingMaterials.value = new Set([...pendingMaterials.value].filter(k => k !== key))
+        if (task.status === 'failed') toastError(task.error_msg || task.errorMsg || t('assetGeneration.generateFailed'))
+        await load()
+        const updated = materials.value.find(item => pendingKey(item) === key)
+        if (updated && editTarget.value && pendingKey(editTarget.value) === key) {
+          const image = matImage(updated)
+          Object.assign(editTarget.value, { image_url: image, imageUrl: image, local_path: updated.local_path || updated.localPath, localPath: updated.local_path || updated.localPath })
+        }
+        return
+      }
+    } catch { /* Temporary polling failures do not release an in-flight task. */ }
   }
-  pendingMaterials.value = new Set([...pendingMaterials.value].filter(k => k !== key))
-  toast.info(t('detail.mat.genTimeout', { kind: m.kind, name: m.name }))
+  if (materialPageAlive) toast.info(t('detail.mat.genTimeout', { kind: m.kind, name: m.name }))
 }
 
 function switchToAssets() {
@@ -846,9 +873,61 @@ const editDialog = ref(false)
 const editSaving = ref(false)
 const editTarget = ref(null)
 const editDraft = reactive({})
+const editMode = ref('text')
+const referenceDraft = ref([])
+const referenceHistory = ref([])
+const referenceUploading = ref(false)
+const editDescription = ref('')
+const imageConfigs = ref([])
+const modelLabel = useModelLabel()
+const editModelOptions = computed(() => assetModelOptions(imageConfigs.value, editMode.value))
+const editModelKey = computed(() => assetModelKey(editTarget.value, editMode.value, editModelOptions.value))
+const editDialogElement = ref(null)
+let editReturnFocus = null
+let historyRequest = 0
 
-function openEdit(m) {
+function trapEditFocus(event) {
+  const elements = [...(editDialogElement.value?.querySelectorAll('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex="0"]') || [])].filter(el => el.getClientRects().length)
+  if (!elements.length) { event.preventDefault(); return }
+  const first = elements[0], last = elements.at(-1)
+  if (event.shiftKey && (document.activeElement === first || document.activeElement === editDialogElement.value)) { event.preventDefault(); last.focus() }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
+}
+
+function applyMaterialPatch(target, patch) {
+  const list = target.kindKey === 'character' ? drama.value?.characters : target.kindKey === 'scene' ? drama.value?.scenes : drama.value?.props
+  const item = list?.find(item => item.id === target.id)
+  if (item) Object.assign(item, patch)
+  Object.assign(target, patch)
+  if (editTarget.value && pendingKey(editTarget.value) === pendingKey(target)) Object.assign(editTarget.value, patch)
+}
+
+async function saveMaterialModel(key) {
+  const target = editTarget.value
+  if (!target || editSaving.value) return
+  editSaving.value = true
+  try {
+    const patch = assetModelPatch(key, editMode.value, editModelOptions.value)
+    await materialAPI(target).update(target.id, patch)
+    applyMaterialPatch(target, patch)
+  } catch (error) { toastError(error) }
+  finally { editSaving.value = false }
+}
+
+function openEdit(m, mode = 'text') {
+  if (!editDialog.value) editReturnFocus = document.activeElement
   editTarget.value = m
+  editMode.value = mode
+  referenceDraft.value = assetReferences(m)
+  editDescription.value = m.edit_prompt || m.editPrompt || ''
+  referenceHistory.value = []
+  referenceUploading.value = false
+  const request = ++historyRequest
+  taskAPI.list({ type: 'image', drama_id: dramaId, [`${m.kindKey}_id`]: m.id }).then(tasks => {
+    if (request !== historyRequest || !editDialog.value) return
+    const camelField = `${m.kindKey}Id`
+    referenceHistory.value = [...new Set((Array.isArray(tasks) ? tasks : []).filter(task => Number(task[`${m.kindKey}_id`] ?? task[camelField]) === m.id && task.status === 'completed').sort((a, b) => b.id - a.id).map(task => task.local_path || task.localPath || task.result_url || task.resultUrl).filter(Boolean))]
+  }).catch(error => { if (request === historyRequest && editDialog.value) toastError(error) })
   // 按类型初始化 draft
   Object.keys(editDraft).forEach(k => delete editDraft[k])
   if (m.kindKey === 'character') {
@@ -860,6 +939,7 @@ function openEdit(m) {
   }
   editDraft.finalPrompt = m.finalPrompt || m.final_prompt || ''
   editDialog.value = true
+  nextTick(() => editDialogElement.value?.focus())
 }
 
 // 生成/重新生成最终提示词（不生图）：调用各类型 generate-prompt 接口，结果写回 draft
@@ -869,6 +949,8 @@ async function generateFinalPrompt(m) {
   const epId = firstEpisodeId.value
   if (!epId) { toast.error(t('detail.mat.needEpisodeForPrompt')); return }
   finalPromptGen.value = true
+  const request = historyRequest
+  const promptAtRequest = editDraft.finalPrompt
   try {
     let res
     if (m.kindKey === 'character') res = await characterAPI.generatePrompt(m.id, epId, true)
@@ -876,8 +958,8 @@ async function generateFinalPrompt(m) {
     else res = await propAPI.generatePrompt(m.id, epId, true)
     const fp = res?.final_prompt || res?.finalPrompt
     if (!fp) throw new Error(t('episode.asset.promptGenFailedRetry'))
-    editTarget.value = { ...m, finalPrompt: fp }
-    editDraft.finalPrompt = fp
+    applyMaterialPatch(m, { finalPrompt: fp, final_prompt: fp })
+    if (request === historyRequest && editTarget.value === m && editDraft.finalPrompt === promptAtRequest) editDraft.finalPrompt = fp
     toast.success(t('episode.asset.promptGenerated'))
   } catch (e) {
     toastError(e)
@@ -887,37 +969,86 @@ async function generateFinalPrompt(m) {
 }
 
 function closeEdit() {
+  ++historyRequest
   editDialog.value = false
   editTarget.value = null
+  referenceUploading.value = false
+  nextTick(() => editReturnFocus?.isConnected && editReturnFocus.focus())
 }
 
-async function saveEdit() {
+async function saveEdit(close = true) {
   const target = editTarget.value
-  if (!target) return
+  if (!target || editSaving.value || referenceUploading.value) return false
+  if (editMode.value === 'reference') {
+    const patch = { reference_images: [...referenceDraft.value], edit_prompt: editDescription.value.trim() }
+    editSaving.value = true
+    try {
+      await materialAPI(target).update(target.id, patch)
+      applyMaterialPatch(target, patch)
+      toast.success(t('common.saved'))
+      if (close && editTarget.value === target && editDescription.value.trim() === patch.edit_prompt && JSON.stringify(referenceDraft.value) === JSON.stringify(patch.reference_images)) closeEdit()
+      return true
+    } catch (error) { toastError(error); return false }
+    finally { editSaving.value = false }
+  }
   // 必填校验
   if (target.kindKey === 'character' && !String(editDraft.name ?? '').trim()) { toast.error(t('episode.create.nameRequired')); return }
   if (target.kindKey === 'scene' && !String(editDraft.location ?? '').trim()) { toast.error(t('detail.mat.locationRequired')); return }
   if (target.kindKey === 'prop' && !String(editDraft.name ?? '').trim()) { toast.error(t('episode.create.nameRequired')); return }
   editSaving.value = true
+  const snapshot = { ...editDraft }
   try {
-    const fp = editDraft.finalPrompt || null
-    if (target.kindKey === 'character') await characterAPI.update(target.id, { name: editDraft.name, role: editDraft.role, appearance: editDraft.appearance, description: editDraft.description, styling: editDraft.styling, finalPrompt: fp })
-    else if (target.kindKey === 'scene') await sceneAPI.update(target.id, { location: editDraft.location, time: editDraft.time, prompt: editDraft.prompt, lighting: editDraft.lighting, finalPrompt: fp })
-    else await propAPI.update(target.id, { name: editDraft.name, type: editDraft.type, description: editDraft.description, finalPrompt: fp })
+    const fp = snapshot.finalPrompt || null
+    if (target.kindKey === 'character') await characterAPI.update(target.id, { name: snapshot.name, role: snapshot.role, appearance: snapshot.appearance, description: snapshot.description, styling: snapshot.styling, finalPrompt: fp })
+    else if (target.kindKey === 'scene') await sceneAPI.update(target.id, { location: snapshot.location, time: snapshot.time, prompt: snapshot.prompt, lighting: snapshot.lighting, finalPrompt: fp })
+    else await propAPI.update(target.id, { name: snapshot.name, type: snapshot.type, description: snapshot.description, finalPrompt: fp })
     toast.success(t('common.saved'))
-    closeEdit()
-    load()
+    const patch = { ...snapshot, final_prompt: fp, finalPrompt: fp }
+    applyMaterialPatch(target, patch)
+    if (close && editTarget.value === target && Object.keys(snapshot).every(key => snapshot[key] === editDraft[key])) closeEdit()
+    return true
   } catch (e) {
     toastError(e)
+    return false
   } finally {
     editSaving.value = false
   }
 }
 
-onMounted(load)
+async function saveAndGenerateMaterial() {
+  const target = editTarget.value
+  if (!target || editSaving.value || referenceUploading.value || isPending(target)) return
+  const mode = editMode.value
+  const options = mode === 'reference' ? { generation_mode: mode, reference_images: [...referenceDraft.value], edit_prompt: editDescription.value.trim() } : { generation_mode: mode }
+  if (mode === 'reference' && !options.reference_images.length) { toast.error(t('assetGeneration.referenceRequired')); return }
+  if (mode === 'reference' && !options.edit_prompt) { toast.error(t('assetGeneration.editRequired')); return }
+  if (await saveEdit(false)) await generateMaterial(target, options)
+}
+
+onMounted(async () => {
+  await load()
+  try {
+    const [configs, tasks] = await Promise.all([aiConfigAPI.list('image'), taskAPI.list({ type: 'image', drama_id: dramaId })])
+    imageConfigs.value = configs || []
+    for (const task of tasks || []) {
+      if (task.status !== 'processing') continue
+      const material = materials.value.find(item => Number(task[`${item.kindKey}_id`] ?? task[`${item.kindKey}Id`]) === item.id)
+      if (material) { pendingMaterials.value.add(pendingKey(material)); void pollMaterial(material, task.id) }
+    }
+  } catch (error) { toastError(error) }
+})
 </script>
 
 <style scoped>
+.mat-generation-settings { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
+.mat-model-field { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12px; }
+.mat-model-field select { max-width: 320px; min-width: 180px; }
+.mat-reference-panel { display: grid; gap: 20px; }
+.mat-reference-panel textarea { width: 100%; min-height: 130px; }
+.asset-card-actions { display: flex; flex: none; align-items: center; gap: 6px; flex-wrap: nowrap; min-width: 0; }
+.asset-card-actions > :deep(.asset-generation-actions), .asset-foot > :deep(.asset-generation-actions) { flex: none; }
+.asset-upload-button { flex: none; margin-left: auto; white-space: nowrap; }
+@media (max-width: 640px) { .mat-model-field { width: 100%; } .mat-model-field select { flex: 1; width: 0; } }
 .page {
   padding: 20px 28px 40px;
   overflow-y: auto;
@@ -1183,10 +1314,10 @@ onMounted(load)
 /* ===== 素材库 ===== */
 .asset-filter { margin-bottom: 16px; }
 
-.asset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; align-items: stretch; }
+.asset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr)); gap: 12px; align-items: stretch; }
 .character-asset-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(230px, 260px));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
   justify-content: start;
   gap: 10px;
 }
@@ -1288,7 +1419,8 @@ onMounted(load)
 }
 .character-asset-head {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
   justify-content: space-between;
   gap: 8px;
   min-width: 0;
@@ -1348,7 +1480,8 @@ onMounted(load)
 .character-visual-summary {
   max-width: 100%;
   display: flex;
-  gap: 8px;
+  flex-direction: column;
+  gap: 2px;
   overflow: hidden;
   color: var(--text-3);
   font-size: 10.5px;
@@ -1419,7 +1552,8 @@ onMounted(load)
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.asset-foot { display: flex; align-items: center; gap: 4px; padding: 7px 11px; border-top: 1px solid var(--border); }
+.asset-foot { display: flex; align-items: center; flex-wrap: nowrap; gap: 6px; padding: 7px 11px; border-top: 1px solid var(--border); }
+.asset-card > .asset-final { margin: 0 11px 9px; padding-top: 7px; border-top: 1px solid var(--border); }
 .prop-name-row {
   display: flex;
   align-items: center;

@@ -111,3 +111,16 @@ test('video retains the original selector, duration expression, cleanup, encodin
   assert.equal(Object.values(textOnly.workflow).filter(n => n.class_type === 'LoadImage').length, 0)
   assert.throws(() => buildWorkFisher({ ...connection, comfyui: { outputNode: '241' } }, 'image', { prompt: '' }, [], 42), /最终输出节点必须为 239/)
 })
+
+test('H3 translates bound project references to native one-based picture markers', () => {
+  const prompt = '@图片1白墙，@图片2阿禾说：“等一下。” @图片1仍在画面中。<Picture 2> @图片3 @图片10 @图片0 @图片01 @原名'
+  const expected = '<Picture 1>白墙，<Picture 2>阿禾说：“等一下。” <Picture 1>仍在画面中。<Picture 2> @图片3 @图片10 @图片0 @图片01 @原名'
+  const config = { ...connection, model: 'wf-minimax-h3' }
+  const built = buildWorkFisher(config, 'video', { prompt }, ['scene.png', 'character.png'], 42)
+  assert.equal(built.workflow['138'].inputs.value, expected)
+  assert.equal(built.canvasWorkflow.nodes.find((node: any) => node.id === 138).widgets_values_named.value, expected)
+  const noReferences = buildWorkFisher(config, 'video', { prompt }, [], 42)
+  assert.equal(noReferences.workflow['138'].inputs.value, prompt)
+  const image = buildWorkFisher(connection, 'image', { prompt }, ['scene.png'], 42)
+  assert.equal(image.workflow['214'].inputs.prompt, prompt)
+})

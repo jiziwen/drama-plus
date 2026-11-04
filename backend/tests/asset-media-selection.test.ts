@@ -69,19 +69,29 @@ for (const kind of ['character', 'scene', 'prop'] as const) {
     const route = kind === 'character' ? characters : kind === 'scene' ? scenes : props
     const table = kind === 'character' ? schema.characters : kind === 'scene' ? schema.scenes : schema.props
     const asset = db.insert(table as any).values({ dramaId: 1, name: 'test', location: 'room', time: 'day', prompt: 'room', appearance: 'face', styling: 'suit', finalPrompt: '保留原始三视图提示词', createdAt: ts, updatedAt: ts }).returning().get() as any
-    const saved = await request(route, `/${asset.id}`, { image_model: 'gpt-image-2', image_config_id: textImage.id, reference_model: 'gpt-image-2-edit', reference_config_id: editImage.id, reference_images: [ref], edit_prompt: 'make the coat blue' }, 'PUT')
+    const savedRefs = ['static/images/saved-edit.png']
+    const saved = await request(route, `/${asset.id}`, { image_model: 'gpt-image-2', image_config_id: textImage.id, reference_model: 'gpt-image-2-edit', reference_config_id: editImage.id, reference_images: savedRefs, edit_prompt: 'make the coat blue' }, 'PUT')
     assert.equal(saved.status, 200, JSON.stringify(saved.body))
     const same = db.select().from(table).where(eq(table.id, asset.id)).get()!
     assert.equal(same.finalPrompt, '保留原始三视图提示词')
     assert.equal(same.imageUrl, null)
     initDb() // additive migration is safe to replay with existing saved data
-    const text = await request(route, `/${asset.id}/generate-image`, { episode_id: 1, generation_mode: 'text', model: 'gpt-image-2-edit', config_id: editImage.id, reference_images: [ref], edit_prompt: 'must not enter text generation' })
+    const text = await request(route, `/${asset.id}/generate-image`, { episode_id: 1, generation_mode: 'text', model: 'gpt-image-2-edit', config_id: editImage.id })
     assert.equal(text.status, 200, JSON.stringify(text.body))
     const textTask = await finished(text.body.data.image_generation_id)
     assert.equal(textTask.status, 'completed', textTask.errorMsg || '')
     assert.equal(textTask.configId, textImage.id)
     assert.equal(textTask.prompt, '保留原始三视图提示词')
     assert.deepEqual(JSON.parse(textTask.params!).referenceImages, [])
+    const guided = await request(route, `/${asset.id}/generate-image`, { episode_id: 1, generation_mode: 'text', reference_images: [ref], edit_prompt: 'must not enter text generation' })
+    assert.equal(guided.status, 200, JSON.stringify(guided.body))
+    const guidedTask = await finished(guided.body.data.image_generation_id)
+    assert.equal(guidedTask.status, 'completed', guidedTask.errorMsg || '')
+    assert.equal(guidedTask.configId, textImage.id)
+    assert.equal(guidedTask.prompt, '保留原始三视图提示词')
+    assert.deepEqual(JSON.parse(guidedTask.params!).referenceImages, [ref])
+    assert.ok(requests.some(r => r.url === '/v1/images/edits' && r.body.includes(guidedTask.prompt!) && r.body.includes('name="image[]"')))
+    assert.deepEqual(JSON.parse(db.select().from(table).where(eq(table.id, asset.id)).get()!.referenceImages!), savedRefs)
     const missing = await request(route, `/${asset.id}/generate-image`, { episode_id: 1, generation_mode: 'reference', edit_prompt: 'test' })
     assert.equal(missing.status, 400) // current image and saved references cannot be selected implicitly
     const edited = await request(route, `/${asset.id}/generate-image`, { episode_id: 1, generation_mode: 'reference', reference_images: [ref], edit_prompt: 'make the coat blue', model: 'gpt-image-2', config_id: textImage.id })
@@ -93,8 +103,13 @@ for (const kind of ['character', 'scene', 'prop'] as const) {
     assert.deepEqual(JSON.parse(editTask.params!).referenceImages, [ref])
     assert.equal(db.select().from(table).where(eq(table.id, asset.id)).get()!.imageUrl, editTask.localPath)
     assert.equal(db.select().from(table).where(eq(table.id, asset.id)).get()!.finalPrompt, '保留原始三视图提示词')
+    if (kind === 'scene') {
+      const invalid = await request(route, `/${asset.id}/generate-image`, { episode_id: 1, generation_mode: 'text', reference_images: ['static/../invalid'] })
+      assert.equal(invalid.status, 400)
+      assert.equal(db.select().from(schema.scenes).where(eq(schema.scenes.id, asset.id)).get()!.status, 'completed')
+    }
     const history = await (await tasks.request(`/?type=image&${kind}_id=${asset.id}`)).json() as any
-    assert.deepEqual(history.data.map((row: any) => row.id).sort((a: number, b: number) => a - b), [textTask.id, editTask.id])
+    assert.deepEqual(history.data.map((row: any) => row.id).sort((a: number, b: number) => a - b), [textTask.id, guidedTask.id, editTask.id])
     assert.ok(requests.some(r => r.url === '/v1/images/edits' && r.body.includes('make the coat blue') && r.body.includes('name="image[]"')))
     const cleared = await request(route, `/${asset.id}`, { reference_model: null, reference_config_id: null }, 'PUT')
     assert.equal(cleared.status, 200)
@@ -113,6 +128,8 @@ test('reference validation rejects empty edits, overflow and unsupported workflo
   const comfy = config('image', ['wf-z-image', 'wf-qwen-image'], 'comfyui')
   await assert.rejects(resolveAssetImageRequest({ ...body, config_id: comfy.id, model: 'wf-z-image' }, {}), /只支持文生图/)
   await assert.rejects(resolveAssetImageRequest({ generation_mode: 'text', config_id: comfy.id, model: 'wf-qwen-image' }, {}), /参考图/)
+  await assert.rejects(resolveAssetImageRequest({ generation_mode: 'text', config_id: comfy.id, model: 'wf-z-image', reference_images: [ref] }, {}), /只支持文生图/)
+  await assert.rejects(resolveAssetImageRequest({ generation_mode: 'text', config_id: textImage.id, reference_images: Array(5).fill(ref) }, {}), /1–4/)
   const ordered = await resolveAssetImageRequest({ ...body, reference_images: ['static/images/main.png', 'static/images/secondary.png'] }, {})
   assert.deepEqual(ordered.referenceImages, ['static/images/main.png', 'static/images/secondary.png'])
 })
@@ -120,7 +137,7 @@ test('reference validation rejects empty edits, overflow and unsupported workflo
 test('batch text images honor each asset override and expose individual model failures', async () => {
   const good = db.insert(schema.characters).values({ dramaId: 1, name: 'batch', finalPrompt: '批量角色三视图', imageModel: 'gpt-image-2-edit', imageConfigId: editImage.id, createdAt: ts, updatedAt: ts }).returning().get()
   const stale = db.insert(schema.characters).values({ dramaId: 1, name: 'stale', finalPrompt: '批量角色三视图', imageModel: 'missing', imageConfigId: textImage.id, createdAt: ts, updatedAt: ts }).returning().get()
-  const response = await request(characters, '/batch-generate-images', { episode_id: 1, character_ids: [good.id, stale.id], model: 'gpt-image-2', config_id: textImage.id })
+  const response = await request(characters, '/batch-generate-images', { episode_id: 1, character_ids: [good.id, stale.id], model: 'gpt-image-2', config_id: textImage.id, reference_images: [ref] })
   assert.equal(response.status, 200)
   assert.equal(response.body.data.count, 1)
   assert.equal(response.body.data.errors[0].character_id, stale.id)
@@ -128,6 +145,7 @@ test('batch text images honor each asset override and expose individual model fa
   assert.equal(task.status, 'completed', task.errorMsg || '')
   assert.equal(task.model, 'gpt-image-2-edit')
   assert.equal(task.configId, editImage.id)
+  assert.deepEqual(JSON.parse(task.params!).referenceImages, [])
 })
 
 test('unreadable explicit references fail the task without sending a generation or edit request', async () => {

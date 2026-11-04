@@ -140,7 +140,11 @@ export function buildWorkFisher(config: ComfyConnection, type: 'image' | 'video'
     workflow['249'].inputs.strength_model = 0
   }
   if (settings.outputNode && settings.outputNode !== mode.output) throw new Error(`原始模式「${mode.group}」最终输出节点必须为 ${mode.output}，请清除旧 outputNode 设置`)
-  workflow[mode.prompt[0]].inputs[mode.prompt[1]] = params.prompt
+  // H3 references use one-based <Picture N> tokens. Keep the project's names after each token.
+  const prompt = model === 'wf-minimax-h3' && references.length
+    ? params.prompt.replace(/@图片([1-9]\d*)/g, (marker, index: string) => Number(index) <= references.length ? `<Picture ${index}>` : marker)
+    : params.prompt
+  workflow[mode.prompt[0]].inputs[mode.prompt[1]] = prompt
   workflow[mode.seed[0]].inputs[mode.seed[1]] = seed
   let width: number, height: number
   if ('dimensions' in mode) {

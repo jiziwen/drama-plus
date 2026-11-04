@@ -78,12 +78,14 @@ app.post('/:id/generate-image', async (c) => {
   const [ep] = await db.select().from(schema.episodes).where(eq(schema.episodes.id, Number(body.episode_id)))
   if (!ep) return badRequest(c, '剧集不存在')
 
+  let started = false
   try {
     if (scene.deletedAt || ep.dramaId !== scene.dramaId) return badRequest(c, '场景不属于此项目')
     const request = await resolveAssetImageRequest(body, scene, ep.imageConfigId)
     logTaskStart('SceneImage', 'generate', { sceneId: id, episodeId: ep.id, dramaId: scene.dramaId, location: scene.location })
-    await db.update(schema.scenes).set({ status: 'processing', updatedAt: now() }).where(eq(schema.scenes.id, id))
     const genId = await withAssetImageRequest({ sceneId: id }, async () => {
+      await db.update(schema.scenes).set({ status: 'processing', updatedAt: now() }).where(eq(schema.scenes.id, id))
+      started = true
       if (request.mode === 'reference') return generateImage({ sceneId: id, dramaId: scene.dramaId, prompt: request.editPrompt, referenceImages: request.referenceImages, model: request.model, configId: request.configId })
       const stylePrompt = await getDramaStylePrompt(scene.dramaId)
       const finalPrompt = await ensureSceneFinalPrompt(scene, ep.id, false, { model: body.text_model, configId: body.text_config_id ?? undefined })
@@ -96,13 +98,13 @@ app.post('/:id/generate-image', async (c) => {
         scene.lighting || '电影感光影',
         '画面中没有任何人物，空场景，只有场景本身',
       ].filter(Boolean).join(', ')
-      return generateImage({ sceneId: id, dramaId: scene.dramaId, prompt, model: request.model, configId: request.configId })
+      return generateImage({ sceneId: id, dramaId: scene.dramaId, prompt, referenceImages: request.referenceImages, model: request.model, configId: request.configId })
     })
     logTaskSuccess('SceneImage', 'generate', { sceneId: id, generationId: genId })
     return success(c, { image_generation_id: genId })
   } catch (err: any) {
     logTaskError('SceneImage', 'generate', { sceneId: id, error: err.message })
-    await db.update(schema.scenes).set({ status: 'failed', updatedAt: now() }).where(eq(schema.scenes.id, id))
+    if (started) await db.update(schema.scenes).set({ status: 'failed', updatedAt: now() }).where(eq(schema.scenes.id, id))
     return badRequest(c, err.message)
   }
 })

@@ -2,10 +2,12 @@
  * Agent 聊天路由 — 非流式版本
  */
 import { Hono } from 'hono'
+import { and, eq, isNull } from 'drizzle-orm'
 import { validAgentTypes } from '../agents/index.js'
-import { buildAgentRequestContext } from '../agents/context.js'
+import { buildAgentRequestContext, type AgentRequestContextValues } from '../agents/context.js'
+import { db, schema } from '../db/index.js'
 import { mastra } from '../mastra/index.js'
-import { success, badRequest } from '../utils/response.js'
+import { success, badRequest, now } from '../utils/response.js'
 import { logTaskError, logTaskPayload, logTaskProgress, logTaskStart, logTaskSuccess } from '../utils/task-logger.js'
 
 const app = new Hono()
@@ -72,16 +74,43 @@ app.post('/:type/chat', async (c) => {
   const startTime = performance.now()
 
   try {
+    let scriptRevision: AgentRequestContextValues['scriptRevision']
+    let savedScript: string | null = null
+    let userMessage = message
+    const { episodes } = schema
+    const targetEpisode = and(eq(episodes.id, episode_id), eq(episodes.dramaId, drama_id), isNull(episodes.deletedAt))
+    if (agentType === 'script_rewriter' && body.rewrite_instructions !== undefined) {
+      if (typeof body.rewrite_instructions !== 'string' || !body.rewrite_instructions.trim()) return badRequest(c, '请填写剧本改写要求')
+      if (body.script_content !== undefined && typeof body.script_content !== 'string') return badRequest(c, '剧本内容必须为文字')
+      const [episode] = await db.select({ scriptContent: episodes.scriptContent }).from(episodes).where(targetEpisode)
+      if (!episode) return badRequest(c, '剧集不存在或不属于此项目')
+      savedScript = episode.scriptContent
+      const source = body.script_content ?? savedScript
+      if (!source?.trim()) return badRequest(c, '请先准备要改写的剧本')
+      scriptRevision = { source }
+      userMessage = `请修订当前格式化剧本，并提交修改后的完整剧本。\n\n本次改写要求：\n${body.rewrite_instructions.trim()}`
+    }
     const requestContext = buildAgentRequestContext({
       episodeId: episode_id,
       dramaId: drama_id,
       modelOverride: body.model || undefined,
       textConfigId: body.config_id || undefined,
+      scriptRevision,
     })
     const result = await agent.generate(
-      [{ role: 'user', content: message }],
+      [{ role: 'user', content: userMessage }],
       { maxSteps: 20, requestContext },
     )
+
+    if (scriptRevision) {
+      if (!scriptRevision.revisedContent || ['error', 'length', 'content-filter'].includes(result.finishReason ?? '')) {
+        throw new Error('未能完成剧本改写，请重试')
+      }
+      const previousScript = savedScript === null ? isNull(episodes.scriptContent) : eq(episodes.scriptContent, savedScript)
+      const updated = db.update(episodes).set({ scriptContent: scriptRevision.revisedContent, updatedAt: now() })
+        .where(and(targetEpisode, previousScript)).run()
+      if (!updated.changes) throw new Error('改写期间剧本已更新，请刷新后重试')
+    }
 
     const elapsed = ((performance.now() - startTime) / 1000).toFixed(1)
     logTaskSuccess('Agent', agentType, { elapsedSeconds: elapsed })
@@ -108,6 +137,7 @@ app.post('/:type/chat', async (c) => {
     return success(c, {
       type: 'done',
       text: result.text || '',
+      ...(scriptRevision ? { script_content: scriptRevision.revisedContent } : {}),
       toolCalls: normalizedToolCalls,
       toolResults: normalizedToolResults,
     })

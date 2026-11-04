@@ -7,7 +7,8 @@ export function useAgent() {
   const running = ref(false)
   const runningType = ref<string | null>(null)
 
-  async function run(type: string, msg: string, dramaId: number, episodeId: number, onDone?: () => void, model?: string, configId?: number) {
+  async function run(type: string, msg: string | undefined, dramaId: number, episodeId: number, onDone?: () => void, model?: string, configId?: number,
+    revision?: { rewrite_instructions: string; script_content: string }) {
     if (running.value) { toast.warning(i18n.global.t('composables.agent.busy')); return }
     running.value = true
     runningType.value = type
@@ -18,10 +19,13 @@ export function useAgent() {
         episode_id: episodeId,
         model: model || undefined,
         config_id: configId || undefined,
+        ...revision,
       })
       toast.success(i18n.global.t('composables.agent.done'))
       onDone?.()
+      return data
     } catch (err: any) {
+      if (revision) throw err
       toastError(err)
     } finally {
       running.value = false

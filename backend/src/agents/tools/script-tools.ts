@@ -7,15 +7,17 @@ import { z } from 'zod'
 import { db, schema } from '../../db/index.js'
 import { eq } from 'drizzle-orm'
 import { now } from '../../utils/response.js'
-import { getEpisodeId } from '../context.js'
+import { getEpisodeId, getScriptRevision } from '../context.js'
 
 const readEpisodeScript = createTool({
   id: 'read_episode_script',
-  description: 'Read the script content of the current episode.',
+  description: 'Read the script source for this task. A revision reads the current screenplay.',
   inputSchema: z.object({}),
   execute: async (_input, context) => {
     const episodeId = getEpisodeId(context?.requestContext)
     if (!episodeId) return { error: 'Missing episodeId in request context' }
+    const revision = getScriptRevision(context?.requestContext)
+    if (revision) return { content: revision.source, word_count: revision.source.length, episode_id: episodeId }
     const [ep] = await db.select().from(schema.episodes)
       .where(eq(schema.episodes.id, episodeId))
     if (!ep) return { error: `Episode not found (id=${episodeId})` }
@@ -27,13 +29,15 @@ const readEpisodeScript = createTool({
 
 const rewriteToScreenplay = createTool({
   id: 'rewrite_to_screenplay',
-  description: 'Read the original content for AI rewriting. Returns the source text with formatting instructions.',
+  description: 'Read the source text with formatting instructions. A revision reads the current screenplay.',
   inputSchema: z.object({
     instructions: z.string().optional().describe('Additional rewrite instructions'),
   }),
   execute: async ({ instructions }, context) => {
     const episodeId = getEpisodeId(context?.requestContext)
     if (!episodeId) return { error: 'Missing episodeId in request context' }
+    const revision = getScriptRevision(context?.requestContext)
+    if (revision) return { source_content: revision.source, instruction: '按本次用户要求修订当前剧本，只修改本次要求涉及的内容和格式。' }
     const [ep] = await db.select().from(schema.episodes)
       .where(eq(schema.episodes.id, episodeId))
     if (!ep) return { error: `Episode not found` }
@@ -67,6 +71,13 @@ const saveScript = createTool({
   execute: async ({ content }, context) => {
     const episodeId = getEpisodeId(context?.requestContext)
     if (!episodeId) return { error: 'Missing episodeId in request context' }
+    const revision = getScriptRevision(context?.requestContext)
+    if (revision) {
+      if (!content.trim()) return { error: 'Revised screenplay must not be empty' }
+      // 先暂存，等 Agent 完成整个请求后再覆盖原剧本。
+      revision.revisedContent = content
+      return { message: 'Revised screenplay submitted', word_count: content.length }
+    }
     await db.update(schema.episodes)
       .set({ scriptContent: content, updatedAt: now() })
       .where(eq(schema.episodes.id, episodeId))

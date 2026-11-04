@@ -352,6 +352,11 @@ export const stylePresetSeeds = [
     prompt: 'black and white manga illustration, high-contrast monochrome ink work, dynamic hatching and cross-hatching shading, bold solid blacks with dramatic negative space, screentone gray gradation, expressive confident ink linework, cinematic noir lighting, professional manga page quality, consistent character design across shots, strictly no color, avoid grayscale blur smudging, avoid painterly soft edges, avoid photorealism, avoid 3D render look',
     description: '黑白漫/ Noir 高对比墨水风',
   },
+  {
+    name: '钢笔写生', value: 'pen-ink-sketch', sortOrder: 10,
+    prompt: 'monochrome pen-and-ink observational sketch, black ink on subtly textured white drawing paper, natural proportions and simplified forms, economical freehand contours with varied line weight and occasional breaks, quick directional pen strokes, sparse hatching and occasional cross-hatching for shadows, small solid black accents, concentrated texture in selected details balanced by generous areas of bare paper, quiet documentary sketchbook feel, consistent linework across assets and shots, black and white only, avoid ink wash, pencil smudges, smooth gradients, manga screentones, polished vector outlines, photorealism and 3D rendering, no added captions, signatures or watermarks',
+    description: '黑墨线描、疏密排线与大面积留白，适合乡村、街景和生活纪实题材',
+  },
 ]
 
 /**

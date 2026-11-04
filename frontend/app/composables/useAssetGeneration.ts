@@ -6,12 +6,14 @@ function models(config: any): string[] {
   try { const value = JSON.parse(config.model); return Array.isArray(value) ? value : [value] } catch { return config.model ? [config.model] : [] }
 }
 
-export function assetModelOptions(configs: any[], mode: AssetGenerationMode = 'text'): AssetModelOption[] {
+export function assetModelOptions(configs: any[], mode: AssetGenerationMode = 'text', withReferences = false): AssetModelOption[] {
+  const needsReferences = mode === 'reference' || withReferences
   return [...configs].filter(c => c.is_active ?? c.isActive).sort((a, b) => (b.priority || 0) - (a.priority || 0)).flatMap(config =>
     models(config).filter(model => {
-      if (config.provider !== 'comfyui') return mode !== 'reference' || (['openai', 'gemini'].includes(config.provider) && !/^dall-e/i.test(model))
+      if (config.provider !== 'comfyui') return !needsReferences || (['openai', 'gemini'].includes(config.provider) && !/^dall-e/i.test(model))
       const settings = config.comfyui || {}
-      if (settings.workflow) return mode !== 'reference' || !!(settings.referenceNode && settings.referencePrefix && settings.maxReferences !== 0)
+      if (settings.workflow) return !needsReferences || !!(settings.referenceNode && settings.referencePrefix && settings.maxReferences !== 0)
+      if (mode === 'text' && withReferences) return model === 'wf-image'
       return mode === 'reference' ? ['wf-image', 'wf-qwen-image'].includes(model) : ['wf-image', 'wf-z-image', 'wf-z-scene'].includes(model)
     }).map(model => ({ key: `${config.id}/${model}`, model, configId: Number(config.id), provider: config.provider, configName: config.name || config.provider })))
 }

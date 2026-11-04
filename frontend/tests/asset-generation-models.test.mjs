@@ -12,6 +12,7 @@ const configs = [
 test('mode filters unsupported workflows and providers before submission', () => {
   assert.deepEqual(assetModelOptions(configs, 'reference').map(o => o.key), ['1/wf-image', '1/wf-qwen-image', '2/gpt-image-2', '3/gpt-image-2'])
   assert.equal(assetModelOptions(configs, 'text').some(o => o.model === 'wf-qwen-image'), false)
+  assert.deepEqual(assetModelOptions(configs, 'text', true).map(o => o.key), ['1/wf-image', '2/gpt-image-2', '3/gpt-image-2'])
 })
 test('custom workflows must have an enabled reference input', () => {
   const custom = { id: 7, is_active: true, provider: 'comfyui', model: ['custom'], comfyui: { workflow: {}, referenceNode: '1', referencePrefix: 'image', maxReferences: 0 } }

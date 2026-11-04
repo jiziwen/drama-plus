@@ -102,7 +102,7 @@ app.post('/:id/generate-image', async (c) => {
       const stylePrompt = await getDramaStylePrompt(char.dramaId)
       const finalPrompt = await ensureCharacterFinalPrompt(char, ep.id, false, { model: body.text_model, configId: body.text_config_id ?? undefined })
       const prompt = finalPrompt || characterImagePrompt(char, stylePrompt)
-      return generateImage({ characterId: id, dramaId: char.dramaId, prompt, model: request.model, size: CHARACTER_IMAGE_SIZE, configId: request.configId })
+      return generateImage({ characterId: id, dramaId: char.dramaId, prompt, referenceImages: request.referenceImages, model: request.model, size: CHARACTER_IMAGE_SIZE, configId: request.configId })
     })
     logTaskSuccess('CharacterImage', 'generate', { characterId: id, generationId: genId })
     return success(c, { image_generation_id: genId })
@@ -147,7 +147,7 @@ app.post('/batch-generate-images', async (c) => {
     const [char] = await db.select().from(schema.characters).where(eq(schema.characters.id, cid))
     if (!char || char.deletedAt || char.dramaId !== ep.dramaId) { errors.push({ character_id: cid, error: '角色不存在或不属于此项目' }); continue }
     try {
-      const request = await resolveAssetImageRequest({ ...body, generation_mode: 'text' }, char, ep.imageConfigId)
+      const request = await resolveAssetImageRequest({ model: body.model, config_id: body.config_id }, char, ep.imageConfigId)
       const genId = await withAssetImageRequest({ characterId: cid }, async () => {
         const finalPrompt = await ensureCharacterFinalPrompt(char, ep.id, false, { model: body.text_model, configId: body.text_config_id ?? undefined })
         const prompt = finalPrompt || characterImagePrompt(char, stylePrompt)

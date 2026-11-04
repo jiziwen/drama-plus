@@ -243,7 +243,7 @@
                         </div>
                       </div>
                       <div class="asset-card-actions">
-                      <AssetGenerationActions :busy="isPending(m)" :has-image="matHasImage(m)" @detail="openEdit(m)" @text="generateMaterial(m)" @reference="openEdit(m, 'reference')" />
+                      <AssetGenerationActions :busy="isPending(m)" @detail="openEdit(m)" @redraw="generateMaterial(m)" />
                       <button class="btn btn-sm asset-upload-button" type="button" :title="t('episode.asset.uploadCharImage')" :disabled="isUploading(m)" @click.stop="uploadMaterial(m)">
                         <span v-if="isUploading(m)" class="ring-spinner sm"></span>
                         <svg v-else width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
@@ -297,7 +297,7 @@
                   </template>
                 </div>
                 <div class="asset-foot">
-                  <AssetGenerationActions :busy="isPending(m)" :has-image="matHasImage(m)" @detail="openEdit(m)" @text="generateMaterial(m)" @reference="openEdit(m, 'reference')" />
+                  <AssetGenerationActions :busy="isPending(m)" @detail="openEdit(m)" @redraw="generateMaterial(m)" />
                   <button class="btn btn-sm asset-upload-button" type="button" :title="t('episode.asset.uploadImage')" :disabled="isUploading(m)" @click.stop="uploadMaterial(m)">
                     <span v-if="isUploading(m)" class="ring-spinner sm"></span>
                     <svg v-else width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
@@ -468,6 +468,10 @@
                 </div>
               </section>
             </div>
+
+            <AssetReferenceEditor v-if="editMode === 'text'" :key="pendingKey(editTarget)" v-model="textReferenceDraft"
+              class="mat-detail-prompt-panel" optional :current-image="matImage(editTarget)" :history="referenceHistory"
+              :disabled="editSaving || isPending(editTarget)" @error="message => toast.error(message)" @uploading="referenceUploading = $event" />
 
             <!-- 最终提示词：可生成 / 重新生成 / 手动编辑 -->
             <section v-if="editMode === 'text'" class="mat-detail-prompt-panel">
@@ -778,7 +782,7 @@ async function generateMaterial(m, options = { generation_mode: 'text' }) {
   pendingMaterials.value = new Set(pendingMaterials.value).add(key)
   try {
     const mode = options.generation_mode || 'text'
-    const selected = resolveAssetModel(m, mode, assetModelOptions(imageConfigs.value, mode), inheritedImageKey())
+    const selected = resolveAssetModel(m, mode, assetModelOptions(imageConfigs.value, mode, options.reference_images?.length > 0), inheritedImageKey())
     const result = await materialAPI(m).generateImage(m.id, epId, selected.model, selected.configId, undefined, undefined, options)
     toast.success(t('detail.mat.generating', { kind: m.kind, name: m.name }))
     void pollMaterial(m, result.image_generation_id)
@@ -874,13 +878,14 @@ const editSaving = ref(false)
 const editTarget = ref(null)
 const editDraft = reactive({})
 const editMode = ref('text')
+const textReferenceDraft = ref([])
 const referenceDraft = ref([])
 const referenceHistory = ref([])
 const referenceUploading = ref(false)
 const editDescription = ref('')
 const imageConfigs = ref([])
 const modelLabel = useModelLabel()
-const editModelOptions = computed(() => assetModelOptions(imageConfigs.value, editMode.value))
+const editModelOptions = computed(() => assetModelOptions(imageConfigs.value, editMode.value, textReferenceDraft.value.length > 0))
 const editModelKey = computed(() => assetModelKey(editTarget.value, editMode.value, editModelOptions.value))
 const editDialogElement = ref(null)
 let editReturnFocus = null
@@ -914,10 +919,11 @@ async function saveMaterialModel(key) {
   finally { editSaving.value = false }
 }
 
-function openEdit(m, mode = 'text') {
+function openEdit(m) {
   if (!editDialog.value) editReturnFocus = document.activeElement
   editTarget.value = m
-  editMode.value = mode
+  editMode.value = 'text'
+  textReferenceDraft.value = []
   referenceDraft.value = assetReferences(m)
   editDescription.value = m.edit_prompt || m.editPrompt || ''
   referenceHistory.value = []
@@ -1019,7 +1025,9 @@ async function saveAndGenerateMaterial() {
   const target = editTarget.value
   if (!target || editSaving.value || referenceUploading.value || isPending(target)) return
   const mode = editMode.value
-  const options = mode === 'reference' ? { generation_mode: mode, reference_images: [...referenceDraft.value], edit_prompt: editDescription.value.trim() } : { generation_mode: mode }
+  const options = mode === 'reference'
+    ? { generation_mode: mode, reference_images: [...referenceDraft.value], edit_prompt: editDescription.value.trim() }
+    : { generation_mode: 'text', reference_images: [...textReferenceDraft.value] }
   if (mode === 'reference' && !options.reference_images.length) { toast.error(t('assetGeneration.referenceRequired')); return }
   if (mode === 'reference' && !options.edit_prompt) { toast.error(t('assetGeneration.editRequired')); return }
   if (await saveEdit(false)) await generateMaterial(target, options)

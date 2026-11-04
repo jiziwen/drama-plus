@@ -38,7 +38,7 @@ export function assertImageMode(config: AIConfig, mode: 'text' | 'reference') {
     } else if (mode === 'reference' && !['wf-image', 'wf-qwen-image'].includes(config.model)) {
       throw new Error('所选模型只支持文生图，请选择自动生图或三视图编辑工作流')
     } else if (mode === 'text' && config.model === 'wf-qwen-image') {
-      throw new Error('三视图编辑工作流需要参考图，请从「参考图重绘」进入')
+      throw new Error('三视图编辑工作流需要参考图，请在资产详情中切换到「参考图编辑」')
     }
   } else if (mode === 'reference' && config.provider === 'volcengine') {
     throw new Error('当前火山图片适配器暂不支持参考图编辑，请选择支持图片编辑的模型')
@@ -51,7 +51,9 @@ type AssetSelection = { imageModel?: string | null; imageConfigId?: number | nul
 export async function resolveAssetImageRequest(body: any, asset: AssetSelection, episodeConfigId?: number | null) {
   const mode = body.generation_mode ?? 'text'
   if (mode !== 'text' && mode !== 'reference') throw new Error('generation_mode 必须为 text 或 reference')
-  const referenceImages = mode === 'reference' ? validateReferenceImages(body.reference_images, true) : []
+  const referenceImages = mode === 'reference' || body.reference_images !== undefined
+    ? validateReferenceImages(body.reference_images, mode === 'reference')
+    : []
   const editPrompt = mode === 'reference' && typeof body.edit_prompt === 'string' ? body.edit_prompt.trim() : ''
   if (mode === 'reference' && !editPrompt) throw new Error('请填写修改描述')
   const model = mode === 'reference' ? asset.referenceModel : asset.imageModel
@@ -60,8 +62,8 @@ export async function resolveAssetImageRequest(body: any, asset: AssetSelection,
   const config = await resolveMediaConfig('image', override
     ? { model, configId }
     : { model: body.model, configId: body.config_id ?? episodeConfigId })
-  assertImageMode(config, mode)
-  if (mode === 'reference' && config.comfyui?.workflow && referenceImages.length > (config.comfyui.maxReferences ?? 4)) throw new Error('参考图数量超过该工作流限制')
+  assertImageMode(config, referenceImages.length ? 'reference' : 'text')
+  if (config.comfyui?.workflow && referenceImages.length > (config.comfyui.maxReferences ?? 4)) throw new Error('参考图数量超过该工作流限制')
   return { mode, editPrompt, referenceImages, model: config.model, configId: config.id! }
 }
 

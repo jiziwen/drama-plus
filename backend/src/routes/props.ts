@@ -125,7 +125,7 @@ app.post('/:id/generate-image', async (c) => {
       const stylePrompt = await getDramaStylePrompt(prop.dramaId)
       const finalPrompt = await ensurePropFinalPrompt(prop, ep.id, false, { model: body.text_model, configId: body.text_config_id ?? undefined })
       const prompt = finalPrompt || propImagePrompt(prop, stylePrompt)
-      return generateImage({ propId: id, dramaId: prop.dramaId, prompt, model: request.model, size: PROP_IMAGE_SIZE, configId: request.configId })
+      return generateImage({ propId: id, dramaId: prop.dramaId, prompt, referenceImages: request.referenceImages, model: request.model, size: PROP_IMAGE_SIZE, configId: request.configId })
     })
     logTaskSuccess('PropImage', 'generate', { propId: id, generationId: genId })
     return success(c, { image_generation_id: genId })

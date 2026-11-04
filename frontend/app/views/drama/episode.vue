@@ -203,7 +203,7 @@
             </div>
             <div class="toolbar-right">
               <span v-if="scriptLen" class="char-count">{{ t('episode.script.charCount', { n: scriptLen }) }}</span>
-              <button v-if="rawContent" class="btn btn-sm" @click="skipRewrite">
+              <button v-if="rawContent" class="btn btn-sm" :disabled="rn" @click="skipRewrite">
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/><path d="M13 18l6-6-6-6"/></svg>
                 {{ t('episode.script.skipRewrite') }}
               </button>
@@ -211,6 +211,9 @@
                 <Loader2 v-if="rn && rt === 'script_rewriter'" :size="11" class="animate-spin" />
                 <svg v-else width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
                 {{ t('episode.script.rewriteAgain') }}
+              </button>
+              <button v-if="scriptLen" type="button" class="btn btn-sm" :disabled="rn" @click="openRewriteDialog">
+                {{ t('episode.script.rewriteWithInstructions') }}
               </button>
             </div>
           </div>
@@ -359,8 +362,8 @@
                         </div>
                       </div>
                       <div class="asset-card-actions">
-                      <AssetGenerationActions :busy="isPendingCharImage(c.id)" :has-image="!!assetImageSrc(c)"
-                        @detail="openAssetDetail('character', c)" @text="genCharImg(c.id)" @reference="openAssetDetail('character', c, 'reference')" />
+                      <AssetGenerationActions :busy="isPendingCharImage(c.id)"
+                        @detail="openAssetDetail('character', c)" @redraw="genCharImg(c.id)" />
                       <button class="btn btn-sm asset-upload-button" :title="t('episode.asset.uploadCharImage')" :disabled="isUploadingAsset('character', c.id)" @click.stop="uploadAssetImage('character', c.id)">
                         <Loader2 v-if="isUploadingAsset('character', c.id)" :size="11" class="animate-spin" />
                         <svg v-else width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
@@ -415,8 +418,8 @@
                   <div v-if="sceneLightingValue(s)" class="asset-meta asset-light dim" :title="sceneLightingValue(s)">{{ t('episode.asset.lighting') }}{{ sceneLightingValue(s) }}</div>
                 </div>
                 <div class="asset-foot">
-                  <AssetGenerationActions :busy="isPendingSceneImage(s.id)" :has-image="!!assetImageSrc(s)"
-                    @detail="openAssetDetail('scene', s)" @text="genSceneImg(s.id)" @reference="openAssetDetail('scene', s, 'reference')" />
+                  <AssetGenerationActions :busy="isPendingSceneImage(s.id)"
+                    @detail="openAssetDetail('scene', s)" @redraw="genSceneImg(s.id)" />
                   <button class="btn btn-sm asset-upload-button" :title="t('episode.asset.uploadSceneImage')" :disabled="isUploadingAsset('scene', s.id)" @click.stop="uploadAssetImage('scene', s.id)">
                     <Loader2 v-if="isUploadingAsset('scene', s.id)" :size="11" class="animate-spin" />
                     <svg v-else width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
@@ -469,8 +472,8 @@
                   <div class="asset-meta asset-desc dim" :title="p.description || ''">{{ p.description || t('episode.asset.noDescription') }}</div>
                 </div>
                 <div class="asset-foot">
-                  <AssetGenerationActions :busy="isPendingPropImage(p.id)" :has-image="!!assetImageSrc(p)"
-                    @detail="openAssetDetail('prop', p)" @text="genPropImg(p.id)" @reference="openAssetDetail('prop', p, 'reference')" />
+                  <AssetGenerationActions :busy="isPendingPropImage(p.id)"
+                    @detail="openAssetDetail('prop', p)" @redraw="genPropImg(p.id)" />
                   <button class="btn btn-sm asset-upload-button" :title="t('episode.asset.uploadPropImage')" :disabled="isUploadingAsset('prop', p.id)" @click.stop="uploadAssetImage('prop', p.id)">
                     <Loader2 v-if="isUploadingAsset('prop', p.id)" :size="11" class="animate-spin" />
                     <svg v-else width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
@@ -1260,13 +1263,18 @@
               </section>
             </div>
 
+            <AssetReferenceEditor v-if="assetGenerationMode === 'text'" :key="`${assetDetail.type}:${assetDetail.item.id}`"
+              v-model="assetTextReferenceDraft" class="asset-detail-prompt-panel" optional
+              :current-image="assetImageSrc(assetDetail.item)" :history="assetReferenceHistory"
+              :disabled="savingAssetDetail || isAssetImagePending(assetDetail.type, assetDetail.item.id)" @error="toastError" @uploading="assetReferenceUploading = $event" />
+
             <section v-if="assetGenerationMode === 'text'" class="asset-detail-prompt-panel">
               <div class="asset-detail-section-title">
                 <span>{{ assetDetail.type === 'character' ? t('episode.asset.finalPromptTurnaround') : assetDetail.type === 'scene' ? t('episode.asset.finalPromptFixed') : t('episode.asset.finalPromptWhiteBg') }}</span>
                 <div class="asset-detail-prompt-head-actions">
                   <button
                     class="btn btn-sm"
-                    :disabled="isGeneratingPrompt(assetDetail.type, assetDetail.item.id) || isAssetImagePending(assetDetail.type, assetDetail.item.id)"
+                    :disabled="assetReferenceUploading || isGeneratingPrompt(assetDetail.type, assetDetail.item.id) || isAssetImagePending(assetDetail.type, assetDetail.item.id)"
                     @click="genAssetFinalPrompt"
                   >
                     <Loader2 v-if="isGeneratingPrompt(assetDetail.type, assetDetail.item.id)" :size="11" class="animate-spin" />
@@ -1461,6 +1469,30 @@
         </div>
       </div>
 
+      <dialog ref="rewriteDialog" class="dialog rewrite-dialog" aria-labelledby="rewrite-dialog-title" @cancel.prevent="closeRewriteDialog">
+        <form class="rewrite-form" :aria-busy="rn" @submit.prevent="submitRewriteInstructions">
+          <header class="dialog-head">
+            <h2 id="rewrite-dialog-title" class="dialog-title">{{ t('episode.script.rewriteWithInstructions') }}</h2>
+          </header>
+          <div class="dialog-body">
+            <label class="field">
+              <span class="field-label">{{ t('episode.script.rewriteInstructions') }}</span>
+              <textarea v-model="rewriteInstructions" class="textarea" rows="5" autofocus required :disabled="rn"
+                aria-describedby="rewrite-source-hint" :placeholder="t('episode.script.rewriteInstructionsPlaceholder')" />
+            </label>
+            <p id="rewrite-source-hint" class="rewrite-source-hint">{{ t('episode.script.rewriteSourceHint') }}</p>
+            <p v-if="rewriteError" class="rewrite-error" role="alert">{{ rewriteError }}</p>
+          </div>
+          <footer class="dialog-foot">
+            <button type="button" class="btn" :disabled="rn" @click="closeRewriteDialog">{{ t('common.cancel') }}</button>
+            <button type="submit" class="btn btn-primary" :disabled="rn || !rewriteInstructions.trim()">
+              <Loader2 v-if="rn" :size="12" class="animate-spin" aria-hidden="true" />
+              {{ rn ? t('episode.script.rewriting') : t('episode.script.startRewrite') }}
+            </button>
+          </footer>
+        </form>
+      </dialog>
+
       <ConfirmDialog
         :open="assetDelete.open"
         :title="t('episode.delete.title', { type: assetDeleteTypeLabel })"
@@ -1516,6 +1548,9 @@ const panel = ref(['production', 'export'].includes(storedPanel?.panel) ? stored
 const { running: rn, runningType: rt, run: runAgent } = useAgent()
 
 const localRaw = ref(''), localScript = ref('')
+const rewriteDialog = ref(null)
+const rewriteInstructions = ref('')
+const rewriteError = ref('')
 const rawContent = computed(() => episode.value?.content || '')
 const scriptContent = computed(() => episode.value?.script_content || episode.value?.scriptContent || '')
 const epId = computed(() => episode.value?.id || 0)
@@ -1701,13 +1736,14 @@ const savingAssetDetail = ref(false)
 const assetTextBusy = computed(() => savingAssetDetail.value || (assetDetail.value.item && isGeneratingPrompt(assetDetail.value.type, assetDetail.value.item.id)))
 const assetGenerationMode = ref('text')
 const assetGenerationModels = ref({ text: '', reference: '' })
+const assetTextReferenceDraft = ref([])
 const assetReferenceDraft = ref([])
 const assetEditDraft = ref('')
 const assetReferenceHistory = ref([])
 const assetReferenceUploading = ref(false)
 const assetDialogElement = ref(null)
 let assetDialogOpener = null
-const assetDetailModelOptions = computed(() => assetModelOptions(imageConfigs.value, assetGenerationMode.value))
+const assetDetailModelOptions = computed(() => assetModelOptions(imageConfigs.value, assetGenerationMode.value, assetTextReferenceDraft.value.length > 0))
 const assetSelectedModelUnavailable = computed(() => !!assetGenerationModels.value[assetGenerationMode.value]
   && !assetDetailModelOptions.value.some(option => option.key === assetGenerationModels.value[assetGenerationMode.value]))
 let assetDetailRevision = 0
@@ -1725,15 +1761,16 @@ function closeImageViewer() {
   imageViewer.value = { open: false, src: '', title: '' }
 }
 
-function openAssetDetail(type, item, mode = 'text') {
+function openAssetDetail(type, item) {
   if (!item) return
   assetDialogOpener = document.activeElement
   const revision = ++assetDetailRevision
-  assetGenerationMode.value = mode === 'reference' ? 'reference' : 'text'
+  assetGenerationMode.value = 'text'
   assetGenerationModels.value = {
     text: assetModelKey(item, 'text', assetModelOptions(imageConfigs.value, 'text')),
     reference: assetModelKey(item, 'reference', assetModelOptions(imageConfigs.value, 'reference')),
   }
+  assetTextReferenceDraft.value = []
   assetReferenceDraft.value = assetReferences(item)
   assetReferenceUploading.value = false
   assetEditDraft.value = item.edit_prompt || item.editPrompt || ''
@@ -1985,7 +2022,7 @@ async function generateAssetDetail() {
   const mode = assetGenerationMode.value
   const options = mode === 'reference'
     ? { generation_mode: mode, reference_images: [...assetReferenceDraft.value], edit_prompt: assetEditDraft.value.trim() }
-    : { generation_mode: 'text' }
+    : { generation_mode: 'text', reference_images: [...assetTextReferenceDraft.value] }
   if (mode === 'reference' && !options.reference_images.length) { toast.error(t('assetGeneration.referenceRequired')); return }
   if (mode === 'reference' && !options.edit_prompt) { toast.error(t('assetGeneration.editRequired')); return }
   if (await saveAssetDetail(true)) await submitAssetImage(type, item.id, false, options)
@@ -2921,6 +2958,35 @@ function saveScr() { episodeAPI.update(epId.value, { script_content: localScript
 // 发给 Agent 的 message 是功能性提示词而非 UI 文案：产出语言由后端全局「内容语言」指令控制，
 // 这里保持中文不随界面语言变化
 function doRewrite() { saveRaw(); runAgent('script_rewriter', '请读取剧本并改写为格式化剧本，然后保存', dramaId, epId.value, refresh, chatModelOverride(), chatConfigId()) }
+function openRewriteDialog() {
+  rewriteInstructions.value = ''
+  rewriteError.value = ''
+  rewriteDialog.value?.showModal()
+}
+function closeRewriteDialog() {
+  if (!rn.value) rewriteDialog.value?.close()
+}
+async function submitRewriteInstructions() {
+  const instructions = rewriteInstructions.value.trim()
+  const source = localScript.value
+  const id = epId.value
+  if (rn.value || !instructions || !source.trim() || !id) return
+
+  rewriteError.value = ''
+  try {
+    const result = await runAgent('script_rewriter', undefined, dramaId, id, undefined, chatModelOverride(), chatConfigId(), {
+      rewrite_instructions: instructions,
+      script_content: source,
+    })
+    if (typeof result?.script_content !== 'string') throw new Error(t('episode.script.rewriteFailed'))
+    if (epId.value !== id) return
+    episode.value.script_content = result.script_content
+    localScript.value = result.script_content
+    closeRewriteDialog()
+  } catch (error) {
+    rewriteError.value = error?.message || t('episode.script.rewriteFailed')
+  }
+}
 function skipRewrite() {
   const raw = (localRaw.value || rawContent.value || '').trim()
   if (!raw) {
@@ -3167,7 +3233,7 @@ async function submitAssetImage(type, id, silent = false, options = { generation
     const item = items.find(item => item.id === id)
     const mode = options.generation_mode === 'reference' ? 'reference' : 'text'
     const inherited = imageModelOptions.value.find(option => option.key === imageModel.value) || (!imageModel.value ? imageModelOptions.value[0] : null)
-    const selection = resolveAssetModel(item, mode, assetModelOptions(imageConfigs.value, mode), inherited ? `${inherited.configId}/${inherited.model}` : '')
+    const selection = resolveAssetModel(item, mode, assetModelOptions(imageConfigs.value, mode, options.reference_images?.length > 0), inherited ? `${inherited.configId}/${inherited.model}` : '')
     if (mode === 'text' && item && !(item.final_prompt || item.finalPrompt)) {
       if (!silent) toast.info(t('episode.asset.generatingPrompt'))
       try { await ensureAssetPrompt(type, id) } catch {} // 保留后端提示词兜底。
@@ -4191,6 +4257,20 @@ onMounted(() => setTimeout(() => autoTour('episode', EPISODE_TOUR, t), 900))
 }
 .step-name { font-size: 12.5px; font-weight: 700; color: var(--text-1); font-family: var(--font-display); }
 .char-count { font-size: 11px; color: var(--text-3); font-family: var(--font-mono); }
+
+.rewrite-dialog {
+  width: min(520px, calc(100% - 32px));
+  margin: auto;
+  padding: 0;
+  border: 1px solid var(--border);
+  color: var(--text-0);
+}
+.rewrite-dialog:not([open]) { display: none; }
+.rewrite-dialog::backdrop { background: var(--scrim); }
+.rewrite-form { display: flex; flex-direction: column; min-height: 0; }
+.rewrite-source-hint, .rewrite-error { margin: 8px 0 0; font-size: 12px; line-height: 1.5; }
+.rewrite-source-hint { color: var(--text-2); }
+.rewrite-error { color: var(--error); }
 
 /* Editor Area */
 .step-editor { flex: 1; display: flex; flex-direction: column; min-height: 0; }

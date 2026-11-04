@@ -20,7 +20,7 @@ import { imagePromptTools } from './tools/image-prompt-tools.js'
 import { loadAgentSkills, skillWorkspaces } from './skills.js'
 import { loadAgentPromptFile, loadBasePromptFile } from './prompts.js'
 import { buildLanguageDirective } from './language.js'
-import { getContentLanguageFromRC } from './context.js'
+import { getContentLanguageFromRC, getScriptRevision } from './context.js'
 
 // Default prompts (used when workspace/prompts/<type>.md 文件缺失时兜底)
 export const DEFAULT_PROMPTS: Record<string, { name: string; instructions: string }> = {
@@ -354,7 +354,10 @@ function buildInstructions(type: string) {
     const baseInstructions = promptFile?.instructions || defaults.instructions
     const skillInstructions = await loadAgentSkills(type, lang)
     const languageDirective = buildLanguageDirective(lang)
-    return [baseInstructions, skillInstructions, languageDirective, CHINESE_PROMPT_RULE]
+    const revisionDirective = type === 'script_rewriter' && getScriptRevision(requestContext)
+      ? '本次任务是修订当前格式化剧本。read_episode_script 和 rewrite_to_screenplay 返回的是当前剧本。只修改用户本次要求涉及的内容和格式，调用 save_script 提交修改后的完整剧本。本次修订要求与上文默认改编流程或格式规则冲突时，以本次修订要求为准。'
+      : ''
+    return [baseInstructions, skillInstructions, revisionDirective, languageDirective, CHINESE_PROMPT_RULE]
       .filter(Boolean)
       .join('\n\n')
   }

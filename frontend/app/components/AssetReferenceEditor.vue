@@ -1,5 +1,6 @@
 <template>
   <div class="reference-editor" :aria-busy="uploading">
+    <h3 v-if="optional" class="reference-title">{{ t('assetGeneration.optionalReferences') }}</h3>
     <div class="reference-actions">
       <label class="btn btn-sm reference-upload" :class="{ disabled: busy || modelValue.length >= 4 }">
         {{ uploading ? t('assetGeneration.uploading') : t('assetGeneration.upload') }}
@@ -9,7 +10,7 @@
       <button class="btn btn-sm" type="button" :disabled="busy || !history.length" @click="showHistory = !showHistory">{{ t('assetGeneration.history') }}</button>
       <small>{{ modelValue.length }} / 4</small>
     </div>
-    <p class="reference-hint">{{ t('assetGeneration.referenceHint') }}</p>
+    <p class="reference-hint">{{ t(optional ? 'assetGeneration.textReferenceHint' : 'assetGeneration.referenceHint') }}</p>
     <div v-if="modelValue.length" class="reference-grid">
       <div v-for="(source, index) in modelValue" :key="source" class="reference-card">
         <img :src="assetReferenceSrc(source)" :alt="t('assetGeneration.referenceN', { n: index + 1 })" />
@@ -20,7 +21,7 @@
         </div>
       </div>
     </div>
-    <div v-else class="reference-empty">{{ t('assetGeneration.referenceRequired') }}</div>
+    <div v-else-if="!optional" class="reference-empty">{{ t('assetGeneration.referenceRequired') }}</div>
     <div v-if="showHistory" class="reference-history" :aria-label="t('assetGeneration.history')">
       <button v-for="source in uniqueAssetReferences(history)" :key="source" type="button" :disabled="busy || modelValue.length >= 4 || hasReference(source)" @click="add(source)">
         <img :src="assetReferenceSrc(source)" :alt="t('assetGeneration.chooseHistory')" loading="lazy" />
@@ -34,7 +35,7 @@ import { computed, ref, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { uploadAPI } from '~/composables/useApi'
 import { assetReferenceSrc, canonicalAssetReference, uniqueAssetReferences } from '~/composables/useAssetGeneration'
-const props = withDefaults(defineProps<{ modelValue: string[]; currentImage?: string; history?: string[]; disabled?: boolean }>(), { currentImage: '', history: () => [], disabled: false })
+const props = withDefaults(defineProps<{ modelValue: string[]; currentImage?: string; history?: string[]; disabled?: boolean; optional?: boolean }>(), { currentImage: '', history: () => [], disabled: false })
 const emit = defineEmits<{ 'update:modelValue': [value: string[]]; error: [message: string]; uploading: [value: boolean] }>()
 const { t } = useI18n()
 const uploading = ref(false)
@@ -71,6 +72,7 @@ async function upload(event: Event) {
 </script>
 
 <style scoped>
+.reference-title { margin: 0 0 8px; font-size: 12px; font-weight: 600; }
 .reference-actions, .reference-card-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .reference-actions small, .reference-hint { color: var(--text-3); font-size: 12px; }
 .reference-hint { margin: 10px 0; line-height: 1.5; }

@@ -143,6 +143,29 @@ test('five batch video requests preserve legacy English style and finish without
   assert.equal(db.select().from(schema.apiCallLogs).where(eq(schema.apiCallLogs.category, 'text')).all().length, 0)
 })
 
+test('H3 scene references retain the selected project style and use their actual picture index', async () => {
+  const style = db.select().from(schema.stylePresets).where(eq(schema.stylePresets.value, '3d')).get()!.prompt
+  const drama = db.insert(schema.dramas).values({ title: '参考图风格验证', style: '3d', createdAt: ts, updatedAt: ts }).returning().get()
+  const episode = db.insert(schema.episodes).values({ dramaId: drama.id, episodeNumber: 1, title: '参考图验证', videoConfigId: configIds.video, createdAt: ts, updatedAt: ts }).returning().get()
+  const sceneUrl = 'static/uploads/scene.png'
+  await fs.mkdir(path.join(root, 'static', 'uploads'), { recursive: true })
+  await fs.writeFile(path.join(root, sceneUrl), png)
+  const scene = db.insert(schema.scenes).values({ dramaId: drama.id, location: '墙边小路', time: '午后', prompt: '', imageUrl: sceneUrl, createdAt: ts, updatedAt: ts }).returning().get()
+  const board = db.insert(schema.storyboards).values({ episodeId: episode.id, storyboardNumber: 1, sceneId: scene.id, createdAt: ts, updatedAt: ts }).returning().get()
+  const prompt = '镜头沿 @图片2墙边小路向前。'
+  const response = await tasksRoute.request('/', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: 'video', storyboard_id: board.id, prompt, duration: 2,
+      reference_image_urls: [`data:image/png;base64,${png.toString('base64')}`, `/${sceneUrl}`] }),
+  })
+  const payload = await response.json() as any
+  assert.equal(response.status, 201, JSON.stringify(payload))
+  const task = await waitFor(payload.data.id)
+  const submitted = submittedVideoPrompts.get(task.taskId!)!
+  assert.equal(submitted, `${style}，\n镜头沿 <Picture 2>墙边小路向前。`)
+  assert.equal(db.select().from(schema.storyboards).where(eq(schema.storyboards.id, board.id)).get()!.videoPrompt, null)
+})
+
 test('configuration updates round-trip workflow options and reject canvas format', async () => {
   db.update(schema.aiServiceConfigs).set({ settings: '{"temperature":0.7}' }).where(eq(schema.aiServiceConfigs.id, configIds.image)).run()
   const update = await configsRoute.request(`/${configIds.image}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ temperature: null, comfyui: { maxPixels: 262144, timeoutMinutes: 30 } }) })

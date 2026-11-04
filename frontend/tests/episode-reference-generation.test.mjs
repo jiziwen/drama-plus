@@ -37,7 +37,7 @@ function setup(kind = 'character') {
     assetDetail: ref({ open: false, type: '', item: null }),
     assetDetailDraft: ref({}), assetPromptDraft: ref(''), assetPromptDirty: ref(false), savingAssetDetail: ref(false),
     assetGenerationMode: ref('text'), assetGenerationModels: ref({ text: '', reference: '' }),
-    assetReferenceDraft: ref([]), assetEditDraft: ref(''), assetReferenceHistory: ref([]),
+    assetTextReferenceDraft: ref([]), assetReferenceDraft: ref([]), assetEditDraft: ref(''), assetReferenceHistory: ref([]),
     assetReferenceUploading: ref(false), assetDialogElement: ref(null),
     imageConfigs: ref(configs), imageModel: ref('openai/gpt-image-2'),
     imageModelOptions: ref([{ key: 'openai/gpt-image-2', model: 'gpt-image-2', configId: 12 }]),
@@ -74,7 +74,10 @@ function setup(kind = 'character') {
     + '\nglobalThis.activeCount = genTaskActiveCount;', ctx)
   return {
     ctx, item: records.value[0], requests, updates, errors, promptCalls, pollChecks, timers,
-    open: mode => ctx.openAssetDetail(kind, records.value[0], mode),
+    open: mode => {
+      ctx.openAssetDetail(kind, records.value[0])
+      if (mode === 'reference') ctx.assetGenerationMode.value = mode
+    },
     setTaskResults: value => { taskResults = value },
     setQueryError: value => { queryError = value },
     setUpdateHandler: handler => { updateHandler = handler },
@@ -82,9 +85,11 @@ function setup(kind = 'character') {
   }
 }
 
-test('details always opens text mode; reference redraw explicitly opens reference mode without auto-using the current image', async t => {
+test('details always opens text mode and switching tabs does not auto-use the current image', async t => {
   const h = setup(); t.after(h.cleanup)
-  h.open('reference')
+  h.open()
+  assert.equal(h.ctx.assetGenerationMode.value, 'text')
+  h.ctx.assetGenerationMode.value = 'reference'
   assert.equal(h.ctx.assetGenerationMode.value, 'reference')
   assert.deepEqual(plain(h.ctx.assetReferenceDraft.value), [])
   h.ctx.closeAssetDetail()
@@ -134,6 +139,23 @@ for (const kind of ['character', 'scene', 'prop']) {
     assert.equal(args[3], 10)
     assert.deepEqual(args[6], { generation_mode: 'text' })
     assert.equal(h.ctx.assetDetail.value.open, false)
+  })
+
+  test(`${kind}: text dialog uses the final prompt with optional references for this submission`, async t => {
+    const h = setup(kind); t.after(h.cleanup)
+    h.item.reference_images = ['static/saved-edit.png']
+    h.open()
+    assert.deepEqual(plain(h.ctx.assetTextReferenceDraft.value), [])
+    h.ctx.assetGenerationModels.value.text = '12/gpt-image-2'
+    h.ctx.assetTextReferenceDraft.value = ['static/main.png', 'static/support.png']
+    h.ctx.assetPromptDraft.value = 'new final prompt'
+    h.ctx.assetPromptDirty.value = true
+    await h.ctx.generateAssetDetail()
+    assert.equal(h.updates[0].payload.final_prompt, 'new final prompt')
+    assert.equal('reference_images' in h.updates[0].payload, false)
+    assert.deepEqual(h.requests[0].args[6], { generation_mode: 'text', reference_images: ['static/main.png', 'static/support.png'] })
+    assert.deepEqual(plain(h.item.reference_images), ['static/saved-edit.png'])
+    assert.deepEqual(h.promptCalls, [])
   })
 }
 

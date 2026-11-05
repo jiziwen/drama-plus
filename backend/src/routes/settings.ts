@@ -1,5 +1,5 @@
 /**
- * 应用设置路由 — 全局配置的读写入口（当前：AI 内容语言）
+ * 应用设置路由 — 全局配置的读写入口
  */
 import { Hono } from 'hono'
 import { getContentLanguage, setContentLanguage, getToursSeen, setToursSeen, CONTENT_LANGUAGES, type ContentLanguage } from '../services/app-settings.js'
@@ -12,7 +12,7 @@ app.get('/content-language', async (c) => {
   return success(c, { language: await getContentLanguage() })
 })
 
-// PUT /content-language — 设置 AI 内容语言（body: { language: 'zh'|'en'|'ja'|'ko' }）
+// PUT /content-language — 兼容旧客户端，仅接受中文（body: { language: 'zh' }）
 app.put('/content-language', async (c) => {
   const body = await c.req.json().catch(() => null)
   const language = body?.language

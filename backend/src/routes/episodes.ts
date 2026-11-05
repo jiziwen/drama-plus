@@ -168,8 +168,8 @@ app.get('/:id/video-prompts-status', async (c) => {
 app.get('/:episode_id/storyboards', async (c) => {
   const episodeId = Number(c.req.param('episode_id'))
   const rows = await db.select().from(schema.storyboards)
-    .where(eq(schema.storyboards.episodeId, episodeId))
-    .orderBy(schema.storyboards.storyboardNumber)
+    .where(and(eq(schema.storyboards.episodeId, episodeId), isNull(schema.storyboards.deletedAt)))
+    .orderBy(schema.storyboards.storyboardNumber, schema.storyboards.id)
 
   const links = await db.select().from(schema.storyboardCharacters)
   const charIdsByStoryboard = new Map<number, number[]>()
@@ -220,7 +220,7 @@ app.get('/:id/generation-tasks', async (c) => {
   const [ep] = await db.select().from(schema.episodes).where(eq(schema.episodes.id, episodeId))
   if (!ep) return notFound(c, '剧集不存在')
 
-  const sbs = await db.select().from(schema.storyboards).where(eq(schema.storyboards.episodeId, episodeId))
+  const sbs = await db.select().from(schema.storyboards).where(and(eq(schema.storyboards.episodeId, episodeId), isNull(schema.storyboards.deletedAt)))
   const storyboardIds = new Set(sbs.map(s => s.id))
 
   const epScenes = await db.select().from(schema.episodeScenes).where(eq(schema.episodeScenes.episodeId, episodeId))
@@ -263,7 +263,7 @@ app.get('/:id/pipeline-status', async (c) => {
 
   const chars = await db.select().from(schema.characters).where(eq(schema.characters.dramaId, ep.dramaId))
   const scenes = await db.select().from(schema.scenes).where(eq(schema.scenes.dramaId, ep.dramaId))
-  const sbs = await db.select().from(schema.storyboards).where(eq(schema.storyboards.episodeId, episodeId))
+  const sbs = await db.select().from(schema.storyboards).where(and(eq(schema.storyboards.episodeId, episodeId), isNull(schema.storyboards.deletedAt)))
   const merges = await db.select().from(schema.videoMerges).where(eq(schema.videoMerges.episodeId, episodeId))
 
   const sbsWithImage = sbs.filter(s => s.composedImage)

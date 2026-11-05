@@ -24,18 +24,7 @@
 
       <div class="header-right">
         <button class="nav-link global-settings-trigger" @click="openSettings()"><Settings :size="15" :stroke-width="1.8" /><span>{{ t('layout.nav.settings') }}</span></button>
-        <a
-          class="github-link"
-          href="https://github.com/chatfire-AI/huobao-drama"
-          target="_blank"
-          rel="noopener"
-          aria-label="GitHub"
-          title="GitHub"
-        >
-          <Github :size="15" :stroke-width="1.8" />
-        </a>
         <ThemeToggle />
-        <LocaleSwitcher />
       </div>
     </header>
 
@@ -58,7 +47,7 @@ import { useI18n } from 'vue-i18n'
 import { aiConfigAPI } from '~/composables/useApi'
 import brandLogo from '~/assets/brand-logo.png'
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 const route = useRoute()
 const { open: openSettings, revision: settingsRevision } = useSettingsPanel()
 watch(settingsRevision, checkAiConfigs)
@@ -85,8 +74,6 @@ async function checkAiConfigs() {
 onMounted(checkAiConfigs)
 // 设置页保存配置后返回时重新检查(布局跨页面复用,onMounted 只触发一次)
 watch(() => route.path, checkAiConfigs)
-// 切换界面语言时横幅中已拼接的类型文案需要重算
-watch(locale, checkAiConfigs)
 </script>
 
 <style scoped>
@@ -168,23 +155,6 @@ watch(locale, checkAiConfigs)
 .header-right {
   margin-left: auto;
   display: flex; align-items: center;
-}
-/* GitHub 入口 — 与 ThemeToggle 同款圆形图标按钮 */
-.github-link {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: var(--radius-pill);
-  color: var(--text-2);
-  transition: all 0.18s var(--ease-out);
-  line-height: 1;
-}
-.github-link:hover { color: var(--text-0); background: var(--bg-hover); }
-.github-link:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3.5px var(--button-focus);
 }
 .nav-link {
   display: flex; align-items: center; gap: 6px;

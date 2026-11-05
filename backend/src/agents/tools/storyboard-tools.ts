@@ -237,11 +237,9 @@ const saveStoryboards = createTool({
       db.transaction(tx => {
         const existingRows = tx.select().from(schema.storyboards).where(eq(schema.storyboards.episodeId, episodeId)).all()
         if (replace_existing === true) {
-          for (const row of existingRows) {
-            tx.delete(schema.storyboardCharacters).where(eq(schema.storyboardCharacters.storyboardId, row.id)).run()
-            tx.delete(schema.storyboardProps).where(eq(schema.storyboardProps.storyboardId, row.id)).run()
+          for (const row of existingRows.filter(row => !row.deletedAt)) {
+            tx.update(schema.storyboards).set({ deletedAt: ts, updatedAt: ts }).where(eq(schema.storyboards.id, row.id)).run()
           }
-          tx.delete(schema.storyboards).where(eq(schema.storyboards.episodeId, episodeId)).run()
         }
         const shotToId = new Map((replace_existing === true ? [] : existingRows.filter(row => !row.deletedAt)).map(row => [row.storyboardNumber, row.id]))
         for (const sb of storyboards) {

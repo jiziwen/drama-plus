@@ -1,7 +1,7 @@
 /**
  * 应用级全局设置（app_settings key-value 表）
- * AI 内容语言：剧本、提取和分镜描述的目标语言；图片和视频提示词固定为简体中文
- * 层次约束：本模块只依赖 db，严禁反向 import agents/*（agents/context.ts 会引用本模块）
+ * 内容语言固定为简体中文；保留设置接口兼容旧客户端
+ * 层次约束：本模块只依赖 db，严禁反向 import agents/*
  *
  * 注意：刻意做成同步 API（better-sqlite3 驱动的 .get()/.run()），
  * 供 agents/context.ts 的同步 buildAgentRequestContext 内部直接调用
@@ -10,34 +10,14 @@ import { eq } from 'drizzle-orm'
 import { db, schema } from '../db/index.js'
 import { now } from '../utils/response.js'
 
-export const CONTENT_LANGUAGES = ['zh', 'en', 'ja', 'ko'] as const
-export type ContentLanguage = typeof CONTENT_LANGUAGES[number]
+export const CONTENT_LANGUAGES = ['zh'] as const
+export type ContentLanguage = 'zh'
 
-const CONTENT_LANGUAGE_KEY = 'content_language'
-
-function isContentLanguage(v: unknown): v is ContentLanguage {
-  return typeof v === 'string' && (CONTENT_LANGUAGES as readonly string[]).includes(v)
-}
-
-/** 读取全局内容语言；未设置或值非法时回退 'zh'（保持历史默认行为） */
-export function getContentLanguage(): ContentLanguage {
-  const row = db.select().from(schema.appSettings)
-    .where(eq(schema.appSettings.key, CONTENT_LANGUAGE_KEY))
-    .get()
-  return isContentLanguage(row?.value) ? row.value : 'zh'
-}
-
-/** 写入全局内容语言（upsert） */
+/** 旧数据库中的语言设置不再影响内容生成。 */
+export function getContentLanguage(): ContentLanguage { return 'zh' }
 export function setContentLanguage(lang: ContentLanguage): ContentLanguage {
-  if (!isContentLanguage(lang)) throw new Error(`Invalid content language: ${lang}`)
-  db.insert(schema.appSettings)
-    .values({ key: CONTENT_LANGUAGE_KEY, value: lang, updatedAt: now() })
-    .onConflictDoUpdate({
-      target: schema.appSettings.key,
-      set: { value: lang, updatedAt: now() },
-    })
-    .run()
-  return lang
+  if (lang !== 'zh') throw new Error(`Invalid content language: ${lang}`)
+  return 'zh'
 }
 
 const TOURS_SEEN_KEY = 'tours_seen'

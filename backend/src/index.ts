@@ -22,7 +22,6 @@ import skills from './routes/skills.js'
 import props from './routes/props.js'
 import settings from './routes/settings.js'
 import storage from './routes/storage.js'
-import serverUpdate from './routes/serverUpdate.js'
 import apiCallLogs from './routes/apiCallLogs.js'
 import localRuntime from './routes/localRuntime.js'
 import { requestLogger, errorHandler } from './middleware/logger.js'
@@ -68,7 +67,6 @@ api.route('/skills', skills)
 api.route('/props', props)
 api.route('/storage', storage)
 api.route('/settings', settings)
-api.route('/server-update', serverUpdate)
 api.route('/api-call-logs', apiCallLogs)
 api.route('/local-runtime', localRuntime)
 

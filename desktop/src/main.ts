@@ -15,7 +15,6 @@ import * as fs from 'fs'
 import * as fsp from 'fs/promises'
 import * as path from 'path'
 import { registerMigrationIpc } from './migrate'
-import { registerUpdater, markQuitting } from './updater'
 import { createStartupLog, redactStartupLog, waitForBackend } from './startup'
 
 // 主进程打 CJS 产物，__dirname 天然可用（import.meta.url 在 CJS 下为 undefined）
@@ -262,7 +261,7 @@ function createWindow() {
   // 页面标题自带产品名，避免文件路径兜底标题
   mainWindow.on('page-title-updated', e => e.preventDefault())
   mainWindow.on('closed', () => { mainWindow = null })
-  // 外链一律交给系统浏览器：应用内不弹新窗（如设置页「前往 api.firemux.cn 获取 Key」）
+  // 外链一律交给系统浏览器：应用内不弹新窗
   const isAppUrl = (url: string) => {
     try { return new URL(url).origin === `http://127.0.0.1:${backendPort}` } catch { return false }
   }
@@ -380,11 +379,9 @@ const migrationDeps = {
   normCase,
 }
 registerMigrationIpc(migrationDeps)
-registerUpdater(() => mainWindow)
 
 app.on('before-quit', () => {
   quitting = true
-  markQuitting()
   backend?.kill()
 })
 

@@ -11,7 +11,7 @@
 
 重启电脑后可双击桌面的「小李短剧」快捷方式，同时启动 Docker 应用和本地 ComfyUI。也可以手动运行 `powershell -ExecutionPolicy Bypass -File scripts/start-comfyui.ps1` 后执行 `docker compose up -d app`。
 
-本机运行镜像为 `huobao/huobao-drama:comfyui-local`，由本地 compose override 选择，已排除 Watchtower 自动替换。原镜像备份标签为 `huobao/huobao-drama:before-comfyui-20261028`。数据目录仍挂载仓库的 `data/`，接入前有 SQLite 在线备份 `data/huobao.sqlite3.bak-before-comfyui-20261028`。
+本机运行镜像为 `huobao/huobao-drama:comfyui-local`，由本地 compose override 选择。原镜像备份标签为 `huobao/huobao-drama:before-comfyui-20261028`。数据目录仍挂载仓库的 `data/`，接入前有 SQLite 在线备份 `data/huobao.sqlite3.bak-before-comfyui-20261028`。
 
 ## 设置与使用
 
@@ -75,7 +75,7 @@
 
 ## 中文提示词
 
-图片最终提示词、视频提示词及分镜 Agent 新创作的画面、动作和运镜描述以简体中文为主，不跟随界面语言切换。已有系统提示词、视觉风格词（如 `high-quality`）、模型名、资产名称和技术术语可保留英文，不因混入这些词拦截。项目配置中的风格描述直接原样拼接，不做翻译和中文校验。视频提示词 Agent 的工具仅接受分镜 ID 和 `video_prompt`，无法覆盖场景绑定、时长或其他字段。
+图片最终提示词、视频提示词及分镜 Agent 新创作的画面、动作和运镜描述以简体中文为主。已有系统提示词、视觉风格词（如 `high-quality`）、模型名、资产名称和技术术语可保留英文，不因混入这些词拦截。项目配置中的风格描述直接原样拼接，不做翻译和中文校验。视频提示词 Agent 的工具仅接受分镜 ID 和 `video_prompt`，无法覆盖场景绑定、时长或其他字段。
 
 已有图片最终提示词在下次使用时保留匹配项目配置的系统风格前缀，只对需要转换的英文创作正文使用已配置的文本模型翻译。翻译会产生文本模型调用，记录中可查看。原有英文视频提示词可以点击「重新生成」换成中文，手动输入内容不批量改写。
 

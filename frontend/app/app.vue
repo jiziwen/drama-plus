@@ -9,7 +9,7 @@
 
 <script setup lang="ts">
 import { onMounted } from 'vue'
-import { Toaster, toast } from 'vue-sonner'
+import { Toaster } from 'vue-sonner'
 import { useI18n } from 'vue-i18n'
 import MigrateOverlay from '~/components/MigrateOverlay.vue'
 import { useDesktopBridge } from '~/composables/useDesktopBridge'
@@ -44,16 +44,6 @@ onMounted(() => {
     if (!state.active) begin()
     update(p)
   })
-
-  // 启动静默检查更新（主进程 20s 后自检一次，这里稍后取结果提示一次）
-  setTimeout(async () => {
-    try {
-      const s = await bridge.getUpdateState()
-      if (s?.status === 'available') {
-        toast.info(t('app.updateAvailable', { version: s.latestVersion }), { duration: 8000 })
-      }
-    } catch { /* 静默 */ }
-  }, 25_000)
 })
 </script>
 

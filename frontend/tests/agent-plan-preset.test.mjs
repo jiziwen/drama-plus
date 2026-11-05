@@ -6,9 +6,9 @@ import { runInNewContext } from 'node:vm'
 const source = readFileSync(new URL('../app/components/SettingsContent.vue', import.meta.url), 'utf8')
 
 test('Agent Plan preset fills a distinct endpoint and aliases while retaining the video provider', () => {
-  const presets = source.slice(source.indexOf('const providerPresets = {'), source.indexOf('const huobaoQuickConfigs'))
+  const presets = source.slice(source.indexOf('const providerPresets = {'), source.indexOf('function byType(t)'))
   const functions = source.slice(source.indexOf('function presetsByType('), source.indexOf('async function loadCfgs('))
-  const context = { cfgForm: {}, cfgTestResult: { value: { status: 404 } } }
+  const context = { cfgForm: {}, cfgTestResult: { value: { status: 404 } }, comfyConfigError: { value: '' } }
   runInNewContext(`${presets}\n${functions}\nthis.presets = presetsByType('video'); applyProviderPreset('video', 'agentPlan')`, context)
   assert.equal(new Set(context.presets.map(p => p.key)).size, context.presets.length)
   assert.equal(context.cfgForm.provider, 'volcengine')

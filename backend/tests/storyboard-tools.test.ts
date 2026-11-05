@@ -28,7 +28,7 @@ function fixture() {
   return { episodeId, character, old, rc }
 }
 const invoke = (tool: keyof typeof storyboardTools, input: unknown, requestContext: any) => (storyboardTools[tool].execute as any)(input, { requestContext })
-const rows = (episodeId: number) => db.select().from(schema.storyboards).where(eq(schema.storyboards.episodeId, episodeId)).all()
+const rows = (episodeId: number) => db.select().from(schema.storyboards).where(eq(schema.storyboards.episodeId, episodeId)).all().filter(row => !row.deletedAt)
 
 test('read then save works without a plan, beat ids or timing validation; omitted duration keeps the original default of 10 seconds', async () => {
   const f = fixture()
@@ -40,6 +40,8 @@ test('read then save works without a plan, beat ids or timing validation; omitte
     { shot_number: 2, duration: 3.5, description: '阿明推门。' },
     { shot_number: 3, duration: 60, description: '阿明走过长廊。' },
   ] }, f.rc)
+  assert.ok(db.select().from(schema.storyboards).where(eq(schema.storyboards.id, f.old.id)).get()?.deletedAt)
+  assert.ok(db.select().from(schema.storyboardCharacters).where(eq(schema.storyboardCharacters.storyboardId, f.old.id)).get())
   assert.equal(result.count, 3)
   assert.equal(result.total_duration, 73.5)
   assert.deepEqual(rows(f.episodeId).map(row => row.duration), [10, 3.5, 60])

@@ -2,7 +2,7 @@
  * 批量视频提示词任务 — 异步为缺少 video_prompt 的分镜逐个运行 prompt_generator Agent
  * 进程内内存态：按集跟踪一份任务，运行中不重复启动；重启后状态丢失
  */
-import { eq } from 'drizzle-orm'
+import { and, eq, isNull } from 'drizzle-orm'
 import { db, schema } from '../db/index.js'
 import { mastra } from '../mastra/index.js'
 import { buildAgentRequestContext } from '../agents/context.js'
@@ -32,7 +32,7 @@ export async function startVideoPromptBatch(
   if (tasks.get(episodeId)?.status === 'running') return { started: false, total: -1 }
 
   const sbs = await db.select().from(schema.storyboards)
-    .where(eq(schema.storyboards.episodeId, episodeId))
+    .where(and(eq(schema.storyboards.episodeId, episodeId), isNull(schema.storyboards.deletedAt)))
     .orderBy(schema.storyboards.storyboardNumber)
   const pending = storyboardIds?.length
     ? sbs.filter(sb => storyboardIds.includes(sb.id))

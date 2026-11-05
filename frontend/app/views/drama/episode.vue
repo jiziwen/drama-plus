@@ -58,7 +58,6 @@
           <button class="btn" @click="openSettings()">⚙ {{ t('layout.nav.settings') }}</button>
           <button class="btn" @click="openSettings('calls')">接口记录</button>
           <ThemeToggle />
-          <LocaleSwitcher />
           <button class="btn btn-icon tour-help-btn" :title="t('tour.helpTitle')" @click="startTour('episode', EPISODE_TOUR, t)">
             <CircleHelp :size="14" :stroke-width="1.8" />
           </button>
@@ -497,6 +496,7 @@
               <span class="tag mono">{{ t('episode.sb.segmentStat', { n: sbs.length, dur: totalDuration }) }}</span>
               <span class="tag mono" :title="t('episode.vid.aspectRatio')">{{ dramaAspectRatio }}</span>
               <div class="ml-auto flex gap-1">
+                <button type="button" class="btn btn-sm" @click="openStoryboardTrash">{{ t('episode.vid.trash') }}</button>
                 <button class="btn btn-sm" :disabled="rn" @click="doBreakdown">
                   <Loader2 v-if="rt === 'storyboard_breaker'" :size="11" class="animate-spin" />
                   <svg v-else width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
@@ -532,13 +532,17 @@
                 <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
                 {{ t('episode.sb.startBreak') }}
               </button>
+              <button type="button" class="btn" :disabled="rn && rt === 'storyboard_breaker'" @click="openStoryboardCreate">{{ t('episode.vid.addShot') }}</button>
             </div>
             <div v-else class="video-task-workbench has-player" :style="{ '--vleft': videoLeftW + 'px', '--vright': videoRightW + 'px' }">
               <section class="video-task-list">
                 <div class="video-task-head">
-                <div>
+                <div class="video-task-heading">
+                  <div>
                   <div class="video-task-title">{{ t('episode.vid.listTitle') }}</div>
                   <div class="video-task-meta">{{ videoListFilter ? t('episode.vid.listMetaFiltered', { n: videoTaskRows.length, total: allVideoTaskRows.length }) : t('episode.vid.listMeta', { n: videoTaskRows.length }) }}</div>
+                  </div>
+                  <button type="button" class="btn btn-sm" :disabled="rn && rt === 'storyboard_breaker'" @click="openStoryboardCreate">{{ t('common.add') }}</button>
                 </div>
                 <div class="video-task-metrics">
                   <button type="button" class="video-task-metric is-pending" :class="{ on: videoListFilter === 'pending' }" @click="toggleVideoFilter('pending')">{{ t('episode.vid.metricPending', { n: pendingVideoIds.length }) }}</button>
@@ -555,6 +559,7 @@
                 <div
                   v-for="task in videoTaskRows"
                   :key="task.id"
+                  :data-shot-id="task.id"
                   :class="['video-task-row', 'is-' + videoTaskState(task.storyboard), { active: !videoSelectMode && selectedSb?.id === task.storyboard.id, 'is-selected': videoSelectMode && isVideoSbSelected(task.id) }]"
                   role="button"
                   tabindex="0"
@@ -605,14 +610,22 @@
                       <div v-if="videoModerationHint(task.error)" class="video-task-error-hint">{{ videoModerationHint(task.error) }}</div>
                     </div>
                   </div>
+                  <div class="video-task-actions" @keydown.stop>
                   <button
                     class="btn btn-icon btn-sm video-task-action"
                     :title="videoTaskActionLabel(task.storyboard)"
+                    :aria-label="videoTaskActionLabel(task.storyboard)"
                     :disabled="videoTaskState(task.storyboard) === 'pending'"
                     @click.stop="genVid(task.storyboard)"
                   >
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
                   </button>
+                  <button type="button" class="btn btn-icon btn-sm video-task-action video-task-delete"
+                    :aria-label="t('episode.vid.deleteShot')" :title="t('episode.vid.deleteShot')"
+                    :disabled="storyboardDeleteBlocked(task.storyboard)" @click.stop="askDeleteStoryboard(task.storyboard)">
+                    <Trash2 :size="13" />
+                  </button>
+                  </div>
                 </div>
                 </div>
               </section>
@@ -823,10 +836,11 @@
                       <span class="video-param-name">{{ t('episode.inspector.duration') }}</span>
                       <span class="video-param-control">
                         <input
-                          :value="selectedSb.duration || 10"
+                          :value="videoGenerationDuration(selectedSb.duration)"
                           type="number"
                           min="2"
                           max="30"
+                          step="1"
                           class="input video-duration-input"
                           @change="onVideoDurationChange"
                         />
@@ -1410,6 +1424,52 @@
         </div>
       </div>
 
+      <div v-if="storyboardTrashOpen" class="overlay" @click.self="closeStoryboardTrash" @keydown.esc.stop="closeStoryboardTrash">
+        <div class="dialog storyboard-trash-dialog" role="dialog" aria-modal="true" aria-labelledby="storyboard-trash-title">
+          <header class="dialog-head">
+            <h2 id="storyboard-trash-title" class="dialog-title">{{ t('episode.vid.trash') }}</h2>
+            <button type="button" class="btn btn-ghost btn-icon" :aria-label="t('common.close')" :disabled="!!storyboardRestoring" @click="closeStoryboardTrash"><X :size="16" /></button>
+          </header>
+          <div class="dialog-body storyboard-trash-body">
+            <p class="dim">{{ t('episode.vid.trashHint') }}</p>
+            <p v-if="storyboardTrashLoading" class="dim">{{ t('episode.vid.trashLoading') }}</p>
+            <p v-else-if="!storyboardTrash.length" class="dim">{{ t('episode.vid.trashEmpty') }}</p>
+            <div v-for="shot in storyboardTrash" v-else :key="shot.id" class="storyboard-trash-row">
+              <div class="storyboard-trash-info">
+                <strong>{{ t('episode.vid.trashShot', { n: shot.storyboard_number }) }}</strong>
+                <p>{{ shot.description || shot.title || t('episode.vid.trashNoDescription') }}</p>
+                <small class="dim">{{ shot.deleted_at ? new Date(shot.deleted_at).toLocaleString('zh-CN') : '' }}<template v-if="shot.video_url"> · {{ t('episode.vid.trashVideo') }}</template></small>
+              </div>
+              <button type="button" class="btn btn-sm" :disabled="!!storyboardRestoring || (rn && rt === 'storyboard_breaker')" @click="restoreStoryboard(shot)">
+                <Loader2 v-if="storyboardRestoring === shot.id" :size="12" class="animate-spin" />{{ t('episode.vid.restoreShot') }}
+              </button>
+            </div>
+          </div>
+          <footer class="dialog-foot"><button type="button" class="btn" :disabled="!!storyboardRestoring" @click="closeStoryboardTrash">{{ t('common.close') }}</button></footer>
+        </div>
+      </div>
+
+      <div v-if="storyboardCreateOpen" class="overlay" @click.self="closeStoryboardCreate" @keydown.esc.stop="closeStoryboardCreate">
+        <form class="dialog storyboard-create-dialog" role="dialog" aria-modal="true" aria-labelledby="storyboard-create-title" @submit.prevent="createStoryboard">
+          <header class="dialog-head">
+            <h2 id="storyboard-create-title" class="dialog-title">{{ t('episode.vid.addShot') }}</h2>
+          </header>
+          <div class="dialog-body">
+            <label class="field">
+              <span class="field-label">{{ t('episode.vid.insertPosition') }}</span>
+              <input ref="storyboardPositionInput" v-model="storyboardPosition" class="input" type="number" min="1" :max="sbs.length + 1" step="1" :placeholder="t('episode.vid.appendPlaceholder')" :disabled="storyboardCreating" />
+              <span class="dim">{{ t('episode.vid.insertHint', { max: sbs.length + 1 }) }}</span>
+            </label>
+          </div>
+          <footer class="dialog-foot">
+            <button type="button" class="btn" :disabled="storyboardCreating" @click="closeStoryboardCreate">{{ t('common.cancel') }}</button>
+            <button type="submit" class="btn btn-primary" :disabled="storyboardCreating || (rn && rt === 'storyboard_breaker')">
+              <Loader2 v-if="storyboardCreating" :size="12" class="animate-spin" />{{ t('common.add') }}
+            </button>
+          </footer>
+        </form>
+      </div>
+
       <div v-if="assetCreate.open" class="overlay" @click.self="assetCreate.open = false">
         <div class="dialog asset-create-dialog">
           <header class="dialog-head">
@@ -1501,6 +1561,14 @@
         @confirm="confirmDeleteAsset"
         @cancel="assetDelete.open = false"
       />
+      <ConfirmDialog
+        :open="!!storyboardToDelete"
+        :title="t('episode.vid.deleteShot')"
+        :message="t('episode.vid.deleteShotConfirm')"
+        :loading="storyboardDeleting"
+        @confirm="confirmDeleteStoryboard"
+        @cancel="closeDeleteStoryboard"
+      />
     </main>
     </div>
   </div>
@@ -1511,14 +1579,13 @@ import { toast } from 'vue-sonner'
 import { useI18n } from 'vue-i18n'
 import {
   Users, FileText, FolderKanban, Clapperboard, Download, Loader2,
-  Plus, X, ListTodo, CircleHelp,
+  Plus, X, ListTodo, CircleHelp, Trash2,
 } from 'lucide-vue-next'
 import { api, dramaAPI, episodeAPI, storyboardAPI, characterAPI, sceneAPI, propAPI, taskAPI, mergeAPI, aiConfigAPI, uploadAPI } from '~/composables/useApi'
 import { startTour, autoTour } from '~/composables/useTour'
 import { useAgent } from '~/composables/useAgent'
 import { resolveTextModelSelection } from '~/utils/text-model-selection'
 import { toastError, mapError, MODERATION_RE } from '~/composables/useToast'
-import LocaleSwitcher from '~/components/LocaleSwitcher.vue'
 import { assetModelOptions, assetModelKey, assetModelPatch, resolveAssetModel, assetReferences } from '~/composables/useAssetGeneration'
 
 definePageMeta({ layout: 'studio' })
@@ -1602,7 +1669,7 @@ watch([panel, scriptStep, prodTab], ([p, s, pt]) => {
 // ===== 视频制作三栏宽度：拖拽调节 + 全局持久化（双击分隔条恢复默认） =====
 const VIDEO_COL_STORE_KEY = 'huobao:workbench:video-cols'
 const orbitEditorTab = ref('description')
-const orbitAssetView = ref('list')
+const orbitAssetView = ref('grid')
 const orbitEditorTabs = [
   { id: 'description', number: '01', labelKey: 'workspaceView.visuals' },
   { id: 'reference', number: '02', labelKey: 'episode.ref.title' },
@@ -2370,7 +2437,7 @@ const episodeResolutionLabel = computed(() =>
 // 短档位标签（480p / 768P / 2K 等厂商原生档位），用于底部生效配置小结
 const episodeResolutionShort = computed(() =>
   selectedVideoConfig.value?.provider === 'comfyui' ? comfyVideoSizeLabel.value : RESOLUTION_DISPLAY[resolutionProvider.value][episodeResolution.value] || episodeResolution.value)
-const effectiveVideoDuration = computed(() => Number(selectedSb.value?.duration || 10))
+const effectiveVideoDuration = computed(() => videoGenerationDuration(selectedSb.value?.duration))
 // 分镜覆盖单独持久化；顶栏仍控制没有覆盖的镜头。配置 ID 是键的一部分，避免同名模型串配置。
 const shotVideoModelOptions = computed(() => [...videoConfigs.value]
   .filter(config => config.is_active)
@@ -2425,7 +2492,7 @@ async function changeShotVideoModel(sb, event) {
 const batchVideoModelLabels = computed(() => [...new Set(batchVideoConfirm.value.targets.map(shotVideoModelLabel))])
 const batchVideoResolutionLabels = computed(() => [...new Set(batchVideoConfirm.value.targets.map(shotVideoResolutionLabel))])
 const batchVideoTotalDuration = computed(() =>
-  batchVideoConfirm.value.targets.reduce((sum, sb) => sum + (Number(sb.duration) || 5), 0))
+  batchVideoConfirm.value.targets.reduce((sum, sb) => sum + videoGenerationDuration(sb.duration), 0))
 
 function openBatchVideoConfirm(pool) {
   const targets = pool.filter(s => !isPendingVideo(s.id) && !savingShotVideoIds.value.includes(s.id))
@@ -2823,6 +2890,148 @@ const currentSubStageLabel = computed(() => currentStageLabel.value)
 
 const totalDuration = computed(() => sbs.value.reduce((s, sb) => s + (sb.duration || 10), 0))
 const selectedSb = ref(null)
+const storyboardToDelete = ref(null)
+const storyboardDeleting = ref(false)
+const storyboardTrashOpen = ref(false)
+const storyboardTrashLoading = ref(false)
+const storyboardRestoring = ref(null)
+const storyboardTrash = ref([])
+
+async function openStoryboardTrash() {
+  if (!episode.value?.id) return
+  storyboardTrashOpen.value = true
+  storyboardTrashLoading.value = true
+  storyboardTrash.value = []
+  try {
+    storyboardTrash.value = await storyboardAPI.trash(episode.value.id)
+  } catch (e) {
+    storyboardTrashOpen.value = false
+    toastError(e)
+  } finally {
+    storyboardTrashLoading.value = false
+  }
+}
+
+function closeStoryboardTrash() {
+  if (!storyboardRestoring.value) storyboardTrashOpen.value = false
+}
+
+async function restoreStoryboard(shot) {
+  if (storyboardRestoring.value || (rn.value && rt.value === 'storyboard_breaker')) return
+  const episodeId = episode.value?.id
+  if (!episodeId) return
+  storyboardRestoring.value = shot.id
+  try {
+    await storyboardAPI.restore(shot.id)
+    storyboardTrash.value = storyboardTrash.value.filter(item => item.id !== shot.id)
+    videoListFilter.value = ''
+    videoSelectMode.value = false
+    selectedVideoSbIds.value = []
+    try {
+      const rows = await episodeAPI.storyboards(episodeId)
+      if (episode.value?.id !== episodeId) return
+      sbs.value = rows
+      selectedSb.value = rows.find(item => item.id === shot.id) || null
+      storyboardTrashOpen.value = false
+      await nextTick()
+      document.querySelector(`[data-shot-id="${shot.id}"]`)?.scrollIntoView({ block: 'nearest' })
+      toast.success(t('episode.vid.restored'))
+    } catch (e) {
+      toast.error(t('episode.vid.restoredRefreshFailed'))
+    }
+  } catch (e) {
+    toastError(e)
+  } finally {
+    storyboardRestoring.value = null
+  }
+}
+
+function storyboardDeleteBlocked(sb) {
+  return storyboardDeleting.value || (rn.value && rt.value === 'storyboard_breaker') ||
+    isPendingVideo(sb.id) || videoPromptBatch.value.running || videoPromptGeneratingIds.value.includes(sb.id)
+}
+
+function askDeleteStoryboard(sb) {
+  if (!storyboardDeleteBlocked(sb)) storyboardToDelete.value = sb
+}
+
+function closeDeleteStoryboard() {
+  if (!storyboardDeleting.value) storyboardToDelete.value = null
+}
+
+async function confirmDeleteStoryboard() {
+  const target = storyboardToDelete.value
+  if (!target || storyboardDeleteBlocked(target)) return
+  const episodeId = episode.value?.id
+  const previousIndex = sbs.value.findIndex(sb => sb.id === target.id)
+  const selectedId = selectedSb.value?.id
+  storyboardDeleting.value = true
+  try {
+    await storyboardAPI.del(target.id)
+    storyboardToDelete.value = null
+    selectedVideoSbIds.value = selectedVideoSbIds.value.filter(id => id !== target.id)
+    if (selectedId === target.id) videoListFilter.value = ''
+    try {
+      const rows = await episodeAPI.storyboards(episodeId)
+      if (episode.value?.id !== episodeId) return
+      sbs.value = rows
+      selectedSb.value = selectedId !== target.id
+        ? rows.find(sb => sb.id === selectedId) || null
+        : rows[Math.min(Math.max(previousIndex, 0), rows.length - 1)] || null
+    } catch (e) {
+      toast.error(t('episode.vid.deletedRefreshFailed'))
+    }
+  } catch (e) {
+    toastError(e)
+  } finally {
+    storyboardDeleting.value = false
+  }
+}
+
+const storyboardCreateOpen = ref(false)
+const storyboardCreating = ref(false)
+const storyboardPosition = ref('')
+const storyboardPositionInput = ref(null)
+
+async function openStoryboardCreate() {
+  storyboardPosition.value = ''
+  storyboardCreateOpen.value = true
+  await nextTick()
+  storyboardPositionInput.value?.focus()
+}
+
+function closeStoryboardCreate() {
+  if (!storyboardCreating.value) storyboardCreateOpen.value = false
+}
+
+async function createStoryboard() {
+  if (storyboardCreating.value || (rn.value && rt.value === 'storyboard_breaker') || !episode.value?.id) return
+  const position = String(storyboardPosition.value).trim()
+  if (position && (!/^\d+$/.test(position) || Number(position) < 1 || Number(position) > sbs.value.length + 1)) {
+    toast.error(t('episode.vid.invalidPosition', { max: sbs.value.length + 1 }))
+    return
+  }
+  storyboardCreating.value = true
+  try {
+    const created = await storyboardAPI.create({ episode_id: episode.value.id, ...(position ? { insert_position: Number(position) } : {}) })
+    storyboardCreateOpen.value = false
+    videoListFilter.value = ''
+    videoSelectMode.value = false
+    selectedVideoSbIds.value = []
+    try {
+      sbs.value = await episodeAPI.storyboards(episode.value.id)
+      selectedSb.value = sbs.value.find(sb => sb.id === created.id) || null
+      await nextTick()
+      document.querySelector(`[data-shot-id="${created.id}"]`)?.scrollIntoView({ block: 'nearest' })
+    } catch (e) {
+      toast.error(t('episode.vid.addedRefreshFailed'))
+    }
+  } catch (e) {
+    toastError(e)
+  } finally {
+    storyboardCreating.value = false
+  }
+}
 const selectedVideoTaskNumber = computed(() => {
   const index = videoTaskRows.value.findIndex(task => String(task.id) === String(selectedSb.value?.id))
   return index >= 0 ? index + 1 : 0
@@ -3520,14 +3729,15 @@ function resolveVideoPromptRefs(sb) {
 
 // 分镜时长（视频生成参数区直接编辑并保存到分镜）：
 // 统一限制 2-30s，列表/批量/单次生成统一读取该值；超出厂商支持范围由后端适配器收敛
+function videoGenerationDuration(value) {
+  const n = value === '' || value == null ? NaN : Number(value)
+  return Math.min(30, Math.max(2, Math.round(Number.isFinite(n) && n > 0 ? n : 10)))
+}
+
 function onVideoDurationChange(e) {
   const sb = selectedSb.value
   if (!sb) return
-  const min = 2
-  const max = 30
-  let v = Math.round(Number(e.target.value))
-  if (!Number.isFinite(v)) v = Number(sb.duration || 10)
-  v = Math.min(max, Math.max(min, v))
+  const v = videoGenerationDuration(e.target.value === '' ? sb.duration : e.target.value)
   e.target.value = v
   updateField(sb, 'duration', v)
 }
@@ -3587,7 +3797,7 @@ async function genVid(sb, opts = {}) {
     storyboard_id: sb.id,
     drama_id: dramaId,
     prompt: resolveVideoPromptRefs(sb),
-    duration: Number(sb.duration || 10),
+    duration: videoGenerationDuration(sb.duration),
     aspect_ratio: dramaAspectRatio.value,
     generate_audio: true,
     model: selection.model,
@@ -5192,6 +5402,13 @@ onMounted(() => setTimeout(() => autoTour('episode', EPISODE_TOUR, t), 900))
   font-weight: 850;
   color: var(--text-0);
 }
+.video-task-heading { width: 100%; display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.storyboard-create-dialog { width: min(440px, calc(100vw - 32px)); }
+.storyboard-trash-dialog { width: min(600px, calc(100vw - 32px)); }
+.storyboard-trash-body { max-height: min(60vh, 560px); overflow-y: auto; }
+.storyboard-trash-row { display: flex; align-items: center; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.storyboard-trash-info { min-width: 0; flex: 1; }
+.storyboard-trash-info p { margin: 4px 0; overflow-wrap: anywhere; white-space: pre-wrap; }
 .video-task-meta {
   margin-top: 3px;
   font-size: 11px;
@@ -5459,7 +5676,11 @@ button.video-task-metric.on { box-shadow: 0 0 0 2px var(--accent); }
   width: 24px;
   height: 24px;
   padding: 0;
+  flex: none;
 }
+.video-task-actions { display: flex; flex-direction: column; gap: 3px; align-items: center; width: 28px; }
+.video-task-delete { color: var(--text-2); }
+.video-task-delete:hover:not(:disabled) { color: var(--action-danger); }
 .video-task-inspector {
   min-width: 0;
   min-height: 0;

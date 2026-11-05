@@ -19,8 +19,7 @@ import { storyboardTools, updateVideoPrompt } from './tools/storyboard-tools.js'
 import { imagePromptTools } from './tools/image-prompt-tools.js'
 import { loadAgentSkills, skillWorkspaces } from './skills.js'
 import { loadAgentPromptFile, loadBasePromptFile } from './prompts.js'
-import { buildLanguageDirective } from './language.js'
-import { getContentLanguageFromRC, getScriptRevision } from './context.js'
+import { getScriptRevision } from './context.js'
 
 // Default prompts (used when workspace/prompts/<type>.md 文件缺失时兜底)
 export const DEFAULT_PROMPTS: Record<string, { name: string; instructions: string }> = {
@@ -345,26 +344,24 @@ const AGENT_TOOLS: Record<string, Record<string, any>> = {
 }
 
 /** instructions 按请求解析：prompt 文件（或默认）+ 技能全文拼接 + 目标语言指令块
- *  prompt/skill 文本随内容语言切换语言变体（<type>.<lang>.md / SKILL.<lang>.md），缺失回退中文版 */
+ *  prompt/skill 使用中文基础版本。 */
 function buildInstructions(type: string) {
   return async ({ requestContext }: { requestContext?: RequestContext }) => {
     const defaults = DEFAULT_PROMPTS[type]
-    const lang = type === 'prompt_generator' ? 'zh' : getContentLanguageFromRC(requestContext)
-    const promptFile = await loadAgentPromptFile(type, lang)
+    const promptFile = await loadAgentPromptFile(type)
     const baseInstructions = promptFile?.instructions || defaults.instructions
-    const skillInstructions = await loadAgentSkills(type, lang)
-    const languageDirective = buildLanguageDirective(lang)
+    const skillInstructions = await loadAgentSkills(type)
     const revisionDirective = type === 'script_rewriter' && getScriptRevision(requestContext)
       ? '本次任务是修订当前格式化剧本。read_episode_script 和 rewrite_to_screenplay 返回的是当前剧本。只修改用户本次要求涉及的内容和格式，调用 save_script 提交修改后的完整剧本。本次修订要求与上文默认改编流程或格式规则冲突时，以本次修订要求为准。'
       : ''
-    return [baseInstructions, skillInstructions, revisionDirective, languageDirective, CHINESE_PROMPT_RULE]
+    return [baseInstructions, skillInstructions, revisionDirective, '输出语言：剧本、对白、提取字段、分镜描述和新资产名称请使用简体中文。引用现有资产时保留原名称；用户明确要求保留的原文和技术术语可保留原样。', CHINESE_PROMPT_RULE]
       .filter(Boolean)
       .join('\n\n')
   }
 }
 
 /** model 按请求解析：基础版 prompt 文件 frontmatter + RequestContext 的 modelOverride/textConfigId 覆盖
- *  （model 只认基础版 prompts/<type>.md，语言变体不参与 model 解析） */
+ *  （model 从 prompts/<type>.md 解析） */
 function buildModel(type: string) {
   return async ({ requestContext }: { requestContext?: RequestContext }) => {
     const promptFile = await loadBasePromptFile(type)

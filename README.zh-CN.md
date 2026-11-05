@@ -9,15 +9,7 @@
 [![License](https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc-sa/4.0/)
 [![下载](https://img.shields.io/github/v/release/chatfire-AI/huobao-drama?style=flat&logo=github&label=%E4%B8%8B%E8%BD%BD)](https://github.com/chatfire-AI/huobao-drama/releases/latest)
 
-[中英双语](README.md) | **简体中文** | [English](README.en.md) | [日本語](README.ja.md) | [한국어](README.ko.md)
-
 [功能特性](#-功能特性) • [快速开始](#-快速开始) • [图文教程](#-图文教程) • [桌面版](#-桌面应用推荐) • [部署指南](#-部署指南)
-
-<h2>🔑 <a href="https://api.firemux.cn">获取 Huobao API Key 👉 立即查看</a></h2>
-
-**文本 · 图片 · 视频全部 AI 能力，一个 Key 即可开通**
-
-部署完成后在「设置 → 小李快捷配置」粘贴 Key，一键写入三条推荐配置，开箱即用
 
 <h3>📥 <a href="https://github.com/chatfire-AI/huobao-drama/releases/latest">下载桌面版（macOS / Windows）</a></h3>
 <h3>🌐 <a href="https://www.firemux.cn">官方网站</a></h3>
@@ -86,9 +78,9 @@ data/       — 生成资源文件与 SQLite 数据库
 | `storyboard_breaker` | 剧本 → 分镜序列拆解 |
 | `prompt_generator` | 角色/场景/道具图片提示词 + 分镜视频提示词生成 |
 
-### 🌐 多语言界面
+### 🌐 中文界面
 
-界面内置 **中文 / English / 日本語 / 한국어** 四种语言，并可全局设置 AI 生成内容的语言。
+界面和 AI 生成内容使用中文。
 
 ### 🔌 多厂商适配
 
@@ -200,8 +192,7 @@ cd backend && npx tsx scripts/import-mysql-to-sqlite.ts
 启动后所有 AI 功能（文本/生图/视频）都需要先配置模型服务，未配置时页面顶部会有横幅引导：
 
 1. 打开「设置」页
-2. 在「小李快捷配置」中粘贴 Huobao API Key（[前往 api.firemux.cn 获取](https://api.firemux.cn)），一键写入文本、图片、视频三条推荐配置
-3. 或使用「手动模板」按厂商逐个添加，支持连通性测试
+2. 使用「手动模板」按厂商逐个添加文本、图片和视频服务配置，文本服务支持连通性测试
 
 配置完成横幅自动消失，即可开始创建剧集生产。
 
@@ -227,11 +218,7 @@ cd backend && npx tsx scripts/import-mysql-to-sqlite.ts
 
 ### 第 2 步 · 配置 AI 服务（首次）
 
-设置页「小李快捷配置」粘贴 API Key 一键写入三条推荐配置；或用「手动模板」按厂商自选模型（顶栏可随时切换当前模型，见第 5 步）。
-
-<p align="center">
-  <img src="docs/screenshots/03-settings-quick.png" alt="AI 服务配置" width="800">
-</p>
+设置页使用「手动模板」按厂商自选模型（顶栏可随时切换当前模型，见第 5 步）。
 
 ### 第 3 步 · 剧本阶段
 
@@ -330,24 +317,7 @@ npm run dist:win    # Windows NSIS 安装器（win-x64，可在 macOS 上交叉�
 - 用户数据目录：`~/Library/Application Support/HuobaoDrama/`（数据库、生成的媒体、技能在线编辑的副本）
 - 内置 FFmpeg/FFprobe 二进制，无需系统安装
 - Electron 锁定 37.x：better-sqlite3 的 win32 预编译最高覆盖到该版本的 ABI（交叉打包免编译的关键）
-- 应用内点击外部链接（如「前往 api.firemux.cn 获取 Key」）直接用系统浏览器打开
-
-#### 🔄 应用内更新（无需 Apple 签名）
-
-桌面版内置更新器（与 Tauri 同类方案：macOS 目录替换 / Windows 静默安装，本地 sha256 校验）。发布新版流程：
-
-```bash
-# 1. 改 desktop/package.json 的 version，然后打包
-npm run dist        # macOS（产出 dmg + 更新用 zip）
-npm run dist:win    # Windows（产出 Setup.exe）
-
-# 2. 生成版本清单 release/latest.json（含各平台产物 sha256）
-cd desktop && npm run feed
-
-# 3. 发布：把 latest.json + 安装包 + zip 上传到 GitHub Release（tag 形如 v1.0.1）
-```
-
-已安装的客户端会在启动后自动检查清单（也可在「设置 → 关于更新」手动检查），发现新版即提示下载安装。自定义清单地址：`HUOBAO_UPDATE_FEED` 环境变量。
+- 应用内点击外部链接时直接用系统浏览器打开
 
 桌面版开发调试：
 
@@ -428,22 +398,18 @@ docker run -d \
   huobao/huobao-drama:4.0.6
 ```
 
-**方式二：docker compose（源码构建 + Watchtower 应用内更新）**：根目录提供一体化 `Dockerfile`（前端 generate + 后端依赖/运行时三阶段，后端与服务器部署一致走 tsx）与 `docker-compose.yml`（应用 + Watchtower）：
+**方式二：docker compose（源码构建）**：根目录提供一体化 `Dockerfile`（前端 generate + 后端依赖/运行时三阶段，后端与服务器部署一致走 tsx）与 `docker-compose.yml`：
 
 ```bash
-# 1. 配置环境（Watchtower 令牌，app 与 watchtower 两侧必须一致）
-cp .env.example .env   # 修改 WATCHTOWER_TOKEN
-
-# 2. 构建并启动（发布时注入版本号，供「关于更新」比对）
+# 1. 构建并启动
 HUOBAO_VERSION=4.0.5 docker compose up -d --build
 
-# 3. 访问 http://localhost:5679
+# 2. 访问 http://localhost:5679
 ```
 
 - **数据持久化**：命名卷 `huobao-data` 挂载 `/app/data`（SQLite + 生成的图片/视频 + workspace/skills，更新镜像不丢数据）
-- **应用内更新**：compose 自带 [Watchtower](https://containrrr.dev/watchtower/) sidecar（`--label-enable` 只更新标记容器，`--cleanup` 清旧镜像，每天自检一次）。设置页「关于更新」可检查新版本并「立即更新」——后端经 Watchtower HTTP API 触发，拉新镜像重建容器，几分钟后刷新页面即可
-- **手动模式**：`docker-compose.yml` 中删除 app 的 `HUOBAO_WATCHTOWER_*` 两个环境变量（或整个 watchtower 服务）后，「关于更新」退化为新版本提示 + 手动命令 `docker compose pull && docker compose up -d`
-- **发布镜像**：`docker buildx build --platform linux/amd64,linux/arm64 --build-arg HUOBAO_VERSION=x.y.z -t huobao/huobao-drama:x.y.z -t huobao/huobao-drama:latest --push .`，版本清单与桌面版共用 GitHub Releases 的 `latest.json`（可用 `HUOBAO_UPDATE_FEED` 覆盖）
+- **更新镜像**：手动执行 `docker compose pull && docker compose up -d`。
+- **发布镜像**：`docker buildx build --platform linux/amd64,linux/arm64 --build-arg HUOBAO_VERSION=x.y.z -t huobao/huobao-drama:x.y.z -t huobao/huobao-drama:latest --push .`
 
 ---
 
@@ -470,7 +436,7 @@ HUOBAO_VERSION=4.0.5 docker compose up -d --build
 - **路由**: 文件路由 (Vue Router 4)
 - **样式**: 纯 CSS + CSS Variables
 - **图标**: Lucide Vue
-- **国际化**: vue-i18n（中文 / English / 日本語 / 한국어）
+- **界面语言**: 中文
 
 ---
 
@@ -490,7 +456,7 @@ A: 无需安装。项目内置 `ffmpeg-static` / `ffprobe-static` 二进制（�
 
 ### Q: 页面顶部提示「尚未配置模型」？
 
-A: 这是正常的首次部署引导。前往「设置」页，用「小李快捷配置」粘贴 API Key 一键写入，或通过「手动模板」按厂商添加。文本、图片、视频三类均有启用中的配置后横幅自动消失。
+A: 这是正常的首次部署引导。前往「设置」页，通过「手动模板」按厂商添加。文本、图片、视频三类均有启用中的配置后横幅自动消失。
 
 ### Q: 前端无法连接后端 API？
 
@@ -540,7 +506,6 @@ A: 后端会在首次启动时自动创建所有表，检查日志确认初始�
   - 新增 `docker/init.sql` 及导出脚本（DBA 审核 / 预建表）
 - 首次使用引导
   - 未配置 AI 服务时全站顶部横幅提示并引导至设置页
-  - 设置页新增「小李快捷配置」：一个 Key 写入文本/图片/视频三条推荐配置
   - 未配置模型的报错中文化并指引设置页
 - 视频模型默认调整为 Seedance 2.0 Fast
 - 厂商收敛：仅保留 OpenAI / Gemini / 火山引擎

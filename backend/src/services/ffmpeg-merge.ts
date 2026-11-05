@@ -5,7 +5,7 @@ import fs from 'fs'
 import path from 'path'
 import { v4 as uuid } from 'uuid'
 import { db, getInsertId, schema } from '../db/index.js'
-import { eq } from 'drizzle-orm'
+import { and, eq, isNull } from 'drizzle-orm'
 import { now } from '../utils/response.js'
 import { logTaskError, logTaskStart, logTaskSuccess } from '../utils/task-logger.js'
 import { extractVideoPoster } from '../utils/video-poster.js'
@@ -25,7 +25,7 @@ function toAbsPath(relativePath: string): string {
  */
 export async function mergeEpisodeVideos(episodeId: number, dramaId: number, storyboardIds?: number[]): Promise<number> {
   let storyboards = await db.select().from(schema.storyboards)
-    .where(eq(schema.storyboards.episodeId, episodeId))
+    .where(and(eq(schema.storyboards.episodeId, episodeId), isNull(schema.storyboards.deletedAt)))
     .orderBy(schema.storyboards.storyboardNumber)
 
   if (storyboardIds?.length) {

@@ -116,14 +116,16 @@ test('single and batch submissions carry each target choice; invalid overrides d
     taskAPI: { generate: async params => { sent.push(params); return { id: sent.length } } },
     toast: { error: error => errors.push(error), success() {} }, refresh: async () => {}, pollVideoGeneration() {},
   })
-  runInNewContext(section('async function genVid(', 'async function pollVideoGeneration('), ctx)
+  runInNewContext(section('function videoGenerationDuration(', 'function pickFile(') + section('async function genVid(', 'async function pollVideoGeneration('), ctx)
   await Promise.all([
-    ctx.genVid({ id: 1, video_prompt: 'one', video_model: 'wf-minimax-h3', video_config_id: 10 }, { silent: true }),
-    ctx.genVid({ id: 2, video_prompt: 'two' }, { silent: true }),
+    ctx.genVid({ id: 1, video_prompt: 'one', duration: 12.25, video_model: 'wf-minimax-h3', video_config_id: 10 }, { silent: true }),
+    ctx.genVid({ id: 2, video_prompt: 'two', duration: 7.5 }, { silent: true }),
   ])
   assert.equal(sent[0].config_id, 10)
   assert.equal(sent[0].model, 'wf-minimax-h3')
   assert.equal(sent[1].config_id, 20)
+  assert.equal(sent[0].duration, 12)
+  assert.equal(sent[1].duration, 8)
   await ctx.genVid({ id: 3, video_prompt: 'three', video_model: 'removed', video_config_id: 10 })
   assert.equal(sent.length, 2)
   assert.deepEqual(errors, ['episode.inspector.modelUnavailable'])
@@ -134,4 +136,18 @@ test('video selector stays inside the existing inspector between duration and re
   assert.ok(footer.indexOf('onVideoDurationChange') < footer.indexOf('changeShotVideoModel'))
   assert.ok(footer.indexOf('changeShotVideoModel') < footer.indexOf('@click="genVid(selectedSb)"'))
   assert.doesNotMatch(footer, /dialog|modal|Teleport/)
+})
+
+test('duration editing uses whole seconds without rewriting the stored video duration on display', () => {
+  const shot = { duration: 12.25 }
+  const writes = []
+  const ctx = { selectedSb: { value: shot }, updateField: (...args) => writes.push(args) }
+  runInNewContext(section('function videoGenerationDuration(', 'function pickFile('), ctx)
+  assert.equal(ctx.videoGenerationDuration(shot.duration), 12)
+  assert.equal(shot.duration, 12.25)
+  assert.equal(writes.length, 0)
+  const event = { target: { value: '13.7' } }
+  ctx.onVideoDurationChange(event)
+  assert.equal(event.target.value, 14)
+  assert.equal(writes[0][2], 14)
 })

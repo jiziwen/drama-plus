@@ -1,11 +1,12 @@
 import { Hono } from 'hono'
-import { and, desc, eq } from 'drizzle-orm'
-import { db, getInsertId, schema } from '../db/index.js'
+import { and, asc, desc, eq, isNull, isNotNull } from 'drizzle-orm'
+import { db, schema } from '../db/index.js'
 import { success, created, now, badRequest } from '../utils/response.js'
 import { toSnakeCase } from '../utils/transform.js'
 import { mediaSelectionPatch } from '../services/media-selection.js'
 import { videoPosterResponse } from '../services/video-poster-response.js'
 import { logTaskPayload, logTaskStart, logTaskSuccess } from '../utils/task-logger.js'
+import { isGenerationTaskActive } from '../services/generation.js'
 
 const app = new Hono()
 
@@ -91,29 +92,55 @@ async function validateStoryboardBindings(episodeId: number, sceneId: number | n
 // POST /storyboards
 app.post('/', async (c) => {
   const body = await c.req.json()
+  const episodeId = Number(body.episode_id)
+  if (!Number.isSafeInteger(episodeId) || episodeId < 1) return badRequest(c, 'episode_id 必须是有效的集 ID')
+  if ('duration' in body && !Number.isSafeInteger(body.duration)) return badRequest(c, '分镜时长必须是整数')
+  const position = body.insert_position
+  if (position != null && (!Number.isSafeInteger(position) || position < 1)) {
+    return badRequest(c, '插入位置必须是正整数')
+  }
+  const episode = db.select({ id: schema.episodes.id }).from(schema.episodes).where(eq(schema.episodes.id, episodeId)).get()
+  if (!episode) return badRequest(c, '集不存在')
   const ts = now()
   logTaskStart('StoryboardAPI', 'create', {
-    episodeId: body.episode_id,
-    shotNumber: body.storyboard_number || 1,
+    episodeId,
+    insertPosition: position,
     sceneId: body.scene_id,
     characterIds: body.character_ids,
   })
   logTaskPayload('StoryboardAPI', 'create body', body)
-  await validateStoryboardBindings(body.episode_id, body.scene_id, body.character_ids, body.prop_ids)
-  const res = await db.insert(schema.storyboards).values({
-    episodeId: body.episode_id,
-    storyboardNumber: body.storyboard_number || 1,
-    title: body.title,
-    description: body.description,
-    sceneId: body.scene_id,
-    duration: body.duration || 10,
-    createdAt: ts,
-    updatedAt: ts,
-  })
-  await syncStoryboardCharacters(getInsertId(res), body.character_ids || [])
-  await syncStoryboardProps(getInsertId(res), body.prop_ids || [])
-  const [result] = await db.select().from(schema.storyboards)
-    .where(eq(schema.storyboards.id, getInsertId(res)))
+  await validateStoryboardBindings(episodeId, body.scene_id, body.character_ids, body.prop_ids)
+  let result: typeof schema.storyboards.$inferSelect
+  try {
+    result = db.transaction(tx => {
+      const existing = tx.select({ id: schema.storyboards.id }).from(schema.storyboards)
+        .where(and(eq(schema.storyboards.episodeId, episodeId), isNull(schema.storyboards.deletedAt)))
+        .orderBy(asc(schema.storyboards.storyboardNumber), asc(schema.storyboards.id)).all()
+      const insertPosition = position ?? existing.length + 1
+      if (insertPosition > existing.length + 1) throw new RangeError(`插入位置不能超过 ${existing.length + 1}`)
+
+      // 按现有列表顺序重新编号，兼容删除后空号和旧数据中的重复编号；不改变分镜 ID。
+      existing.forEach((shot, index) => {
+        const number = index + 1 + (index >= insertPosition - 1 ? 1 : 0)
+        tx.update(schema.storyboards).set({ storyboardNumber: number }).where(eq(schema.storyboards.id, shot.id)).run()
+      })
+      const inserted = tx.insert(schema.storyboards).values({
+        episodeId, storyboardNumber: insertPosition,
+        title: body.title, description: body.description, sceneId: body.scene_id,
+        duration: body.duration ?? 10, createdAt: ts, updatedAt: ts,
+      }).returning().get()
+      for (const characterId of new Set<number>((body.character_ids || []).filter(Boolean))) {
+        tx.insert(schema.storyboardCharacters).values({ storyboardId: inserted.id, characterId }).run()
+      }
+      for (const propId of new Set<number>((body.prop_ids || []).filter(Boolean))) {
+        tx.insert(schema.storyboardProps).values({ storyboardId: inserted.id, propId }).run()
+      }
+      return inserted
+    })
+  } catch (e) {
+    if (e instanceof RangeError) return badRequest(c, e.message)
+    throw e
+  }
   logTaskSuccess('StoryboardAPI', 'create', {
     storyboardId: result.id,
     episodeId: result.episodeId,
@@ -131,7 +158,8 @@ app.put('/:id', async (c) => {
   const id = Number(c.req.param('id'))
   const body = await c.req.json()
   const [storyboard] = await db.select().from(schema.storyboards).where(eq(schema.storyboards.id, id))
-  if (!storyboard) return badRequest(c, '镜头不存在')
+  if (!storyboard || storyboard.deletedAt) return badRequest(c, '镜头不存在')
+  if ('duration' in body && !Number.isSafeInteger(body.duration)) return badRequest(c, '分镜时长必须是整数')
   logTaskStart('StoryboardAPI', 'update', {
     storyboardId: id,
     episodeId: storyboard.episodeId,
@@ -174,14 +202,49 @@ app.put('/:id', async (c) => {
   return success(c)
 })
 
-// DELETE /storyboards/:id
-app.delete('/:id', async (c) => {
+// 查看指定集回收站中的分镜。
+app.get('/trash', c => {
+  const episodeId = Number(c.req.query('episode_id'))
+  if (!Number.isSafeInteger(episodeId) || episodeId < 1) return badRequest(c, 'episode_id 必须是有效的集 ID')
+  const rows = db.select().from(schema.storyboards).where(and(eq(schema.storyboards.episodeId, episodeId), isNotNull(schema.storyboards.deletedAt)))
+    .orderBy(desc(schema.storyboards.deletedAt), desc(schema.storyboards.id)).all()
+  return success(c, rows.map(toSnakeCase))
+})
+
+// 恢复到删除时的位置，位置超过现有列表长度时追加。
+app.post('/:id/restore', c => {
   const id = Number(c.req.param('id'))
-  logTaskStart('StoryboardAPI', 'delete', { storyboardId: id })
-  await db.delete(schema.storyboardCharacters).where(eq(schema.storyboardCharacters.storyboardId, id))
-  await db.delete(schema.storyboardProps).where(eq(schema.storyboardProps.storyboardId, id))
-  await db.delete(schema.storyboards).where(eq(schema.storyboards.id, id))
-  logTaskSuccess('StoryboardAPI', 'delete', { storyboardId: id })
+  if (!Number.isSafeInteger(id) || id < 1) return badRequest(c, '回收站中不存在此分镜')
+  const result = db.transaction(tx => {
+    const shot = tx.select().from(schema.storyboards).where(eq(schema.storyboards.id, id)).get()
+    if (!shot || !shot.deletedAt) return null
+    const rows = tx.select().from(schema.storyboards).where(and(eq(schema.storyboards.episodeId, shot.episodeId), isNull(schema.storyboards.deletedAt)))
+      .orderBy(asc(schema.storyboards.storyboardNumber), asc(schema.storyboards.id)).all()
+    const position = Math.min(Math.max(1, shot.storyboardNumber), rows.length + 1)
+    rows.forEach((row, index) => tx.update(schema.storyboards).set({ storyboardNumber: index + 1 + (index >= position - 1 ? 1 : 0) }).where(eq(schema.storyboards.id, row.id)).run())
+    return tx.update(schema.storyboards).set({ storyboardNumber: position, deletedAt: null, updatedAt: now() }).where(eq(schema.storyboards.id, id)).returning().get()
+  })
+  return result ? success(c, toSnakeCase(result)) : badRequest(c, '回收站中不存在此分镜')
+})
+
+// 删除时保留所有记录和文件，供回收站恢复。
+app.delete('/:id', c => {
+  const id = Number(c.req.param('id'))
+  if (!Number.isSafeInteger(id) || id < 1) return badRequest(c, '镜头不存在')
+  const outcome = db.transaction(tx => {
+    const shot = tx.select().from(schema.storyboards).where(eq(schema.storyboards.id, id)).get()
+    if (!shot || shot.deletedAt) return 'missing'
+    const tasks = tx.select().from(schema.sysTask).where(eq(schema.sysTask.storyboardId, id)).all()
+    if (tasks.some(task => task.status === 'processing' || isGenerationTaskActive(task.id))) return 'active'
+    tx.update(schema.storyboards).set({ deletedAt: now(), updatedAt: now() }).where(eq(schema.storyboards.id, id)).run()
+    const remaining = tx.select({ id: schema.storyboards.id }).from(schema.storyboards)
+      .where(and(eq(schema.storyboards.episodeId, shot.episodeId), isNull(schema.storyboards.deletedAt)))
+      .orderBy(asc(schema.storyboards.storyboardNumber), asc(schema.storyboards.id)).all()
+    remaining.forEach((row, index) => tx.update(schema.storyboards).set({ storyboardNumber: index + 1 }).where(eq(schema.storyboards.id, row.id)).run())
+    return 'deleted'
+  })
+  if (outcome === 'missing') return badRequest(c, '镜头不存在')
+  if (outcome === 'active') return badRequest(c, '该分镜有运行中的任务，请等待完成后再删除')
   return success(c)
 })
 

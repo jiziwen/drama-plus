@@ -1,7 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { assertChinesePrompt, isChinesePrompt, toChinesePrompt, CHINESE_PROMPT_RULE } from '../src/services/prompt-language.js'
-import { buildLanguageDirective } from '../src/agents/language.js'
 
 test('generation prompts require Chinese while allowing references and technical abbreviations', () => {
   for (const text of ['纯白背景，左侧正脸特写，右侧三张全身视图，脸和服装完全一致。', '@图片1小明缓缓转身，3D 动画，柔和棚拍光，4K 细节。']) assert.doesNotThrow(() => assertChinesePrompt(text))
@@ -20,7 +19,4 @@ test('legacy system style prefixes and mixed style terms remain unchanged withou
   assert.equal(await toChinesePrompt(prompt, style), prompt)
   const mixed = 'high-quality 3D CG动画静帧，现代游戏引擎电影级渲染，细节清晰，角色造型一致。'
   assert.equal(await toChinesePrompt(mixed), mixed)
-})
-test('all interface language directives preserve Chinese generation prompts', () => {
-  for (const language of ['en', 'ja', 'ko']) assert.match(buildLanguageDirective(language), /prompts.*Simplified Chinese/)
 })

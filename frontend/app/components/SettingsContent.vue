@@ -13,7 +13,7 @@
 
       <div class="settings-content">
 
-        <!-- ===== 通用（内容语言） ===== -->
+        <!-- ===== 通用 ===== -->
         <div v-if="tab === 'calls'" class="settings-scroll"><ApiCallLogPanel /></div>
         <div v-else-if="tab === 'general'" class="settings-scroll">
           <div class="settings-head">
@@ -21,32 +21,6 @@
             <p class="settings-desc">{{ t('settings.general.desc') }}</p>
           </div>
           <LocalRuntimeSettings />
-          <section class="card svc-group">
-            <div class="svc-group-head">
-              <div class="svc-group-heading">
-                <span class="svc-group-title">{{ t('settings.general.contentLanguage') }}</span>
-                <div class="svc-group-sub">{{ t('settings.general.contentLanguageSub') }}</div>
-              </div>
-            </div>
-            <div class="config-row">
-              <div class="provider-badge" style="background:var(--accent-bg);color:var(--accent)"><Languages :size="15" /></div>
-              <div class="config-main">
-                <div class="config-line"><span class="config-name">{{ t('settings.general.languageLabel') }}</span></div>
-                <div class="config-sub">{{ t('settings.general.languageNote') }}</div>
-              </div>
-              <div class="lang-picker">
-                <button
-                  v-for="l in contentLangOptions"
-                  :key="l.value"
-                  type="button"
-                  :class="['lang-option', { on: contentLanguage === l.value }]"
-                  @click="setContentLanguage(l.value)"
-                >{{ l.label }}</button>
-              </div>
-            </div>
-            <p class="config-empty">{{ t('settings.general.languageHint') }}</p>
-          </section>
-
           <!-- 外观主题 -->
           <section class="card svc-group">
             <div class="svc-group-head">
@@ -76,57 +50,6 @@
 
         <!-- ===== AI 服务配置 ===== -->
         <div v-if="tab === 'ai'" class="settings-scroll">
-          <div class="settings-head">
-            <h2 class="settings-title">{{ t('settings.ai.title') }}</h2>
-            <p class="settings-desc">{{ t('settings.ai.desc') }}</p>
-          </div>
-          <section class="card quick-card">
-            <div class="quick-card-head">
-              <div class="setup-title">{{ t('settings.ai.quickTitle') }}</div>
-              <span class="tag tag-accent">{{ t('settings.ai.recommended') }}</span>
-            </div>
-            <p class="setup-desc">
-              {{ t('settings.ai.quickDesc') }}
-              <a class="huobao-site-link" :href="huobaoSiteUrl" target="_blank" rel="noopener noreferrer">
-                {{ t('settings.ai.getKey') }}
-                <ExternalLink :size="12" :stroke-width="1.8" />
-              </a>
-            </p>
-            <div class="huobao-quick-row">
-              <input v-model="huobaoApiKey" class="input" type="password" placeholder="Huobao API Key" />
-              <div class="lang-picker">
-                <button
-                  type="button"
-                  :class="['lang-option', { on: huobaoRegion === 'cn' }]"
-                  @click="huobaoRegion = 'cn'"
-                >{{ t('settings.ai.regionCn') }}</button>
-                <button
-                  type="button"
-                  :class="['lang-option', { on: huobaoRegion === 'com' }]"
-                  @click="huobaoRegion = 'com'"
-                >{{ t('settings.ai.regionCom') }}</button>
-              </div>
-              <button class="btn btn-primary" :disabled="huobaoSaving" @click="applyHuobaoQuickConfig">
-                <Loader2 v-if="huobaoSaving" :size="13" class="animate-spin" />
-                <Sparkles v-else :size="13" />
-                {{ t('settings.ai.applyQuick') }}
-              </button>
-            </div>
-            <div class="huobao-quick-models">
-              <div v-for="q in huobaoQuickConfigs" :key="q.name" class="hqm-row">
-                <span class="hqm-label">{{ serviceMeta[q.service_type].label }}</span>
-                <span class="hqm-provider">
-                  <img v-if="providerIconUrl(q.provider)" :src="providerIconUrl(q.provider)" class="hqm-provider-icon" alt="" />
-                  {{ q.provider }}
-                </span>
-                <span class="hqm-models mono">
-                  <span v-for="(m, i) in q.model" :key="m" :class="['hqm-model', { 'is-default': i === 0 }]">
-                    {{ m }}<em v-if="i === 0">{{ t('common.default') }}</em>
-                  </span>
-                </span>
-              </div>
-            </div>
-          </section>
           <section class="card setup-panel">
             <div class="setup-panel-head compact">
               <div>
@@ -276,80 +199,6 @@
           </section>
         </div>
 
-        <!-- ===== 关于更新 ===== -->
-        <div v-else-if="tab === 'about'" class="settings-scroll">
-          <div class="settings-head">
-            <h2 class="settings-title">{{ t('settings.about.title') }}</h2>
-            <p class="settings-desc">{{ t('settings.about.desc') }}</p>
-          </div>
-          <section class="card svc-group">
-            <div class="svc-group-head">
-              <div class="svc-group-heading">
-                <span class="svc-group-title">{{ t('settings.about.currentVersion', { v: updateState?.currentVersion || '…' }) }}</span>
-                <div v-if="updateState?.latestVersion" class="svc-group-sub">{{ t('settings.about.latestVersion', { v: updateState.latestVersion }) }}</div>
-              </div>
-              <button class="btn btn-primary btn-sm ml-auto" :disabled="updateChecking" @click="checkUpdate">
-                <Loader2 v-if="updateChecking" :size="13" class="animate-spin" />
-                <RefreshCw v-else :size="13" />
-                {{ t('settings.about.check') }}
-              </button>
-            </div>
-
-            <div v-if="updateState?.status === 'up-to-date'" class="config-row">
-              <div class="provider-badge style-badge"><Check :size="15" /></div>
-              <div class="config-main"><div class="config-line"><span class="config-name">{{ t('settings.about.upToDate') }}</span></div></div>
-            </div>
-            <div v-else-if="updateState?.status === 'available' || updateState?.status === 'downloading'" class="config-row">
-              <div class="provider-badge style-badge"><Sparkles :size="15" /></div>
-              <div class="config-main">
-                <div class="config-line"><span class="config-name">{{ t('settings.about.found', { v: updateState.latestVersion }) }}</span></div>
-                <div v-if="updateState.notes" class="config-sub">{{ updateState.notes }}</div>
-                <div v-if="updateState.status === 'downloading' || updateDownloading" class="update-bar">
-                  <div class="update-bar-fill" :style="{ width: `${updateProgress}%` }"></div>
-                </div>
-                <!-- 服务器手动模式：无 Watchtower，给出更新命令 -->
-                <div v-if="!desktopBridge && serverUpdateMode === 'manual'" class="config-sub">
-                  {{ t('settings.about.serverManualHint') }} <span class="mono">docker compose pull && docker compose up -d</span>
-                </div>
-              </div>
-              <!-- 桌面版：下载更新包 -->
-              <button v-if="desktopBridge" class="btn btn-primary btn-sm" :disabled="updateDownloading" @click="downloadUpdate">
-                <Loader2 v-if="updateDownloading" :size="13" class="animate-spin" />
-                <Download v-else :size="13" />
-                {{ updateDownloading ? t('settings.about.downloading', { p: updateProgress }) : t('settings.about.download') }}
-              </button>
-              <!-- 服务器 + Watchtower：一键触发拉镜像重建 -->
-              <button v-else-if="serverUpdateMode === 'watchtower'" class="btn btn-primary btn-sm" :disabled="updateApplying" @click="applyUpdate">
-                <Loader2 v-if="updateApplying" :size="13" class="animate-spin" />
-                <Download v-else :size="13" />
-                {{ t('settings.about.serverApply') }}
-              </button>
-            </div>
-            <div v-else-if="updateState?.status === 'downloaded'" class="config-row">
-              <div class="provider-badge style-badge"><Download :size="15" /></div>
-              <div class="config-main">
-                <div class="config-line"><span class="config-name">{{ t('settings.about.ready') }}</span></div>
-                <div class="config-sub">{{ t('settings.about.readyDesc') }}</div>
-              </div>
-              <button class="btn btn-primary btn-sm" :disabled="updateApplying" @click="applyUpdate">
-                <Loader2 v-if="updateApplying" :size="13" class="animate-spin" />
-                {{ t('settings.about.restartInstall') }}
-              </button>
-            </div>
-            <div v-else-if="updateState?.status === 'error'" class="config-row">
-              <div class="provider-badge style-badge"><RefreshCw :size="15" /></div>
-              <div class="config-main">
-                <div class="config-line"><span class="config-name">{{ t('settings.about.checkFailed') }}</span></div>
-                <div class="config-sub">{{ updateState.error }}</div>
-              </div>
-              <button class="btn btn-ghost btn-sm" @click="checkUpdate">{{ t('settings.about.retry') }}</button>
-            </div>
-            <p v-else class="config-empty">{{ t('settings.about.empty') }}</p>
-          </section>
-          <p v-if="desktopBridge" class="config-empty">{{ t('settings.about.note') }}</p>
-          <p v-else class="config-empty">{{ t('settings.about.serverNote') }}</p>
-        </div>
-
         <!-- ===== Agent 配置（左侧 tab 切换，Prompt 与 Skills 整合在同一 Agent 下） ===== -->
         <div v-else-if="tab === 'agents'" class="skills-layout">
           <!-- Agent 左侧 tab 列表 -->
@@ -393,14 +242,10 @@
                     Skills<template v-if="agentSkillCount(selectedAgent) > 0"> ({{ agentSkillCount(selectedAgent) }})</template>
                   </button>
                 </div>
-                <span class="agent-lang-follow dim">
-                  {{ t('settings.agents.followContentLang', { lang: contentLangLabel }) }}
-                </span>
               </div>
               <div class="agent-card-body">
                 <label class="field">
                   <span class="field-label">System Prompt <span class="dim">({{ t('settings.agents.promptHint', { file: promptFileName }) }})</span>
-                    <span v-if="agentPromptFallback" class="tag agent-fallback-tag">{{ t('settings.agents.langFallback') }}</span>
                   </span>
                   <textarea v-model="agentForm.system_prompt" class="textarea agent-prompt-input" rows="16" :placeholder="t('settings.agents.promptPlaceholder')" />
                 </label>
@@ -427,9 +272,6 @@
                       Skills<template v-if="agentSkillCount(selectedAgent) > 0"> ({{ agentSkillCount(selectedAgent) }})</template>
                     </button>
                   </div>
-                  <span class="agent-lang-follow dim">
-                    {{ t('settings.agents.followContentLang', { lang: contentLangLabel }) }}
-                  </span>
                 </div>
               </div>
               <p class="settings-desc" style="margin-top:0">{{ t('settings.skills.desc') }}</p>
@@ -467,7 +309,6 @@
                     />
                     <div class="skill-card-foot">
                       <span class="dim" style="font-size:11px">skills/{{ s.id }}/{{ skillFileName }}</span>
-                      <span v-if="skillContentFallback" class="tag agent-fallback-tag">{{ t('settings.agents.langFallback') }}</span>
                       <span v-if="skillSaved === s.id" class="tag tag-success" style="margin-left:8px">
                         <Check :size="10" /> {{ t('common.saved') }}
                       </span>
@@ -725,20 +566,19 @@
 </template>
 
 <script setup>
-import { Plus, Pencil, Trash2, FileText, ChevronDown, Check, Loader2, Bot, Cpu, Sparkles, Palette, ExternalLink, Star, HardDrive, Database, RefreshCw, Download, Languages, SunMoon, X } from 'lucide-vue-next'
+import { Plus, Pencil, Trash2, FileText, ChevronDown, Check, Loader2, Bot, Cpu, Sparkles, Palette, Star, HardDrive, Database, Languages, SunMoon, X } from 'lucide-vue-next'
 import BaseSelect from '~/components/BaseSelect.vue'
 import { toast } from 'vue-sonner'
 import { toastError } from '~/composables/useToast'
 import { useI18n } from 'vue-i18n'
-import { aiConfigAPI, promptAPI, skillsAPI, storageAPI, stylePresetAPI, settingsAPI, serverUpdateAPI } from '~/composables/useApi'
+import { aiConfigAPI, promptAPI, skillsAPI, storageAPI, stylePresetAPI } from '~/composables/useApi'
 import { useDesktopBridge } from '~/composables/useDesktopBridge'
 import { useMigrateState } from '~/composables/useMigrateState'
 import { useTheme } from '~/composables/useTheme'
 import { providerIconUrl } from '~/composables/useProviderIcon'
 import { startTour, autoTour } from '~/composables/useTour'
-import { confirmUnifiedLanguage } from '~/composables/useUnifiedLanguage'
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 
 const showBrandImage = ref(true)
 const props = defineProps({ initialTab: String, configId: Number, embedded: Boolean })
@@ -750,7 +590,6 @@ const baseTabs = computed(() => [
   { id: 'styles', label: t('settings.tabs.styles'), icon: Palette },
   { id: 'agents', label: t('settings.tabs.agents'), icon: Bot },
   { id: 'storage', label: t('settings.tabs.storage'), icon: HardDrive },
-  { id: 'about', label: t('settings.tabs.about'), icon: RefreshCw },
 ])
 
 // ===== AI Service Configs =====
@@ -760,11 +599,6 @@ const cfgDialog = ref(false)
 const cfgEditId = ref(null)
 const cfgTesting = ref(false)
 const cfgTestResult = ref(null)
-const huobaoApiKey = ref('')
-const huobaoSaving = ref(false)
-// 小李节点选择：默认跟随界面语言（中文→国内 .cn，其他→国外 .com），一键配置与取 Key 链接共用
-const huobaoRegion = ref(locale.value?.startsWith('zh') ? 'cn' : 'com')
-const huobaoSiteUrl = computed(() => `https://api.firemux.${huobaoRegion.value}`)
 const cfgForm = reactive({ name: '', provider: '', api_key: '', base_url: '', models: [], service_type: 'text', priority: 0, temperature: '', comfy_timeout: 120, comfy_resolution: 'auto', comfy_width: 1024, comfy_height: 1024, comfy_json: '' })
 const comfyConfigError = ref('')
 const comfyResolutionOptions = computed(() => [
@@ -836,7 +670,7 @@ function pinModelTop(i) {
   const [m] = cfgForm.models.splice(i, 1)
   cfgForm.models.unshift(m)
 }
-// 服务类型 label/desc 渲染时求值（语言切换即时生效），type 为逻辑值
+// 服务类型 label/desc 渲染时求值，type 为逻辑值
 const serviceTypes = computed(() => [
   { type: 'text', label: t('common.serviceType.text') },
   { type: 'image', label: t('common.serviceType.image') },
@@ -867,19 +701,6 @@ const providerPresets = {
     minimax: { label: 'MiniMax H3 官方', baseUrl: 'https://api.minimaxi.com', models: ['MiniMax-H3'] },
   },
 }
-const huobaoQuickConfigs = computed(() => {
-  const base = huobaoSiteUrl.value
-  return [
-    { service_type: 'text', provider: 'gemini', name: '小李文本服务 · Gemini', base_url: base, model: ['gemini-3.8-flash', 'gemini-3.1-pro-preview', 'gemini-3-flash-preview'], priority: 101 },
-    { service_type: 'text', provider: 'openai', name: '小李文本服务 · OpenAI', base_url: base, model: ['deepseek-v4-pro', 'deepseek-v4-flash', 'gpt-5.6-terra'], priority: 100 },
-    { service_type: 'image', provider: 'openai', name: '小李图片服务 · OpenAI', base_url: base, model: ['gpt-image-2'], priority: 99 },
-    { service_type: 'image', provider: 'gemini', name: '小李图片服务 · Gemini', base_url: base, model: ['gemini-3-pro-image', 'gemini-3.1-flash-image'], priority: 97 },
-    { service_type: 'video', provider: 'aliyun', name: '小李视频服务 · Wan 3.0', base_url: `${base}/qwen`, model: ['wan3.0-video', 'wan3.0-video-prime'], priority: 97 },
-    { service_type: 'video', provider: 'volcengine', name: '小李视频服务 · Seedance', base_url: `${base}/volcengine`, model: ['doubao-seedance-2-0-mini-260615', 'doubao-seedance-2-0-fast-260128', 'doubao-seedance-2-0-260128'], priority: 96 },
-    { service_type: 'video', provider: 'minimax', name: '小李视频服务 · MiniMax', base_url: `${base}/minimax`, model: ['MiniMax-H3'], priority: 98 },
-  ]
-})
-
 function byType(t) { return cfgs.value.filter(c => c.service_type === t) }
 function countActive(t) { return byType(t).filter(c => c.is_active).length }
 function fmtModel(m) { return Array.isArray(m) ? m.join(', ') : m || '—' }
@@ -900,7 +721,7 @@ function applyProviderPreset(type, key) {
   comfyConfigError.value = ''
   cfgForm.base_url = preset.baseUrl
   cfgForm.models = [...preset.models]
-  // 配置名持久化进 DB：用 provider 英文 + 服务类型英文标识拼，不随界面语言漂移
+  // 配置名持久化进 DB：用 provider 英文 + 服务类型英文标识拼
   cfgForm.name = `${preset.label}-${type}`
 }
 
@@ -940,26 +761,6 @@ async function setDefaultModel(type, c, m) {
 }
 async function toggleCfg(c) { await aiConfigAPI.update(c.id, { is_active: !c.is_active }); loadCfgs() }
 async function delCfg(id) { await aiConfigAPI.del(id); toast.success(t('index.deleted')); loadCfgs() }
-async function applyHuobaoQuickConfig() {
-  const apiKey = huobaoApiKey.value.trim()
-  if (!apiKey) { toast.warning(t('settings.ai.apiKeyRequired')); return }
-  huobaoSaving.value = true
-  try {
-    for (const preset of huobaoQuickConfigs.value) {
-      const payload = { ...preset, api_key: apiKey }
-      const existing = cfgs.value.find(c => c.name === preset.name || (c.service_type === preset.service_type && c.provider === preset.provider && c.base_url === preset.base_url))
-      if (existing) await aiConfigAPI.update(existing.id, payload)
-      else await aiConfigAPI.create(payload)
-    }
-    toast.success(t('settings.ai.quickApplied'))
-    huobaoApiKey.value = ''
-    await loadCfgs()
-  } catch (e) {
-    toastError(e)
-  } finally {
-    huobaoSaving.value = false
-  }
-}
 function startAddCfg(t) {
   cfgEditId.value = null
   cfgTestResult.value = null
@@ -1071,10 +872,9 @@ async function loadAgents() {
 
 async function loadAgentPrompt(type) {
   try {
-    const cfg = await promptAPI.get(type, editLang.value)
+    const cfg = await promptAPI.get(type)
     if (selectedAgent.value === type) {
       agentForm.system_prompt = cfg.system_prompt || ''
-      agentPromptFallback.value = editLang.value !== 'zh' && !!cfg.is_default
     }
     agentSaved.value = null
   } catch (e) { toastError(e) }
@@ -1082,11 +882,10 @@ async function loadAgentPrompt(type) {
 
 async function resetAgentPrompt(type) {
   try {
-    await promptAPI.reset(type, editLang.value)
+    await promptAPI.reset(type)
     await loadAgents()
-    const cfg = await promptAPI.get(type, editLang.value)
+    const cfg = await promptAPI.get(type)
     agentForm.system_prompt = cfg.system_prompt || ''
-    agentPromptFallback.value = editLang.value !== 'zh' && !!cfg.is_default
     toast.success(t('settings.agents.promptReset'))
   } catch (e) { toastError(e) }
 }
@@ -1098,9 +897,8 @@ async function saveAgentCfg(type) {
     await promptAPI.update(type, {
       name: agentDefs.value.find(a => a.type === type)?.label || type,
       system_prompt: agentForm.system_prompt,
-    }, editLang.value)
+    })
     await loadAgents()
-    agentPromptFallback.value = false
     agentSaved.value = type
     toast.success(t('settings.agents.saved', { agent: agentDefs.value.find(a => a.type === type)?.label }))
     setTimeout(() => { if (agentSaved.value === type) agentSaved.value = null }, 3000)
@@ -1125,27 +923,10 @@ const selectedAgentType = computed(() => selectedAgent.value)
 const selectedAgentLabel = computed(() => agentDefs.value.find(a => a.type === selectedAgent.value)?.label || '')
 const selectedAgentIcon = computed(() => agentDefs.value.find(a => a.type === selectedAgent.value)?.icon || '')
 
-// ===== 通用：AI 内容语言（全局设置，与界面语言相互独立） =====
-const contentLanguage = ref('zh')
-const contentLangOptions = [
-  { value: 'zh', label: '中文', shortLabel: '中文' },
-  { value: 'en', label: 'English', shortLabel: 'EN' },
-  { value: 'ja', label: '日本語', shortLabel: '日本語' },
-  { value: 'ko', label: '한국어', shortLabel: '한국어' },
-]
-// ===== Agent 配置：prompt/skill 编辑的语言版本（只读跟随内容语言） =====
-const agentPromptFallback = ref(false)   // 当前语言无独立 prompt 文件，展示的是回退内容
-const skillContentFallback = ref(false)  // 同上，skill 编辑器
-const promptFileName = computed(() => `workspace/prompts/${selectedAgent.value}${editLang.value !== 'zh' ? `.${editLang.value}` : ''}.md`)
-const skillFileName = computed(() => `SKILL${editLang.value !== 'zh' ? `.${editLang.value}` : ''}.md`)
+// Agent 提示词和技能使用中文版本。
+const promptFileName = computed(() => `workspace/prompts/${selectedAgent.value}.md`)
+const skillFileName = 'SKILL.md'
 
-// Agent 编辑语言 = 全局内容语言的只读镜像（改语言请到「通用」页）
-const editLang = computed(() => contentLanguage.value)
-const contentLangLabel = computed(() =>
-  contentLangOptions.find(l => l.value === contentLanguage.value)?.label || contentLanguage.value)
-
-// 内容语言变化时同步刷新 Agent 面板（提示词、Skill 列表与展开内容）
-// 内容语言切换后整页刷新（setUnifiedLanguage），无需局部 watch 同步
 // ===== 通用：外观主题（localStorage 持久化，即时生效） =====
 const { themeMode, setThemeMode } = useTheme()
 const themeOptions = computed(() => [
@@ -1153,20 +934,6 @@ const themeOptions = computed(() => [
   { value: 'dark', label: t('settings.general.appearanceDark') },
   { value: 'system', label: t('settings.general.appearanceSystem') },
 ])
-
-async function loadContentLanguage() {
-  try {
-    const lang = (await settingsAPI.contentLanguage())?.language || 'zh'
-    contentLanguage.value = lang
-    editLang.value = lang  // Agent 编辑器默认跟随内容语言
-  } catch { /* 保持默认 */ }
-}
-async function setContentLanguage(lang) {
-  if (contentLanguage.value === lang) return
-  // UI 语言 = AI 内容语言：确认弹窗 → 统一切换 → 刷新（顶栏 LocaleSwitcher 同一入口）
-  await confirmUnifiedLanguage(lang)
-}
-onMounted(loadContentLanguage)
 
 // agent type 用下划线（script_rewriter），skill 目录按 Mastra 规范用连字符（script-rewriter）
 const skillDirOf = (type) => type.replace(/_/g, '-')
@@ -1184,7 +951,7 @@ const currentSkills = computed(() =>
 )
 
 async function loadAllSkills() {
-  try { allSkills.value = await skillsAPI.list(editLang.value) }
+  try { allSkills.value = await skillsAPI.list() }
   catch (e) { toastError(e) }
 }
 
@@ -1239,9 +1006,8 @@ async function confirmDelSkill() {
 async function toggleSkillEdit(id) {
   if (editingSkill.value === id) { editingSkill.value = null; return }
   try {
-    const res = await skillsAPI.get(id, editLang.value)
+    const res = await skillsAPI.get(id)
     skillContent.value = res.content
-    skillContentFallback.value = editLang.value !== 'zh' && !!res.is_default
     skillSaved.value = null
     editingSkill.value = id
   } catch (e) { toastError(e) }
@@ -1251,9 +1017,8 @@ async function saveSkill(id) {
   skillSaving.value = true
   skillSaved.value = null
   try {
-    await skillsAPI.update(id, skillContent.value, editLang.value)
+    await skillsAPI.update(id, skillContent.value)
     await loadAllSkills()
-    skillContentFallback.value = false
     skillSaved.value = id
     toast.success(t('common.saved'))
     setTimeout(() => { if (skillSaved.value === id) skillSaved.value = null }, 3000)
@@ -1352,9 +1117,8 @@ onMounted(() => {
   loadAgents(); loadAllSkills(); loadAgentPrompt(selectedAgent.value); loadStylePresets()
 })
 
-// ===== 应用内引导（设置页）：快捷配置 + 手动模板两步 =====
+// ===== 应用内引导（设置页） =====
 const SETTINGS_TOUR = [
-  { element: '.quick-card', titleKey: 'tour.settings.quick.title', descKey: 'tour.settings.quick.desc', popoverSide: 'bottom' },
   { element: '.nav-item:has(.lucide-cpu), .nav-item:nth-of-type(1)', titleKey: 'tour.settings.nav.title', descKey: 'tour.settings.nav.desc', popoverSide: 'right' },
 ]
 onMounted(() => { if (!props.embedded) setTimeout(() => autoTour('settings', SETTINGS_TOUR, t), 800) })
@@ -1436,82 +1200,8 @@ function formatBytes(n) {
   return `${n} B`
 }
 
-// ===== 应用内更新（桌面版走 Electron 桥；服务器/Docker 走后端 server-update 路由） =====
-const updateState = ref(null)
-const updateChecking = ref(false)
-const updateDownloading = ref(false)
-const updateProgress = ref(0)
-const updateApplying = ref(false)
-const serverUpdateMode = ref('manual') // 'watchtower' | 'manual'，仅服务器模式有意义
-
-async function refreshUpdateState() {
-  try {
-    if (desktopBridge) {
-      updateState.value = await desktopBridge.getUpdateState()
-    } else {
-      const s = await serverUpdateAPI.state()
-      serverUpdateMode.value = s.updateMode || 'manual'
-      updateState.value = s
-    }
-  } catch { /* 静默 */ }
-}
-
-async function checkUpdate() {
-  updateChecking.value = true
-  try {
-    if (desktopBridge) {
-      updateState.value = await desktopBridge.checkUpdate()
-    } else {
-      const s = await serverUpdateAPI.check()
-      serverUpdateMode.value = s.updateMode || 'manual'
-      updateState.value = s
-    }
-    if (updateState.value?.status === 'up-to-date') toast.success(t('settings.about.upToDate'))
-  } catch (e) {
-    toastError(e, { fallback: 'settings.about.checkFailedToast' })
-    refreshUpdateState()
-  } finally { updateChecking.value = false }
-}
-
-async function downloadUpdate() {
-  if (!desktopBridge) return
-  updateDownloading.value = true
-  updateProgress.value = 0
-  const unProgress = desktopBridge.onUpdateProgress((p) => { updateProgress.value = p })
-  try {
-    updateState.value = await desktopBridge.downloadUpdate()
-    toast.success(t('settings.about.downloadDone'))
-  } catch (e) {
-    toastError(e, { fallback: 'settings.about.downloadFailed' })
-    refreshUpdateState()
-  } finally {
-    unProgress()
-    updateDownloading.value = false
-  }
-}
-
-async function applyUpdate() {
-  updateApplying.value = true
-  try {
-    if (desktopBridge) {
-      await desktopBridge.applyUpdate()
-      // 成功路径：应用退出并由更新后的版本接管，不会走到这里
-    } else {
-      await serverUpdateAPI.apply()
-      // Watchtower 异步拉镜像重建容器，本进程随后被替换
-      toast.success(t('settings.about.serverApplyStarted'), { duration: 8000 })
-      updateApplying.value = false
-    }
-  } catch (e) {
-    updateApplying.value = false
-    toastError(e, { fallback: desktopBridge ? 'settings.about.installFailed' : 'settings.about.serverApplyFailed' })
-    refreshUpdateState()  // 桌面端 apply 失败会把具体原因写进 updateState.error，刷新显示在错误行
-  }
-}
-
 watch(tab, (t) => {
-  if (t === 'about') refreshUpdateState()
-  // 进入 Agent 页总是按当前内容语言重载（幂等）：兜住「先切语言、后进 Agent」的时序
+  // 进入 Agent 页时重载配置
   if (t === 'agents') {
     loadAgentPrompt(selectedAgent.value)
     loadAllSkills()
@@ -1547,7 +1237,7 @@ onBeforeUnmount(stopUsagePoll)
 
 .settings-content { flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
 .settings-scroll { height: 100%; overflow-y: auto; padding: 20px 28px 48px; animation: fadeUp 0.3s var(--ease-out); }
-/* 各分组卡片之间的间距（通用页内容语言/外观等） */
+/* 各分组卡片之间的间距（通用页外观等） */
 .settings-scroll > .card + .card { margin-top: 14px; }
 /* 宽屏下内容列限宽居中，两侧留出呼吸空间 */
 .settings-scroll > * { max-width: 1080px; margin-left: auto; margin-right: auto; }
@@ -1555,81 +1245,8 @@ onBeforeUnmount(stopUsagePoll)
 .settings-title { font-size: 22px; font-weight: 800; letter-spacing: -0.02em; }
 .settings-desc { font-size: 13px; color: var(--text-2); margin-top: 6px; }
 
-/* 小李快捷配置 */
-.quick-card {
-  padding: 20px;
-  margin-bottom: 16px;
-  border: 1.5px solid var(--accent);
-}
-.quick-card:hover { border-color: var(--accent); }
-.quick-card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
 .setup-title { font-size: 15px; font-weight: 700; color: var(--text-0); }
 .setup-desc { font-size: 12.5px; color: var(--text-2); margin-bottom: 14px; }
-.huobao-site-link {
-  display: inline-flex; align-items: center; gap: 3px;
-  margin-left: 6px;
-  color: var(--accent); text-decoration: none;
-  font-weight: 600; white-space: nowrap;
-}
-.huobao-site-link:hover { text-decoration: underline; }
-.huobao-quick-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  gap: 10px;
-  align-items: center;
-}
-.huobao-quick-models {
-  margin-top: 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-}
-.hqm-row {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  font-size: 11px;
-  line-height: 1.6;
-}
-.hqm-label {
-  flex-shrink: 0;
-  width: 28px;
-  font-weight: 600;
-  color: var(--text-2);
-}
-.hqm-provider {
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: var(--accent-bg);
-  color: var(--accent);
-  font-size: 9px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.02em;
-}
-.hqm-provider-icon { width: 11px; height: 11px; object-fit: contain; border-radius: 2px; }
-.hqm-models {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 12px;
-  color: var(--text-3);
-}
-.hqm-model.is-default { color: var(--text-1); font-weight: 600; }
-.hqm-model em {
-  font-style: normal;
-  margin-left: 4px;
-  padding: 0 5px;
-  border-radius: 5px;
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--accent-text);
-  background: var(--accent-bg);
-}
-
 /* 模型标签编辑器（配置弹窗） */
 .model-chips {
   display: flex;
@@ -1703,7 +1320,7 @@ onBeforeUnmount(stopUsagePoll)
 .template-type-chip:hover { background: var(--button-bg-hover); color: var(--text-0); }
 .template-type-chip:focus-visible { outline: none; box-shadow: 0 0 0 3.5px var(--button-focus); }
 
-/* ===== 内容语言选择器（通用 tab） ===== */
+/* ===== 分段选择器 ===== */
 .lang-picker { display: flex; gap: 2px; padding: 3px; border-radius: var(--radius-pill); background: var(--overlay-track); }
 .lang-option {
   min-height: 30px;
@@ -1814,16 +1431,6 @@ onBeforeUnmount(stopUsagePoll)
 }
 .agent-pane-tab:hover { color: var(--text-0); }
 .agent-pane-tab.active { background: var(--accent-bg); color: var(--accent-text); }
-
-/* Agent 编辑语言跟随提示（卡片头右侧只读说明，切换请到「通用」页） */
-.agent-lang-follow { font-size: 11px; }
-
-/* 「跟随中文」回退提示 */
-.agent-fallback-tag {
-  margin-left: 6px;
-  background: var(--bg-2); color: var(--text-3);
-  font-size: 10px; font-weight: 500;
-}
 
 /* 编辑器尽量占满剩余视口高度，仍可手动拖拽 */
 .agent-prompt-input { min-height: max(320px, calc(100vh - 340px)); resize: vertical; }
@@ -1948,19 +1555,5 @@ onBeforeUnmount(stopUsagePoll)
 }
 .migrate-warn {
   color: var(--error);
-}
-.update-bar {
-  width: 220px;
-  height: 5px;
-  border-radius: 3px;
-  background: var(--overlay-track);
-  overflow: hidden;
-  margin-top: 6px;
-}
-.update-bar-fill {
-  height: 100%;
-  border-radius: 3px;
-  background: var(--accent);
-  transition: width 0.2s ease;
 }
 </style>

@@ -22,6 +22,7 @@ import { recordedFetch as fetch, withApiCallContext } from './api-call-log.js'
 type TaskType = 'image' | 'video'
 
 const activeTasks = new Set<number>()
+export function isGenerationTaskActive(id: number): boolean { return activeTasks.has(id) }
 const videoSubmissions = new Set<number>()
 function runBackground(id: number, job: () => Promise<void>) {
   if (activeTasks.has(id)) return
@@ -188,17 +189,24 @@ async function createTask(
   params: Record<string, unknown>,
 ): Promise<number> {
   const ts = now()
-  const res = await db.insert(schema.sysTask).values({
-    type,
-    ...fields,
-    provider: config.provider,
-    configId: config.id,
-    configBaseUrl: config.baseUrl,
-    stage: 'submitting',
-    params: JSON.stringify(params),
-    status: 'processing',
-    createdAt: ts,
-    updatedAt: ts,
+  const res = db.transaction(tx => {
+    if (fields.storyboardId) {
+      const shot = tx.select({ id: schema.storyboards.id, deletedAt: schema.storyboards.deletedAt })
+        .from(schema.storyboards).where(eq(schema.storyboards.id, fields.storyboardId)).get()
+      if (!shot || shot.deletedAt) throw new Error('镜头不存在')
+    }
+    return tx.insert(schema.sysTask).values({
+      type,
+      ...fields,
+      provider: config.provider,
+      configId: config.id,
+      configBaseUrl: config.baseUrl,
+      stage: 'submitting',
+      params: JSON.stringify(params),
+      status: 'processing',
+      createdAt: ts,
+      updatedAt: ts,
+    }).run()
   })
 
   const id = getInsertId(res)
@@ -606,6 +614,10 @@ export async function recoverVideoTask(id: number): Promise<void> {
   // 在任何异步配置读取前获取锁，重复点击不会启动多个下载。
   activeTasks.add(id)
   try {
+    if (record.storyboardId) {
+      const shot = db.select().from(schema.storyboards).where(eq(schema.storyboards.id, record.storyboardId)).get()
+      if (!shot || shot.deletedAt) throw new Error('分镜已删除，请先从回收站恢复')
+    }
     const config = record.taskId && !record.resultUrl ? await recoveryConfig(record) : null
     await db.update(schema.sysTask).set({ status: 'processing', errorMsg: null, errorCode: null,
       stage: record.resultUrl ? 'downloading' : record.stage === 'transferring' || record.errorCode === 'delivery_failed' ? 'transferring' : 'polling', updatedAt: now() }).where(eq(schema.sysTask.id, id))

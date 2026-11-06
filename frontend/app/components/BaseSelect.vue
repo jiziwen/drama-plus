@@ -1,9 +1,9 @@
 <template>
   <div class="base-select">
-    <AppMenu v-model:open="isOpen" block match-width :min-width="132" :max-height="380">
+    <AppMenu v-model:open="isOpen" :disabled="disabled" block match-width :min-width="132" :max-height="380">
       <template #trigger>
-        <button type="button" class="base-select-trigger" :class="{ open: isOpen }">
-          <span :class="selectedLabel ? '' : 'placeholder'" class="base-select-label">{{ selectedLabel || effectivePlaceholder }}</span>
+        <button :id="inputId || undefined" ref="triggerEl" type="button" class="base-select-trigger" :class="{ open: isOpen }" :disabled="disabled" :aria-label="ariaLabel || undefined" :aria-expanded="isOpen" aria-haspopup="menu" @keydown="onTriggerKeydown">
+          <span :class="selectedLabel ? '' : 'placeholder'" class="base-select-label" :title="selectedLabel || effectivePlaceholder">{{ selectedLabel || effectivePlaceholder }}</span>
           <ChevronDown :size="13" class="base-select-arrow" :class="{ open: isOpen }" />
         </button>
       </template>
@@ -21,7 +21,7 @@
       </div>
 
       <!-- Options -->
-      <div class="base-select-options">
+      <div ref="optionsEl" class="base-select-options" @keydown="onOptionsKeydown">
         <template v-if="flatOptions.length">
           <template v-for="(group, gi) in filteredGroups" :key="gi">
             <div v-if="group.label" class="app-menu-group-label">{{ group.label }}</div>
@@ -32,8 +32,10 @@
               class="app-menu-item"
               :class="{ selected: opt.value === modelValue, highlighted: highlightedIdx === getGlobalIdx(gi, oi) }"
               role="menuitem"
+              :disabled="opt.disabled"
+              :tabindex="opt.disabled || (!searchable && highlightedIdx !== getGlobalIdx(gi, oi)) ? -1 : 0"
               @click="pick(opt)"
-              @mousemove="highlightedIdx = getGlobalIdx(gi, oi)"
+              @mousemove="!opt.disabled && (highlightedIdx = getGlobalIdx(gi, oi))"
             >{{ opt.label }}</button>
           </template>
         </template>
@@ -53,6 +55,9 @@ const props = defineProps({
   options: { type: Array, default: () => [] }, // [{ label, value, group? }, ...] or [{ label, group, options: [] }]
   placeholder: { type: String, default: '' },  // 缺省回退 t('components.baseSelect.placeholder')
   searchable: { type: Boolean, default: true },
+  ariaLabel: { type: String, default: '' },
+  inputId: { type: String, default: '' },
+  disabled: { type: Boolean, default: false },
 })
 const emit = defineEmits(['update:modelValue'])
 
@@ -62,6 +67,8 @@ const effectivePlaceholder = computed(() => props.placeholder || t('components.b
 const isOpen = ref(false)
 const searchQuery = ref('')
 const searchInputEl = ref()
+const triggerEl = ref()
+const optionsEl = ref()
 const highlightedIdx = ref(-1)
 
 // Normalize options: support both flat list and grouped format
@@ -71,7 +78,7 @@ const normalizedGroups = computed(() => {
   if (props.options[0]?.options) {
     return props.options.map(g => ({
       label: g.label || '',
-      options: g.options.map(o => ({ label: o.label ?? o, value: o.value ?? o })),
+      options: g.options.map(o => ({ label: String(o.label ?? o), value: o.value ?? o, disabled: !!o.disabled })),
     }))
   }
   // Flat list with optional group property
@@ -79,7 +86,7 @@ const normalizedGroups = computed(() => {
   for (const o of props.options) {
     const label = o.group || ''
     if (!map.has(label)) map.set(label, [])
-    map.get(label).push({ label: o.label ?? o, value: o.value ?? o })
+    map.get(label).push({ label: String(o.label ?? o), value: o.value ?? o, disabled: !!o.disabled })
   }
   return Array.from(map.entries()).map(([label, options]) => ({ label, options }))
 })
@@ -101,7 +108,7 @@ const flatOptions = computed(() => filteredGroups.value.flatMap(g => g.options))
 
 function getGlobalIdx(gi, oi) {
   let idx = 0
-  for (let i = 0; i < gi; i++) idx += normalizedGroups.value[i].options.length
+  for (let i = 0; i < gi; i++) idx += filteredGroups.value[i].options.length
   return idx + oi
 }
 
@@ -114,17 +121,64 @@ const selectedLabel = computed(() => {
 })
 
 function pick(opt) {
+  if (props.disabled || opt.disabled) return
   emit('update:modelValue', opt.value)
   isOpen.value = false
+  triggerEl.value?.focus()
 }
+
+function focusOption() {
+  optionsEl.value?.querySelectorAll('[role="menuitem"]')[highlightedIdx.value]?.focus()
+}
+function onTriggerKeydown(event) {
+  if (props.disabled) return
+  if (event.key === 'Escape' && isOpen.value) {
+    closeFromKeyboard(event)
+    return
+  }
+  if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+  event.preventDefault()
+  if (!isOpen.value) isOpen.value = true
+  else focusOption()
+}
+function onOptionsKeydown(event) {
+  if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+    event.preventDefault()
+    moveHighlight(event.key)
+    nextTick(focusOption)
+  } else if (event.key === 'Escape') {
+    closeFromKeyboard(event)
+  }
+}
+
+function closeFromKeyboard(event) {
+  event.preventDefault()
+  event.stopPropagation()
+  isOpen.value = false
+  triggerEl.value?.focus()
+}
+
+function moveHighlight(key) {
+  const enabled = flatOptions.value.flatMap((option, index) => option.disabled ? [] : [index])
+  const current = highlightedIdx.value
+  highlightedIdx.value = key === 'Home' ? (enabled[0] ?? -1) : key === 'End' ? (enabled.at(-1) ?? -1)
+    : key === 'ArrowDown' ? (enabled.find(index => index > current) ?? enabled.at(-1) ?? -1)
+      : (enabled.filter(index => index < current).at(-1) ?? enabled[0] ?? -1)
+}
+watch(searchQuery, () => { highlightedIdx.value = flatOptions.value.findIndex(option => !option.disabled) })
 
 // 打开时初始化键盘高亮并聚焦搜索框（定位/关闭由 AppMenu 负责）
 watch(isOpen, async (val) => {
   if (val) {
-    highlightedIdx.value = flatOptions.value.findIndex(o => o.value === props.modelValue)
     searchQuery.value = ''
     await nextTick()
-    searchInputEl.value?.focus()
+    highlightedIdx.value = flatOptions.value.findIndex(o => o.value === props.modelValue && !o.disabled)
+    if (props.searchable) searchInputEl.value?.focus()
+    else {
+      if (highlightedIdx.value < 0) highlightedIdx.value = flatOptions.value.findIndex(option => !option.disabled)
+      await nextTick()
+      focusOption()
+    }
   } else {
     searchQuery.value = ''
   }
@@ -133,17 +187,17 @@ watch(isOpen, async (val) => {
 function onSearchKeydown(e) {
   if (e.key === 'ArrowDown') {
     e.preventDefault()
-    highlightedIdx.value = Math.min(highlightedIdx.value + 1, flatOptions.value.length - 1)
+    moveHighlight('ArrowDown')
   } else if (e.key === 'ArrowUp') {
     e.preventDefault()
-    highlightedIdx.value = Math.max(highlightedIdx.value - 1, 0)
+    moveHighlight('ArrowUp')
   } else if (e.key === 'Enter') {
     e.preventDefault()
     if (highlightedIdx.value >= 0 && flatOptions.value[highlightedIdx.value]) {
       pick(flatOptions.value[highlightedIdx.value])
     }
   } else if (e.key === 'Escape') {
-    isOpen.value = false
+    closeFromKeyboard(e)
   }
 }
 </script>
@@ -185,6 +239,8 @@ function onSearchKeydown(e) {
   color: var(--button-text-hover);
   box-shadow: var(--button-shadow-hover);
 }
+.base-select-trigger:disabled { opacity: .55; cursor: not-allowed; box-shadow: none; }
+.base-select-options .app-menu-item:disabled { opacity: .45; cursor: not-allowed; background: transparent; }
 .base-select-trigger.open {
   border-color: var(--action-primary);
   box-shadow: 0 0 0 3px var(--button-focus), var(--button-shadow-hover);

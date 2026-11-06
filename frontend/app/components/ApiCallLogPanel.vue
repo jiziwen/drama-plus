@@ -5,8 +5,8 @@
       <button class="btn" :disabled="loading" @click="load"><RefreshCw :size="14" :class="{ 'animate-spin': loading }" />刷新</button>
     </div>
     <form class="call-filters" @submit.prevent="search">
-      <label class="field"><span class="field-label">服务商</span><select v-model="provider" class="input" @change="search"><option value="">全部</option><option v-for="p in providers" :key="p" :value="p">{{ p }}</option></select></label>
-      <label class="field"><span class="field-label">状态</span><select v-model="status" class="input" @change="search"><option value="">全部</option><option value="success">成功</option><option value="error">失败</option><option value="pending">进行中</option></select></label>
+      <label class="field"><span class="field-label">服务商</span><BaseSelect :model-value="provider" :options="providerOptions" aria-label="筛选服务商" @update:model-value="filterProvider" /></label>
+      <label class="field"><span class="field-label">状态</span><BaseSelect :model-value="status" :options="statusOptions" :searchable="false" aria-label="筛选调用状态" @update:model-value="filterStatus" /></label>
       <label class="field"><span class="field-label">任务编号</span><input v-model="taskId" class="input" type="number" min="1" placeholder="全部任务" /></label>
       <label class="field call-keyword"><span class="field-label">接口地址</span><input v-model="keyword" class="input" placeholder="搜索接口路径，例如 /prompt" /></label>
       <button class="btn btn-primary" :disabled="loading">查询</button>
@@ -63,6 +63,8 @@ import { computed, nextTick, onMounted, ref } from 'vue'
 import { RefreshCw, X } from 'lucide-vue-next'
 import { apiCallLogAPI } from '~/composables/useApi'
 const providers = ['comfyui', 'openai', 'gemini', 'volcengine', 'minimax', 'aliyun']
+const providerOptions = [{ value: '', label: '全部' }, ...providers.map(value => ({ value, label: value }))]
+const statusOptions = [{ value: '', label: '全部' }, { value: 'success', label: '成功' }, { value: 'error', label: '失败' }, { value: 'pending', label: '进行中' }]
 const provider = ref(''), status = ref(''), keyword = ref(''), taskId = ref(''), page = ref(1)
 const grouped = ref(true)
 const items = ref([]), total = ref(0), totalCalls = ref(0), loading = ref(false), error = ref('')
@@ -90,6 +92,8 @@ async function load() {
   finally { if (current === version) loading.value = false }
 }
 function search() { page.value = 1; load() }
+function filterProvider(value) { provider.value = value; search() }
+function filterStatus(value) { status.value = value; search() }
 function changePage(delta) { page.value += delta; load() }
 async function openDetail(row, merge = false) {
   detail.value = row; detailLoading.value = true; detailError.value = ''

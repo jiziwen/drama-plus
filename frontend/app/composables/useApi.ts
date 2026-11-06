@@ -46,11 +46,21 @@ export const localRuntimeAPI = {
 }
 
 export const dramaAPI = {
-  list: () => api.get<{ items: any[] }>('/dramas'),
+  list: (page = 1) => api.get<{ items: any[]; pagination?: { total_pages: number } }>(page === 1 ? '/dramas' : `/dramas?page=${page}`),
   get: (id: number) => api.get(`/dramas/${id}`),
   create: (data: any) => api.post('/dramas', data),
   update: (id: number, data: any) => api.put(`/dramas/${id}`, data),
   del: (id: number) => api.del(`/dramas/${id}`),
+}
+
+/** Follow the existing paginated endpoint for workspaces that show every project. */
+export async function listAllDramas(): Promise<any[]> {
+  const first = await dramaAPI.list()
+  const items = [...first.items]
+  for (let page = 2; page <= (first.pagination?.total_pages || 1); page++) {
+    items.push(...(await dramaAPI.list(page)).items)
+  }
+  return items
 }
 
 export const episodeAPI = {

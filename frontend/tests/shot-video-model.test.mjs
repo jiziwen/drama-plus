@@ -75,7 +75,7 @@ test('saving a model updates only its shot and preserves all editing fields afte
   ctx.selectedSb.value = shot
   let release
   ctx.storyboardAPI.update = async (id, payload) => { calls.push({ id, ...payload }); await new Promise(resolve => { release = resolve }) }
-  const operation = ctx.changeShotVideoModel(shot, { target: { value: '10/wf-minimax-h3' } })
+  const operation = ctx.changeShotVideoModel(shot, '10/wf-minimax-h3')
   assert.deepEqual(Array.from(ctx.savingIds.value), [1])
   ctx.selectedSb.value = other
   release()
@@ -93,13 +93,11 @@ test('inheritance can be restored and a failed save leaves the old choice usable
   ctx.sbs.value = [shot]
   ctx.selectedSb.value = shot
   ctx.storyboardAPI.update = async () => { throw new Error('offline') }
-  const event = { target: { value: '' } }
-  await ctx.changeShotVideoModel(shot, event)
+  await ctx.changeShotVideoModel(shot, '')
   assert.equal(ctx.shotVideoModelKey(shot), '10/wf-minimax-h3')
-  assert.equal(event.target.value, '10/wf-minimax-h3')
   assert.deepEqual(errors, ['offline'])
   ctx.storyboardAPI.update = async () => {}
-  await ctx.changeShotVideoModel(shot, { target: { value: '' } })
+  await ctx.changeShotVideoModel(shot, '')
   assert.equal(ctx.shotVideoModelKey(shot), '')
   assert.equal(ctx.shotVideoSelection(shot).configId, 20)
 })

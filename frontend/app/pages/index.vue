@@ -1,6 +1,17 @@
 <template>
-  <div class="page">
-    <!-- 紧凑头部：标题 + 统计 + 新建 一行 -->
+  <div class="page soft-home">
+
+    <section v-if="route.query.view !== 'library'" class="workspace-welcome">
+      <div class="welcome-heading"><div><span class="soft-eyebrow">A LITTLE SPACE FOR BIG IDEAS</span><h1>给灵感，一个发生的地方。</h1><p>写一点，想远一点。今天，又会诞生怎样的世界？</p></div><button class="btn btn-primary" @click="showCreate=true"><Plus :size="16"/>新建故事</button></div>
+      <div class="creative-bento">
+        <section class="bento-start"><div class="bento-copy"><span class="soft-chip"><Sparkles :size="12"/>{{featuredProject?'继续你的创作':'你的创作空间'}}</span><h2>让想象生长，<br><em>让故事发生。</em></h2><p>从一段文字，到一部属于你的短剧。</p><button class="btn btn-primary" @click="featuredProject?openDrama(featuredProject):showCreate=true">{{featuredProject?'继续《'+featuredProject.title+'》':'创建第一个故事'}}<ArrowUpRight :size="15"/></button><small>{{featuredProject?latestEpisodeLabel(featuredProject):'每个好故事，都从第一行开始。'}}</small></div><div class="story-collage" aria-hidden="true"><div class="collage-window back"><div class="window-dots"><i/><i/><i/></div><img v-if="featuredCharacterImages.length" class="collage-character" :src="thumbOf(featuredCharacterImages[1] || featuredCharacterImages[0])" alt="" @error="thumbFallback($event, featuredCharacterImages[1] || featuredCharacterImages[0])"/><div v-else class="collage-script"><span>STORY INTO MOTION</span><b>{{featuredProject?.title||'你的下一个故事'}}<br>让每个念头，拥有画面。</b><i/><i/><i/></div></div><div class="collage-window front"><div class="window-dots"><i/><i/><i/></div><img :class="{'collage-character':featuredCharacterImages.length}" :src="featuredCharacterImages.length ? thumbOf(featuredCharacterImages[0]) : '/art/studio-world.webp'" alt="" @error="featuredCharacterImages.length && thumbFallback($event,featuredCharacterImages[0])"/><span>一个世界，正在成形。<Play :size="14"/></span></div><span class="collage-label"><CheckCircle2 :size="15"/>灵感已就位</span></div></section>
+        <section class="bento-progress"><span class="soft-chip">你的创作手记</span><strong>{{counts[1]}}<small>集</small></strong><p>{{counts[0]}} 个故事，正在你的手中生长。</p><div class="workspace-bars"><div v-for="(label,i) in ['项目','分集','角色','场景']" :key="label"><span :class="{highlight:i===1}" :style="{height:(30+counts[i]/Math.max(...counts,1)*76)+'px'}">{{counts[i]}}</span><b>{{label}}</b></div></div></section>
+        <div class="bento-search"><span><Search :size="17"/>找回那个好点子。</span><label><input v-model.trim="searchKeyword" aria-label="搜索项目" placeholder="搜索你的故事…"/><kbd>Ctrl K</kbd></label></div>
+        <NuxtLink to="/assets" class="bento-nudge"><span><CheckCircle2 :size="20"/></span><div><strong>故事的主角们，已就位。</strong><small>{{counts[2]+counts[3]}} 项角色与场景，等待你的下一幕。</small></div><ArrowUpRight :size="18"/></NuxtLink>
+      </div>
+    </section>
+
+    <!-- Project shelf: existing persisted actions. -->
     <div class="launcher-head">
       <div class="head-left">
         <h1 class="launcher-title">{{ t('index.hero.title') }}</h1>
@@ -74,7 +85,7 @@
         @keydown.space.prevent="openDrama(d)"
       >
         <div class="project-cover">
-          <span class="cover-initial">{{ coverInitial(d) }}</span>
+          <img v-if="projectCover(d)" :src="thumbOf(projectCover(d))" :alt="d.title" class="project-cover-image" loading="lazy" @error="thumbFallback($event,projectCover(d))"/><span v-else class="cover-initial">{{ coverInitial(d) }}</span>
           <span v-if="d.aspect_ratio && d.aspect_ratio !== 'adaptive'" class="cover-ratio">{{ d.aspect_ratio }}</span>
           <div class="status-wrap" @click.stop>
             <AppMenu
@@ -201,12 +212,19 @@
 import { toast } from 'vue-sonner'
 import { toastError } from '~/composables/useToast'
 import { useI18n } from 'vue-i18n'
-import { Clock, CircleHelp } from 'lucide-vue-next'
-import { dramaAPI, stylePresetAPI } from '~/composables/useApi'
+import { Clock, CircleHelp, Plus, Sparkles, ArrowUpRight, Play, CheckCircle2, Search } from 'lucide-vue-next'
+import { dramaAPI, stylePresetAPI, listAllDramas } from '~/composables/useApi'
+import {projectCover,projectCounts} from '~/utils/projectPresentation'
+import {thumbOf,thumbFallback} from '~/composables/useMedia'
 import BaseSelect from '~/components/BaseSelect.vue'
 import { startTour, autoTour } from '~/composables/useTour'
 
 const { t, locale } = useI18n()
+const route=useRoute()
+const featuredProject=computed(()=>[...dramas.value].sort((a,b)=>new Date(b.updated_at||0)-new Date(a.updated_at||0))[0])
+const counts=computed(()=>projectCounts(dramas.value))
+const featuredCharacterImages = computed(() => [...new Set((featuredProject.value?.characters || [])
+  .map(character => projectCover({ characters: [character] })).filter(Boolean))].slice(0, 2))
 
 const dramas = ref([])
 const loading = ref(false)
@@ -290,8 +308,8 @@ const filteredDramas = computed(() => {
 async function load() {
   loading.value = true
   try {
-    const [res, presets] = await Promise.all([dramaAPI.list(), stylePresetAPI.list()])
-    dramas.value = res.items || []
+    const [res, presets] = await Promise.all([listAllDramas(), stylePresetAPI.list()])
+    dramas.value = res || []
     stylePresets.value = presets || []
     if (!form.value.style && stylePresets.value.length) {
       form.value.style = stylePresets.value[0].value
@@ -329,6 +347,10 @@ async function confirmDelDrama() {
     deletingDrama.value = false
   }
 }
+
+function focusProjectSearch(event){if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='k'){event.preventDefault();document.querySelector('.soft-home input[aria-label="搜索项目"],.soft-home .search-box input')?.focus()}}
+onMounted(()=>document.addEventListener('keydown',focusProjectSearch))
+onBeforeUnmount(()=>document.removeEventListener('keydown',focusProjectSearch))
 
 function getEpisodeNumber(d) {
   const episodes = [...(d.episodes || [])]

@@ -35,7 +35,7 @@
 
     <!-- 主 Tab：剧集列表 / 素材库 -->
     <nav class="page-tabs">
-      <button type="button" :class="['tab-btn', { on: activeTab === 'episodes' }]" @click="activeTab = 'episodes'">
+      <button type="button" :class="['tab-btn', { on: activeTab === 'episodes' }]" @click="switchToEpisodes">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="20" rx="2.5"/><line x1="7" y1="8" x2="7" y2="16"/><line x1="10" y1="8" x2="10" y2="16"/><line x1="13" y1="8" x2="13" y2="16"/><line x1="16" y1="8" x2="16" y2="16"/></svg>
         {{ t('detail.tabs.episodes') }}
         <span class="tab-count">{{ drama.episodes?.length || 0 }}</span>
@@ -195,9 +195,9 @@
         <p class="empty-desc">{{ t('detail.assets.emptyDesc') }}</p>
       </div>
 
-      <div v-else-if="materials.length" class="asset-groups">
+      <div v-else-if="materials.length" class="asset-groups" :class="{ 'is-compact': assetTab === 'all' && assetGroups.every(g => g.items.length <= 2) }">
         <template v-for="g in assetGroups" :key="g.kindKey">
-          <template v-if="g.items.length">
+          <section v-if="g.items.length" class="asset-category">
             <div v-if="assetTab === 'all'" class="asset-group-head" :class="tagClass(g.kindKey)">
               <span class="group-icon">
                 <svg v-if="g.kindKey === 'character'" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
@@ -252,10 +252,7 @@
                       </div>
                     </div>
                   </div>
-                  <div class="asset-final-prompt" :title="m.finalPrompt || ''">
-                    <span class="afp-label">{{ t('episode.asset.finalPromptTurnaround') }}</span>
-                    <span :class="['afp-text', !m.finalPrompt && 'dim']">{{ m.finalPrompt || t('episode.asset.finalPromptAutoTurnaround') }}</span>
-                  </div>
+                  <AssetPromptSummary :label="t('episode.asset.finalPromptTurnaround')" :text="m.finalPrompt" :placeholder="t('episode.asset.finalPromptAutoTurnaround')" />
                 </div>
               </article>
             </div>
@@ -304,13 +301,10 @@
                     {{ t('episode.asset.upload') }}
                   </button>
                 </div>
-                <div class="asset-meta asset-final" :class="{ dim: !m.finalPrompt }" :title="m.finalPrompt || ''">
-                  <span class="afp-label">{{ g.kindKey === 'scene' ? t('episode.asset.finalPromptFixed') : t('episode.asset.finalPromptWhiteBg') }}</span>
-                  {{ m.finalPrompt || (g.kindKey === 'scene' ? t('episode.asset.finalPromptAutoFixed') : t('episode.asset.finalPromptAutoWhiteBg')) }}
-                </div>
+                <AssetPromptSummary :label="g.kindKey === 'scene' ? t('episode.asset.finalPromptFixed') : t('episode.asset.finalPromptWhiteBg')" :text="m.finalPrompt" :placeholder="g.kindKey === 'scene' ? t('episode.asset.finalPromptAutoFixed') : t('episode.asset.finalPromptAutoWhiteBg')" />
               </div>
             </div>
-          </template>
+          </section>
         </template>
 
         <!-- 筛选某一类但该类暂无素材 -->
@@ -350,11 +344,7 @@
               </div>
               <label class="mat-model-field">
                 <span>{{ t('assetGeneration.model') }}</span>
-                <select class="input" :value="editModelKey" :disabled="editSaving || isPending(editTarget)" @change="saveMaterialModel($event.target.value)">
-                  <option value="">{{ t('assetGeneration.followTop') }}</option>
-                  <option v-if="editModelKey && !editModelOptions.some(o => o.key === editModelKey)" :value="editModelKey" disabled>{{ t('assetGeneration.unavailableModel') }}</option>
-                  <option v-for="option in editModelOptions" :key="option.key" :value="option.key">{{ modelLabel(option.model) }} · {{ option.configName }}</option>
-                </select>
+                <BaseSelect :model-value="editModelKey" :options="editSelectModelOptions" :aria-label="t('assetGeneration.model')" :disabled="editSaving || isPending(editTarget)" @update:model-value="saveMaterialModel" />
               </label>
             </div>
             <section v-if="editMode === 'reference'" class="mat-reference-panel">
@@ -582,6 +572,7 @@
 </template>
 
 <script setup>
+definePageMeta({ key: route => route.params.id })
 import { toast } from 'vue-sonner'
 import { toastError } from '~/composables/useToast'
 import { useI18n } from 'vue-i18n'
@@ -710,7 +701,8 @@ async function confirmDelEpisode() {
 }
 
 /* ===== 素材库 Tab ===== */
-const activeTab = ref('episodes')
+const activeTab = ref(route.query.tab === 'assets' ? 'assets' : 'episodes')
+watch(()=>route.query.tab, tab=>{activeTab.value=tab==='assets'?'assets':'episodes'})
 const assetTab = ref('all')
 const assetViewer = ref({ open: false, src: '', title: '' })
 const pendingMaterials = ref(new Set())
@@ -820,6 +812,11 @@ async function pollMaterial(m, taskId) {
 
 function switchToAssets() {
   activeTab.value = 'assets'
+  navigateTo({ path: route.path, query: { ...route.query, tab: 'assets' } }, { replace: true })
+}
+function switchToEpisodes() {
+  activeTab.value = 'episodes'
+  navigateTo({ path: route.path, query: { ...route.query, tab: undefined } }, { replace: true })
 }
 
 /* ===== 素材图片手动上传（角色形象 / 场景图 / 道具图） ===== */
@@ -887,6 +884,12 @@ const imageConfigs = ref([])
 const modelLabel = useModelLabel()
 const editModelOptions = computed(() => assetModelOptions(imageConfigs.value, editMode.value, textReferenceDraft.value.length > 0))
 const editModelKey = computed(() => assetModelKey(editTarget.value, editMode.value, editModelOptions.value))
+const editSelectModelOptions = computed(() => [
+  { value: '', label: t('assetGeneration.followTop') },
+  ...(editModelKey.value && !editModelOptions.value.some(option => option.key === editModelKey.value)
+    ? [{ value: editModelKey.value, label: t('assetGeneration.unavailableModel'), disabled: true }] : []),
+  ...editModelOptions.value.map(option => ({ value: option.key, label: `${modelLabel(option.model)} · ${option.configName}` })),
+])
 const editDialogElement = ref(null)
 let editReturnFocus = null
 let historyRequest = 0
@@ -1050,13 +1053,13 @@ onMounted(async () => {
 <style scoped>
 .mat-generation-settings { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
 .mat-model-field { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12px; }
-.mat-model-field select { max-width: 320px; min-width: 180px; }
+.mat-model-field .base-select { max-width: 320px; min-width: 180px; }
 .mat-reference-panel { display: grid; gap: 20px; }
 .mat-reference-panel textarea { width: 100%; min-height: 130px; }
 .asset-card-actions { display: flex; flex: none; align-items: center; gap: 6px; flex-wrap: nowrap; min-width: 0; }
 .asset-card-actions > :deep(.asset-generation-actions), .asset-foot > :deep(.asset-generation-actions) { flex: none; }
 .asset-upload-button { flex: none; margin-left: auto; white-space: nowrap; }
-@media (max-width: 640px) { .mat-model-field { width: 100%; } .mat-model-field select { flex: 1; width: 0; } }
+@media (max-width: 640px) { .mat-model-field { width: 100%; } .mat-model-field .base-select { flex: 1; width: 0; } }
 .page {
   padding: 20px 28px 40px;
   overflow-y: auto;
@@ -1452,39 +1455,6 @@ onMounted(async () => {
   color: var(--text-0);
 }
 .character-gen-btn { flex-shrink: 0; align-self: center; }
-.asset-final-prompt {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding-top: 7px;
-  border-top: 1px solid var(--border);
-  font-size: 10.5px;
-  line-height: 1.5;
-}
-.afp-label {
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  color: var(--text-3);
-}
-.afp-text {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  overflow: hidden;
-  word-break: break-word;
-  color: var(--text-2);
-}
-.afp-text.dim { color: var(--text-3); }
-.asset-final {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  overflow: hidden;
-  word-break: break-word;
-  color: var(--text-2);
-}
-.asset-final .afp-label { margin-right: 4px; }
 .character-visual-summary {
   max-width: 100%;
   display: flex;
@@ -1561,7 +1531,6 @@ onMounted(async () => {
   text-overflow: ellipsis;
 }
 .asset-foot { display: flex; align-items: center; flex-wrap: nowrap; gap: 6px; padding: 7px 11px; border-top: 1px solid var(--border); }
-.asset-card > .asset-final { margin: 0 11px 9px; padding-top: 7px; border-top: 1px solid var(--border); }
 .prop-name-row {
   display: flex;
   align-items: center;

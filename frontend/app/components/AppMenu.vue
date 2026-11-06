@@ -1,5 +1,5 @@
 <template>
-  <span ref="anchorEl" class="app-menu-anchor" :class="{ block }" @click="toggle">
+  <span ref="anchorEl" class="app-menu-anchor" :class="{ block }" @click="onTriggerClick">
     <slot name="trigger" :open="isOpen" />
   </span>
   <Teleport to="body">
@@ -34,6 +34,7 @@ const props = withDefaults(defineProps<{
   minWidth?: number
   maxHeight?: number
   block?: boolean
+  disabled?: boolean
 }>(), {
   open: undefined,
   placement: 'bottom-start',
@@ -41,6 +42,7 @@ const props = withDefaults(defineProps<{
   minWidth: 160,
   maxHeight: 320,
   block: false,
+  disabled: false,
 })
 const emit = defineEmits<{ 'update:open': [boolean] }>()
 
@@ -52,8 +54,10 @@ const { isOpen, anchorEl, panelEl, panelStyle, placement: actualPlacement, toggl
 })
 
 // 外部 v-model:open 与内部状态双向桥接
-watch(() => props.open, (v) => { if (v !== undefined && v !== isOpen.value) isOpen.value = v })
+watch(() => props.open, (v) => { if (v !== undefined && v !== isOpen.value) isOpen.value = !props.disabled && v })
 watch(isOpen, (v) => emit('update:open', v))
+watch(() => props.disabled, (disabled) => { if (disabled) isOpen.value = false })
+function onTriggerClick() { if (!props.disabled) toggle() }
 
 const placement = actualPlacement
 </script>

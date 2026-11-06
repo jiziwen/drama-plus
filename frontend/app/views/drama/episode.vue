@@ -20,7 +20,7 @@
       </div>
 
       <div class="studio-topbar-side">
-        <div class="studio-model-picks">
+        <details class="studio-model-disclosure"><summary><SlidersHorizontal :size="14"/>生成设置</summary><div class="studio-model-picks">
           <ModelSelect
             v-if="textModelOptions.length"
             v-model="chatModel"
@@ -54,10 +54,8 @@
           />
           <button v-else class="btn btn-sm" :title="t('settings.comfyui.editResolution')" @click="openSettings('ai', selectedVideoConfig.id)">{{ comfyVideoSizeLabel }} · {{ t('settings.comfyui.editResolution') }}</button>
         </div>
-        <div class="studio-actions">
-          <button class="btn" @click="openSettings()">⚙ {{ t('layout.nav.settings') }}</button>
+        </details><div class="studio-actions">
           <button class="btn" @click="openSettings('calls')">接口记录</button>
-          <ThemeToggle />
           <button class="btn btn-icon tour-help-btn" :title="t('tour.helpTitle')" @click="startTour('episode', EPISODE_TOUR, t)">
             <CircleHelp :size="14" :stroke-width="1.8" />
           </button>
@@ -74,99 +72,25 @@
       </div>
     </header>
 
-    <div class="studio-body">
-    <!-- ========== LEFT SIDEBAR ========== -->
-    <aside class="sidebar" :class="{ collapsed: sidebarCollapsed }">
-      <nav class="pipeline">
-        <div
-          v-for="section in sidebarSections"
-          :key="section.id"
-          :class="['pipe-section', 'is-' + sectionState(section.id)]"
-        >
-          <div class="pipe-section-label">
-            <span v-if="sectionState(section.id) !== 'none'" class="pipe-section-state">
-              <svg v-if="sectionState(section.id) === 'done'" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-              <span v-else-if="sectionState(section.id) === 'active'" class="pipe-section-pulse" />
-              <span v-else class="pipe-section-dot" />
-            </span>
-            <span>{{ section.label }}</span>
-            <span v-if="sectionState(section.id) === 'active'" class="pipe-section-tag">{{ t('episode.sidebar.inProgress') }}</span>
-          </div>
-          <button
-            v-for="item in section.items"
-            :key="item.key"
-            :class="['pipe-item pipe-item-sub', {
-              active: activeSubStepKey === item.key,
-              done: sectionState(section.id) === 'done',
-              doing: sectionState(section.id) === 'active',
-            }]"
-            :title="sidebarCollapsed ? item.label : undefined"
-            @click="goSubStep(item.key)"
-          >
-            <span class="pipe-icon" :class="sectionState(section.id) === 'done' ? 'icon-done' : activeSubStepKey === item.key ? 'icon-active' : ''">
-              <!-- 收起态：始终显示步骤图标，进行中用右上角小脉冲点表达 -->
-              <template v-if="sidebarCollapsed">
-                <component :is="item.icon" :size="12" />
-                <span v-if="sectionState(section.id) === 'active'" class="pipe-mini-pulse" />
-              </template>
-              <svg v-else-if="sectionState(section.id) === 'done'" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-              <span v-else-if="sectionState(section.id) === 'active'" class="pipe-item-pulse" />
-              <component v-else :is="item.icon" :size="11" />
-            </span>
-            <span class="pipe-copy">
-              <span class="pipe-label">{{ item.label }}</span>
-              <span v-if="item.desc" class="pipe-sub">{{ item.desc }}</span>
-            </span>
-          </button>
-        </div>
-      </nav>
 
-      <!-- Bottom: 收起/展开 + Stage marquee + Refresh -->
-      <div class="sidebar-bottom">
-        <button
-          type="button"
-          class="sidebar-toggle"
-          :title="t(sidebarCollapsed ? 'episode.sidebar.expand' : 'episode.sidebar.collapse')"
-          @click="toggleSidebar"
-        >
-          <svg class="sidebar-toggle-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
-          <span v-if="!sidebarCollapsed">{{ t('episode.sidebar.collapse') }}</span>
-        </button>
-        <!-- 步骤跑马灯：四段主流程进度，当前段流动光效，点击段可跳转 -->
-        <div class="sidebar-progress">
-          <div class="sidebar-progress-head">
-            <span class="sidebar-progress-title">{{ currentStageLabel }}</span>
-            <span class="sidebar-progress-count">{{ currentMainIdx + 1 }}/{{ mainProgressSteps.length }}</span>
-          </div>
-          <div class="sidebar-progress-track">
-            <button
-              v-for="(s, i) in mainProgressSteps"
-              :key="s.id"
-              type="button"
-              :class="['sidebar-progress-seg', { done: i < currentMainIdx || mainStageDone(s.id), current: i === currentMainIdx }]"
-              :title="s.label"
-              @click="goMainStage(s.id)"
-            ><span class="sidebar-progress-seg-fill" /></button>
-          </div>
-          <div class="sidebar-progress-labels">
-            <span
-              v-for="(s, i) in mainProgressSteps"
-              :key="s.id"
-              :class="{ on: i === currentMainIdx, done: i < currentMainIdx || mainStageDone(s.id) }"
-            >{{ s.label }}</span>
-          </div>
-        </div>
-        <button class="refresh-btn" @click="refresh">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-          {{ t('episode.sidebar.refreshData') }}
-        </button>
+    <div class="studio-stage-navigation">
+      <div class="studio-episode-picker">
+        <span>{{ drama.title }}</span>
+        <BaseSelect :model-value="episodeNumber" :options="episodeOptions" :searchable="false" aria-label="选择分集" @update:model-value="selectEpisode" />
       </div>
-    </aside>
+      <nav aria-label="制作阶段">
+        <button v-for="(stage, i) in mainProgressSteps" :key="stage.id" :class="{ active: activeMainStage === stage.id }" :aria-current="activeMainStage === stage.id ? 'step' : undefined" @click="goMainStage(stage.id)">
+          <span>{{ i + 1 }}</span>{{ stage.label }}<Check v-if="mainStageDone(stage.id)" :size="12" />
+        </button>
+      </nav>
+    </div>
 
+    <div class="studio-body">
     <!-- ========== MAIN CONTENT ========== -->
-    <main class="main">
+    <main class="main" :class="{ 'story-workspace': panel === 'script' }">
+      <div v-if="panel==='script'" class="story-mode-tabs" aria-label="故事编辑模式"><button :aria-pressed="scriptStep===0" @click="goSubStep('script:raw')">{{t('episode.script.raw')}}</button><button :aria-pressed="scriptStep===1" @click="goSubStep('script:rewrite')">{{t('episode.script.rewrite')}}</button></div>
       <!-- ===== SCRIPT PANEL ===== -->
-      <div v-if="panel === 'script'" class="content-panel">
+      <div v-if="panel === 'script'" class="content-panel story-panel">
         <!-- Step 0: Raw Content -->
         <div v-if="scriptStep === 0" class="step-editor">
           <div class="step-toolbar">
@@ -178,17 +102,23 @@
             </div>
             <div class="toolbar-right">
               <span v-if="rawLen" class="char-count">{{ t('episode.script.charCount', { n: rawLen }) }}</span>
-              <button class="btn btn-sm" @click="saveRaw(); toast.success(t('episode.script.saved'))">
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
-                {{ t('common.save') }}
-              </button>
             </div>
           </div>
           <textarea
             class="fill-textarea"
             v-model="localRaw"
+            :disabled="savingRawNext"
             :placeholder="t('episode.script.rawPlaceholder')"
           />
+          <div class="story-next-bar">
+            <span>写好故事后，进入下一步整理剧本</span>
+            <div class="story-actions">
+              <button type="button" class="btn" :disabled="savingRawNext" @click="saveRaw(); toast.success(t('episode.script.saved'))">{{ t('common.save') }}</button>
+              <button type="button" class="btn btn-primary" :disabled="!localRaw.trim() || savingRawNext" @click="continueToRewrite">
+                {{ savingRawNext ? '保存中…' : '下一步：AI 改写' }} <span aria-hidden="true">→</span>
+              </button>
+            </div>
+          </div>
         </div>
 
         <!-- Step 1: Rewrite -->
@@ -202,18 +132,6 @@
             </div>
             <div class="toolbar-right">
               <span v-if="scriptLen" class="char-count">{{ t('episode.script.charCount', { n: scriptLen }) }}</span>
-              <button v-if="rawContent" class="btn btn-sm" :disabled="rn" @click="skipRewrite">
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/><path d="M13 18l6-6-6-6"/></svg>
-                {{ t('episode.script.skipRewrite') }}
-              </button>
-              <button v-if="scriptContent" class="btn btn-sm" @click="doRewrite" :disabled="rn">
-                <Loader2 v-if="rn && rt === 'script_rewriter'" :size="11" class="animate-spin" />
-                <svg v-else width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
-                {{ t('episode.script.rewriteAgain') }}
-              </button>
-              <button v-if="scriptLen" type="button" class="btn btn-sm" :disabled="rn" @click="openRewriteDialog">
-                {{ t('episode.script.rewriteWithInstructions') }}
-              </button>
             </div>
           </div>
 
@@ -225,22 +143,25 @@
             </div>
             <div class="empty-title">{{ t('episode.script.emptyTitle') }}</div>
             <div class="empty-desc">{{ t('episode.script.emptyDesc') }}</div>
-            <div class="step-empty-actions">
-              <button class="btn btn-primary" @click="doRewrite">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-                {{ t('episode.script.startRewrite') }}
+          </div>
+          <div v-else-if="rn && rt === 'script_rewriter'" class="rewrite-progress" role="status" aria-live="polite">
+            <span class="rewrite-progress-icon"><Loader2 :size="18" class="animate-spin" /></span>
+            <span class="rewrite-progress-copy"><strong>{{ t('episode.script.rewriting') }}</strong><span>正在整理故事，请稍候</span></span>
+            <span class="rewrite-progress-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+          </div>
+          <textarea v-else class="fill-textarea" v-model="localScript" :disabled="savingScriptNext" :placeholder="t('episode.script.scriptPlaceholder')" />
+          <div class="story-next-bar story-rewrite-bar">
+            <span v-if="rawContent">{{ scriptLen ? t('episode.script.skipHintExisting') : t('episode.script.skipHint') }}</span>
+            <div class="story-actions">
+              <button v-if="rawContent || (!scriptContent && !rn)" type="button" class="btn" :disabled="rn || savingScriptNext" @click="skipRewrite">{{ t('episode.script.skipToAssets') }}</button>
+              <button v-if="scriptLen" type="button" class="btn" :disabled="rn || savingScriptNext" @click="openRewriteDialog">{{ t('episode.script.rewriteWithInstructions') }}</button>
+              <button v-if="scriptContent || !rn" type="button" class="btn" :class="{ 'btn-primary': !scriptLen }" :disabled="rn || savingScriptNext" @click="doRewrite">
+                <Loader2 v-if="rn && rt === 'script_rewriter'" :size="14" class="animate-spin" />
+                {{ scriptContent ? t('episode.script.rewriteAgain') : t('episode.script.startRewrite') }}
               </button>
-              <button class="btn" @click="skipRewrite">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M5 12h14"/><path d="M13 18l6-6-6-6"/></svg>
-                {{ t('episode.script.skipRewrite') }}
-              </button>
+              <button v-if="scriptLen" type="button" class="btn btn-primary" :disabled="rn || savingScriptNext" @click="continueToAssets">{{ savingScriptNext ? t('episode.script.savingNext') : t('episode.script.nextAssets') }} <span aria-hidden="true">→</span></button>
             </div>
           </div>
-          <div v-else-if="rn && rt === 'script_rewriter'" class="step-loading">
-            <Loader2 :size="24" class="animate-spin" style="color:var(--accent)" />
-            <div class="loading-text">{{ t('episode.script.rewriting') }}</div>
-          </div>
-          <textarea v-else class="fill-textarea" v-model="localScript" :placeholder="t('episode.script.scriptPlaceholder')" />
         </div>
       </div>
 
@@ -257,7 +178,7 @@
         </div>
 
         <template v-else>
-          <!-- 制作子步骤导航（资产/分镜拆分/视频生成）由左侧栏承担，顶部不再重复展示 -->
+          <!-- Production stages share the top stage navigation. -->
           <!-- Sub: Assets -->
           <div v-if="prodTab === 'assets'" class="prod-content" :data-asset-view="orbitAssetView">
             <div class="prod-section-bar">
@@ -313,7 +234,8 @@
                 {{ extractingTargets.length ? t('episode.prod.extractingTypesDots', { types: extractingLabels }) : t('episode.prod.startExtract') }}
               </button>
             </div>
-            <template v-else>
+            <div v-else class="asset-categories" :class="{ 'is-compact': visualChars.length <= 2 && scenes.length <= 2 && propItems.length <= 2 }">
+            <section class="asset-category">
             <div class="asset-section-title">
               {{ t('common.role') }}
               <button class="asset-add-btn" @click="openAssetCreate('character')"><Plus :size="11" /> {{ t('common.add') }}</button>
@@ -371,15 +293,14 @@
                       </div>
                     </div>
                   </div>
-                  <div class="asset-final-prompt" :title="c.final_prompt || c.finalPrompt || ''">
-                    <span class="afp-label">{{ t('episode.asset.finalPromptTurnaround') }}</span>
-                    <span :class="['afp-text', !(c.final_prompt || c.finalPrompt) && 'dim']">{{ c.final_prompt || c.finalPrompt || t('episode.asset.finalPromptAutoTurnaround') }}</span>
-                  </div>
+                  <AssetPromptSummary :label="t('episode.asset.finalPromptTurnaround')" :text="c.final_prompt || c.finalPrompt" :placeholder="t('episode.asset.finalPromptAutoTurnaround')" />
                 </div>
               </article>
             </div>
             </template>
 
+            </section>
+            <section class="asset-category">
             <div class="asset-section-title">
               {{ t('common.scene') }}
               <button class="asset-add-btn" @click="openAssetCreate('scene')"><Plus :size="11" /> {{ t('common.add') }}</button>
@@ -425,14 +346,13 @@
                     {{ t('episode.asset.upload') }}
                   </button>
                 </div>
-                <div class="asset-meta asset-final" :class="{ dim: !(s.final_prompt || s.finalPrompt) }" :title="s.final_prompt || s.finalPrompt || ''">
-                  <span class="afp-label">{{ t('episode.asset.finalPromptFixed') }}</span>
-                  {{ s.final_prompt || s.finalPrompt || t('episode.asset.finalPromptAutoFixed') }}
-                </div>
+                <AssetPromptSummary :label="t('episode.asset.finalPromptFixed')" :text="s.final_prompt || s.finalPrompt" :placeholder="t('episode.asset.finalPromptAutoFixed')" />
               </div>
             </div>
             </template>
 
+            </section>
+            <section class="asset-category">
             <div class="asset-section-title">
               {{ t('common.prop') }}
               <button class="asset-add-btn" @click="openAssetCreate('prop')"><Plus :size="11" /> {{ t('common.add') }}</button>
@@ -479,14 +399,12 @@
                     {{ t('episode.asset.upload') }}
                   </button>
                 </div>
-                <div class="asset-meta asset-final" :class="{ dim: !(p.final_prompt || p.finalPrompt) }" :title="p.final_prompt || p.finalPrompt || ''">
-                  <span class="afp-label">{{ t('episode.asset.finalPromptWhiteBg') }}</span>
-                  {{ p.final_prompt || p.finalPrompt || t('episode.asset.finalPromptAutoWhiteBg') }}
-                </div>
+                <AssetPromptSummary :label="t('episode.asset.finalPromptWhiteBg')" :text="p.final_prompt || p.finalPrompt" :placeholder="t('episode.asset.finalPromptAutoWhiteBg')" />
               </div>
             </div>
             <div v-else class="asset-props-empty">{{ t('episode.asset.propsEmpty') }}</div>
-            </template>
+            </section>
+            </div>
           </div>
 
           <!-- Sub: Video Production（分镜拆分 + 视频生成 合并） -->
@@ -534,7 +452,7 @@
               </button>
               <button type="button" class="btn" :disabled="rn && rt === 'storyboard_breaker'" @click="openStoryboardCreate">{{ t('episode.vid.addShot') }}</button>
             </div>
-            <div v-else class="video-task-workbench has-player" :style="{ '--vleft': videoLeftW + 'px', '--vright': videoRightW + 'px' }">
+            <div v-else class="video-task-workbench has-player">
               <section class="video-task-list">
                 <div class="video-task-head">
                 <div class="video-task-heading">
@@ -630,7 +548,7 @@
                 </div>
               </section>
 
-              <div v-if="selectedSb" class="video-task-side">
+              <div v-if="selectedSb && shotEditorOpen" class="shot-editor-scrim" @click.self="closeShotEditor"><section ref="shotEditorElement" class="shot-editor-sheet" role="dialog" aria-modal="true" aria-label="镜头工作间" tabindex="-1" @keydown.esc.stop="closeShotEditor" @keydown.tab="trapShotFocus"><header class="shot-sheet-header"><div><strong>镜头工作间</strong><span>{{sbs.indexOf(selectedSb)+1}} / {{sbs.length}}</span></div><div><button class="btn btn-sm" :disabled="sbs.indexOf(selectedSb)<=0" @click="selectAdjacentShot(-1)">上一镜</button><button class="btn btn-sm" :disabled="sbs.indexOf(selectedSb)>=sbs.length-1" @click="selectAdjacentShot(1)">下一镜</button><button class="btn btn-icon" aria-label="关闭镜头工作间" @click="closeShotEditor"><X :size="18"/></button></div></header><div class="video-task-side">
               <div class="video-main-col" :data-editor-tab="orbitEditorTab">
               <nav class="orbit-editor-tabs" :aria-label="t('workspaceView.editorSections')">
                 <button v-for="tab in orbitEditorTabs" :key="tab.id" :aria-pressed="orbitEditorTab === tab.id" @click="orbitEditorTab = tab.id"><span>{{ tab.number }}</span>{{ t(tab.labelKey) }}</button>
@@ -851,16 +769,14 @@
                   </section>
                   <label class="video-inspector-model">
                     <span class="sr-only">{{ t('episode.inspector.shotModel') }}</span>
-                    <select
-                      :value="shotVideoModelKey(selectedSb)"
+                    <BaseSelect
+                      :model-value="shotVideoModelKey(selectedSb)"
+                      :options="shotVideoSelectOptions"
                       :disabled="videoTaskState(selectedSb) === 'pending' || savingShotVideoIds.includes(selectedSb.id)"
                       :title="t('episode.inspector.shotModelHint')"
-                      @change="changeShotVideoModel(selectedSb, $event)"
-                    >
-                      <option value="">{{ t('episode.inspector.followTop', { model: effectiveVideoModelLabel || t('episode.vid.defaultModel') }) }} · {{ videoResolutionForConfig(selectedVideoConfig) }} · {{ effectiveVideoDuration }}s</option>
-                      <option v-if="shotVideoModelKey(selectedSb) && !shotVideoModelOptions.some(o => o.key === shotVideoModelKey(selectedSb))" :value="shotVideoModelKey(selectedSb)" disabled>{{ t('episode.inspector.invalidModel', { model: selectedSb.video_model || selectedSb.videoModel || '' }) }}</option>
-                      <option v-for="option in shotVideoModelOptions" :key="option.key" :value="option.key">{{ modelLabel(option.model) }} · {{ option.configName }} · {{ videoResolutionForConfig(option.config) }} · {{ effectiveVideoDuration }}s</option>
-                    </select>
+                      :aria-label="t('episode.inspector.shotModel')"
+                      @update:model-value="changeShotVideoModel(selectedSb, $event)"
+                    />
                   </label>
                   <button
                     class="btn btn-primary video-inspector-action"
@@ -872,20 +788,7 @@
                 </div>
               </aside>
               </div>
-              <div
-                class="video-col-divider is-left"
-                role="separator"
-                aria-orientation="vertical"
-                @pointerdown="startVideoColDrag('left', $event)"
-                @dblclick="videoLeftW = VIDEO_COL_DEFAULTS.left"
-              ></div>
-              <div
-                class="video-col-divider is-right"
-                role="separator"
-                aria-orientation="vertical"
-                @pointerdown="startVideoColDrag('right', $event)"
-                @dblclick="videoRightW = VIDEO_COL_DEFAULTS.right"
-              ></div>
+              </section></div>
             </div>
           </div>
 
@@ -1049,7 +952,7 @@
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
                 {{ t('common.refresh') }}
               </button>
-              <button class="btn btn-ghost btn-icon" @click="closeTaskDrawer"><X :size="14" /></button>
+              <button class="btn btn-ghost btn-icon" :aria-label="t('common.close')" @click="closeTaskDrawer"><X :size="14" /></button>
             </div>
           </header>
           <div class="video-task-metrics task-drawer-metrics">
@@ -1070,11 +973,12 @@
               :key="row.key"
               :class="['video-task-row', 'gen-task-row', 'is-' + genTaskStateClass(row.status)]"
             >
-              <div class="video-task-preview">
+              <div class="gen-task-media">
+              <div class="video-task-preview gen-task-preview">
                 <video
                   v-if="row.previewUrl && (row.kind === 'video' || row.kind === 'merge')"
                   :src="genTaskPreviewSrc(row.previewUrl)"
-                  :poster="posterOf(genTaskPreviewSrc(row.previewUrl)) || undefined"
+                  :poster="(row.kind === 'video' ? videoPosterSrc('tasks', row.id, genTaskPreviewSrc(row.previewUrl)) : posterOf(genTaskPreviewSrc(row.previewUrl))) || undefined"
                   controls
                   preload="none"
                   playsinline
@@ -1091,7 +995,8 @@
                   <Loader2 v-if="genTaskStateClass(row.status) === 'pending'" :size="18" class="animate-spin" />
                   <svg v-else width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
                 </div>
-                <span class="video-task-index">{{ genTaskKindLabel(row.kind) }}</span>
+              </div>
+              <span class="gen-task-kind">{{ genTaskKindLabel(row.kind) }}</span>
               </div>
               <div class="video-task-main">
                 <div class="video-task-line">
@@ -1156,11 +1061,7 @@
               </div>
               <label class="asset-generation-model">
                 <span>{{ t('assetGeneration.model') }}</span>
-                <select v-model="assetGenerationModels[assetGenerationMode]" class="input" :disabled="savingAssetDetail || isAssetImagePending(assetDetail.type, assetDetail.item.id)">
-                  <option value="">{{ t('assetGeneration.followTop') }} · {{ modelLabel(bareModelName(imageModel) || defaultImageModel) }}</option>
-                  <option v-if="assetSelectedModelUnavailable" :value="assetGenerationModels[assetGenerationMode]" disabled>{{ t('assetGeneration.unavailableModel') }}</option>
-                  <option v-for="option in assetDetailModelOptions" :key="option.key" :value="option.key">{{ modelLabel(option.model) }} · {{ option.configName }}</option>
-                </select>
+                <BaseSelect v-model="assetGenerationModels[assetGenerationMode]" :options="assetGenerationSelectOptions" :aria-label="t('assetGeneration.model')" :disabled="savingAssetDetail || isAssetImagePending(assetDetail.type, assetDetail.item.id)" />
               </label>
             </div>
             <div class="asset-detail-shell">
@@ -1578,9 +1479,8 @@
 import { toast } from 'vue-sonner'
 import { useI18n } from 'vue-i18n'
 import {
-  Users, FileText, FolderKanban, Clapperboard, Download, Loader2,
-  Plus, X, ListTodo, CircleHelp, Trash2,
-} from 'lucide-vue-next'
+  FolderKanban, Clapperboard, Loader2,
+  Plus, X, ListTodo, CircleHelp, Trash2, Check, SlidersHorizontal} from 'lucide-vue-next'
 import { api, dramaAPI, episodeAPI, storyboardAPI, characterAPI, sceneAPI, propAPI, taskAPI, mergeAPI, aiConfigAPI, uploadAPI } from '~/composables/useApi'
 import { startTour, autoTour } from '~/composables/useTour'
 import { useAgent } from '~/composables/useAgent'
@@ -1588,17 +1488,28 @@ import { resolveTextModelSelection } from '~/utils/text-model-selection'
 import { toastError, mapError, MODERATION_RE } from '~/composables/useToast'
 import { assetModelOptions, assetModelKey, assetModelPatch, resolveAssetModel, assetReferences } from '~/composables/useAssetGeneration'
 
-definePageMeta({ layout: 'studio' })
+definePageMeta({ key: route => route.fullPath })
 const { open: openSettings, revision: settingsRevision } = useSettingsPanel()
 watch(settingsRevision, () => loadConfigs())
 
 const { t } = useI18n()
+
 
 const route = useRoute()
 const dramaId = Number(route.params.id)
 const episodeNumber = Number(route.params.episodeNumber)
 
 const drama = ref(null), episode = ref(null), chars = ref([]), scenes = ref([]), propItems = ref([]), sbs = ref([]), mergeData = ref(null)
+const episodeOptions = computed(() => (drama.value?.episodes || []).map(ep => ({
+  value: Number(ep.episode_number || ep.episodeNumber),
+  label: `${t('episode.topbar.episodeN', { n: ep.episode_number || ep.episodeNumber })} · ${ep.title || ''}`,
+})))
+function selectEpisode(value) {
+  const number = Number(value)
+  if (number !== episodeNumber && episodeOptions.value.some(option => option.value === number)) {
+    navigateTo(`/drama/${dramaId}/episode/${number}`)
+  }
+}
 // 工作台面板位置记忆（按剧集隔离）：仅页面刷新(reload)时恢复到上次所在步骤；
 // 从列表/详情页点击进入时始终默认「剧本」面板
 const PANEL_STORE_KEY = `huobao:workbench:panel:${dramaId}:${episodeNumber}`
@@ -1615,6 +1526,8 @@ const panel = ref(['production', 'export'].includes(storedPanel?.panel) ? stored
 const { running: rn, runningType: rt, run: runAgent } = useAgent()
 
 const localRaw = ref(''), localScript = ref('')
+const savingRawNext = ref(false)
+const savingScriptNext = ref(false)
 const rewriteDialog = ref(null)
 const rewriteInstructions = ref('')
 const rewriteError = ref('')
@@ -1667,7 +1580,6 @@ watch([panel, scriptStep, prodTab], ([p, s, pt]) => {
   try { localStorage.setItem(PANEL_STORE_KEY, JSON.stringify({ panel: p, scriptStep: s, prodTab: pt })) } catch { /* 静默 */ }
 })
 // ===== 视频制作三栏宽度：拖拽调节 + 全局持久化（双击分隔条恢复默认） =====
-const VIDEO_COL_STORE_KEY = 'huobao:workbench:video-cols'
 const orbitEditorTab = ref('description')
 const orbitAssetView = ref('grid')
 const orbitEditorTabs = [
@@ -1675,45 +1587,6 @@ const orbitEditorTabs = [
   { id: 'reference', number: '02', labelKey: 'episode.ref.title' },
   { id: 'prompt', number: '03', labelKey: 'episode.sb.videoPromptSection' },
 ]
-const VIDEO_COL_DEFAULTS = { left: 236, right: 340 }
-const VIDEO_COL_LIMITS = { left: [180, 420], right: [260, 560] }
-const storedVideoCols = (() => {
-  try {
-    const c = JSON.parse(localStorage.getItem(VIDEO_COL_STORE_KEY) || 'null')
-    return c && typeof c === 'object' ? c : null
-  } catch { return null }
-})()
-const clampVideoCol = (which, w) => Math.min(VIDEO_COL_LIMITS[which][1], Math.max(VIDEO_COL_LIMITS[which][0], Math.round(w)))
-const videoLeftW = ref(clampVideoCol('left', Number(storedVideoCols?.left) || VIDEO_COL_DEFAULTS.left))
-const videoRightW = ref(clampVideoCol('right', Number(storedVideoCols?.right) || VIDEO_COL_DEFAULTS.right))
-watch([videoLeftW, videoRightW], ([l, r]) => {
-  try { localStorage.setItem(VIDEO_COL_STORE_KEY, JSON.stringify({ left: l, right: r })) } catch { /* 静默 */ }
-})
-function startVideoColDrag(which, e) {
-  if (e.button !== 0) return
-  e.preventDefault()
-  const target = e.currentTarget
-  const startX = e.clientX
-  const startW = which === 'left' ? videoLeftW.value : videoRightW.value
-  const onMove = (ev) => {
-    const dx = ev.clientX - startX
-    const w = clampVideoCol(which, which === 'left' ? startW + dx : startW - dx)
-    if (which === 'left') videoLeftW.value = w
-    else videoRightW.value = w
-  }
-  const onUp = () => {
-    target.removeEventListener('pointermove', onMove)
-    target.removeEventListener('pointerup', onUp)
-    target.removeEventListener('pointercancel', onUp)
-    document.body.classList.remove('is-video-col-dragging')
-  }
-  document.body.classList.add('is-video-col-dragging')
-  target.addEventListener('pointermove', onMove)
-  target.addEventListener('pointerup', onUp)
-  target.addEventListener('pointercancel', onUp)
-  target.setPointerCapture?.(e.pointerId)
-}
-const activeExtractTab = ref('characters')
 const prodTabIdx = computed({
   get: () => prodTabDefs.value.findIndex(d => d.id === prodTab.value),
   set: (v) => { prodTab.value = prodTabDefs.value[v]?.id || 'assets' },
@@ -1738,19 +1611,6 @@ function persistModel(modelRef, key) {
 persistModel(chatModel, MODEL_STORE_KEYS.chat)
 persistModel(imageModel, MODEL_STORE_KEYS.image)
 persistModel(videoModel, MODEL_STORE_KEYS.video)
-// 左侧菜单栏收起/展开：收起为窄图标栏给内容区让位，持久化到 localStorage
-const SIDEBAR_COLLAPSED_KEY = 'huobao:sidebar-collapsed'
-const sidebarCollapsed = ref((() => {
-  try { return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1' } catch { return false }
-})())
-function toggleSidebar() {
-  sidebarCollapsed.value = !sidebarCollapsed.value
-  try {
-    sidebarCollapsed.value
-      ? localStorage.setItem(SIDEBAR_COLLAPSED_KEY, '1')
-      : localStorage.removeItem(SIDEBAR_COLLAPSED_KEY)
-  } catch { /* 静默 */ }
-}
 /** 默认项也传出界面显示的模型和所属配置，覆盖 Agent 文件中的其他默认模型。 */
 function chatModelOverride() { return resolveTextModelSelection(textModelOptions.value, chatModel.value).model }
 function chatConfigId() { return resolveTextModelSelection(textModelOptions.value, chatModel.value).configId }
@@ -1813,6 +1673,11 @@ let assetDialogOpener = null
 const assetDetailModelOptions = computed(() => assetModelOptions(imageConfigs.value, assetGenerationMode.value, assetTextReferenceDraft.value.length > 0))
 const assetSelectedModelUnavailable = computed(() => !!assetGenerationModels.value[assetGenerationMode.value]
   && !assetDetailModelOptions.value.some(option => option.key === assetGenerationModels.value[assetGenerationMode.value]))
+const assetGenerationSelectOptions = computed(() => [
+  { value: '', label: `${t('assetGeneration.followTop')} · ${modelLabel(bareModelName(imageModel.value) || defaultImageModel.value)}` },
+  ...(assetSelectedModelUnavailable.value ? [{ value: assetGenerationModels.value[assetGenerationMode.value], label: t('assetGeneration.unavailableModel'), disabled: true }] : []),
+  ...assetDetailModelOptions.value.map(option => ({ value: option.key, label: `${modelLabel(option.model)} · ${option.configName}` })),
+])
 let assetDetailRevision = 0
 
 function isPendingCharImage(id) {
@@ -2299,7 +2164,7 @@ function toggleVideoSelectMode() {
 }
 function onVideoTaskRowClick(sb) {
   if (videoSelectMode.value) toggleVideoSbSelect(sb.id)
-  else selectedSb.value = sb
+  else {selectedSb.value = sb;shotEditorOpen.value=true}
 }
 
 // 旁白角色识别：按内容语言的关键词匹配（提取产物中的旁白角色不参与画面生成）
@@ -2404,8 +2269,6 @@ const selectedVideoConfig = computed(() => {
     .filter(config => config.is_active)
     .sort((a, b) => (b.priority || 0) - (a.priority || 0))[0]
 })
-const isWan3Video = computed(() => selectedVideoConfig.value?.provider === 'aliyun'
-  || bareModelName(videoModel.value).startsWith('wan3.0-video'))
 function videoSizeForConfig(config) {
   const settings = config?.comfyui
   const [rw, rh] = dramaAspectRatio.value.split(':').map(Number)
@@ -2432,11 +2295,6 @@ const effectiveVideoModelLabel = computed(() => {
   if (explicit) return modelLabel(explicit)
   return modelLabel(configModels(selectedVideoConfig.value)[0] || '')
 })
-const episodeResolutionLabel = computed(() =>
-  selectedVideoConfig.value?.provider === 'comfyui' ? comfyVideoSizeLabel.value : resolutionOptions.value.find(o => o.key === episodeResolution.value)?.model || episodeResolution.value)
-// 短档位标签（480p / 768P / 2K 等厂商原生档位），用于底部生效配置小结
-const episodeResolutionShort = computed(() =>
-  selectedVideoConfig.value?.provider === 'comfyui' ? comfyVideoSizeLabel.value : RESOLUTION_DISPLAY[resolutionProvider.value][episodeResolution.value] || episodeResolution.value)
 const effectiveVideoDuration = computed(() => videoGenerationDuration(selectedSb.value?.duration))
 // 分镜覆盖单独持久化；顶栏仍控制没有覆盖的镜头。配置 ID 是键的一部分，避免同名模型串配置。
 const shotVideoModelOptions = computed(() => [...videoConfigs.value]
@@ -2468,11 +2326,16 @@ function videoResolutionForConfig(config) {
   return display[resolution] || resolution
 }
 function shotVideoResolutionLabel(sb) { return videoResolutionForConfig(shotVideoConfig(sb)) }
-async function changeShotVideoModel(sb, event) {
+const shotVideoSelectOptions = computed(() => [
+  { value: '', label: `${t('episode.inspector.followTop', { model: effectiveVideoModelLabel.value || t('episode.vid.defaultModel') })} · ${videoResolutionForConfig(selectedVideoConfig.value)} · ${effectiveVideoDuration.value}s` },
+  ...(shotVideoModelKey(selectedSb.value) && !shotVideoModelOptions.value.some(option => option.key === shotVideoModelKey(selectedSb.value))
+    ? [{ value: shotVideoModelKey(selectedSb.value), label: t('episode.inspector.invalidModel', { model: selectedSb.value?.video_model || selectedSb.value?.videoModel || '' }), disabled: true }] : []),
+  ...shotVideoModelOptions.value.map(option => ({ value: option.key, label: `${modelLabel(option.model)} · ${option.configName} · ${videoResolutionForConfig(option.config)} · ${effectiveVideoDuration.value}s` })),
+])
+async function changeShotVideoModel(sb, key) {
   if (!sb || savingShotVideoIds.value.includes(sb.id)) return
-  const key = event.target.value
   const option = shotVideoModelOptions.value.find(option => option.key === key)
-  if (key && !option) { event.target.value = shotVideoModelKey(sb); return }
+  if (key && !option) return
   const id = sb.id
   const payload = { video_model: option?.model ?? null, video_config_id: option?.configId ?? null }
   savingShotVideoIds.value.push(id)
@@ -2483,7 +2346,6 @@ async function changeShotVideoModel(sb, event) {
       if (target) Object.assign(target, payload, { videoModel: payload.video_model, videoConfigId: payload.video_config_id })
     }
   } catch (error) {
-    if (selectedSb.value?.id === id) event.target.value = shotVideoModelKey(sb)
     toastError(error)
   } finally {
     savingShotVideoIds.value = savingShotVideoIds.value.filter(item => item !== id)
@@ -2732,9 +2594,6 @@ const sceneImgCount = computed(() => scenes.value.filter(s => s.image_url || s.i
 const propImgCount = computed(() => propItems.value.filter(p => p.image_url || p.imageUrl).length)
 const shotVidCount = computed(() => sbs.value.filter(s => s.video_url || s.videoUrl).length)
 const visualCharTotal = computed(() => visualChars.value.length)
-const pendingCharacterImageCount = computed(() => Math.max(visualCharTotal.value - charImgCount.value, 0))
-const pendingSceneImageCount = computed(() => Math.max(scenes.value.length - sceneImgCount.value, 0))
-const pendingAssetImageCount = computed(() => pendingCharacterImageCount.value + pendingSceneImageCount.value)
 const assetTotalCount = computed(() => visualCharTotal.value + scenes.value.length + propItems.value.length)
 const assetReadyCount = computed(() => charImgCount.value + sceneImgCount.value + propImgCount.value)
 
@@ -2742,39 +2601,6 @@ const prodTabDefs = computed(() => [
   { id: 'assets', label: t('episode.prod.assets'), icon: FolderKanban, badge: assetTotalCount.value ? `${assetReadyCount.value}/${assetTotalCount.value}` : '' },
   { id: 'videos', label: t('episode.prod.videos'), icon: Clapperboard, badge: sbs.value.length ? `${shotVidCount.value}/${sbs.value.length}` : '' },
 ])
-
-const mainStageDefs = computed(() => ([
-  { id: 'script', label: t('episode.stage.script'), desc: t('episode.stage.scriptDesc'), icon: FileText },
-  { id: 'assets', label: t('episode.prod.assets'), desc: t('episode.stage.assetsDesc'), icon: FolderKanban },
-  { id: 'videos', label: t('episode.stage.videos'), desc: t('episode.stage.videosDesc'), icon: Clapperboard },
-  { id: 'export', label: t('episode.stage.export'), desc: t('episode.stage.exportDesc'), icon: Download },
-]))
-
-const sidebarSections = computed(() => ([
-  {
-    id: 'script',
-    label: t('episode.stage.script'),
-    items: [
-      { key: 'script:raw', label: t('episode.script.raw'), desc: '', icon: FileText },
-      { key: 'script:rewrite', label: t('episode.script.rewrite'), desc: '', icon: FileText },
-    ],
-  },
-  {
-    id: 'production',
-    label: t('episode.stage.production'),
-    items: [
-      { key: 'prod:assets', label: t('episode.prod.assets'), desc: '', icon: Users },
-      { key: 'prod:videos', label: t('episode.prod.videos'), desc: '', icon: Clapperboard },
-    ],
-  },
-  {
-    id: 'export',
-    label: t('episode.stage.export'),
-    items: [
-      { key: 'export:merge', label: t('episode.stage.mergeExport'), desc: '', icon: Download },
-    ],
-  },
-]))
 
 // 大环节状态:pending(未开始)/ active(进行中)/ done(已完成)/ none(不显示状态,导出用)
 // 进行中 = 环节内有任意进度但未全部完成,或当前正处于该环节
@@ -2831,27 +2657,13 @@ function goMainStage(stageId) {
   panel.value = 'export'
 }
 
-const activeSubStepKey = computed(() => {
-  if (panel.value === 'script') {
-    if (scriptStep.value === 0) return 'script:raw'
-    return 'script:rewrite'
-  }
-  if (panel.value === 'production') return `prod:${prodTab.value}`
-  return 'export:merge'
-})
-
 // 步骤跑马灯：四段主流程（剧本 → 资产制作 → 视频制作 → 导出），段点击跳转、当前段流动光效
 const mainProgressSteps = computed(() => [
-  { id: 'script', label: t('episode.stage.script') },
-  { id: 'assets', label: t('episode.prod.assets') },
-  { id: 'videos', label: t('episode.stage.videos') },
-  { id: 'export', label: t('episode.stage.export') },
+  { id: 'script', label: '故事' },
+  { id: 'assets', label: '视觉' },
+  { id: 'videos', label: '动态' },
+  { id: 'export', label: '成片' },
 ])
-const currentMainIdx = computed(() => {
-  const i = mainProgressSteps.value.findIndex(s => s.id === activeMainStage.value)
-  return i < 0 ? 0 : i
-})
-
 function goSubStep(key) {
   if (key.startsWith('script:')) {
     panel.value = 'script'
@@ -2881,15 +2693,18 @@ const currentStageLabel = computed(() => {
   return exportDone.value ? t('episode.stage.exportDone') : t('episode.stage.exportWaiting')
 })
 
-const currentMainStageLabel = computed(() => {
-  const current = mainStageDefs.value.find(stage => stage.id === activeMainStage.value)
-  return current?.label || t('episode.stage.workbench')
-})
-
 const currentSubStageLabel = computed(() => currentStageLabel.value)
 
 const totalDuration = computed(() => sbs.value.reduce((s, sb) => s + (sb.duration || 10), 0))
 const selectedSb = ref(null)
+const shotEditorOpen=ref(false),shotEditorElement=ref(null)
+let shotPreviousFocus=null
+function closeShotEditor(){shotEditorOpen.value=false;nextTick(()=>shotPreviousFocus?.focus())}
+function selectAdjacentShot(delta){const next=sbs.value[sbs.value.indexOf(selectedSb.value)+delta];if(next)selectedSb.value=next}
+function trapShotFocus(event){const items=[...(shotEditorElement.value?.querySelectorAll('button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),a[href],[tabindex="0"]')||[])].filter(el=>el.getClientRects().length);const first=items[0],last=items[items.length-1];if(!first){event.preventDefault();return}if(event.shiftKey&&(document.activeElement===first||document.activeElement===shotEditorElement.value)){event.preventDefault();last.focus()}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus()}}
+watch(shotEditorOpen,async open=>{if(open){shotPreviousFocus=document.activeElement;await nextTick();shotEditorElement.value?.focus()}})
+watch([panel,prodTab],()=>shotEditorOpen.value=false)
+
 const storyboardToDelete = ref(null)
 const storyboardDeleting = ref(false)
 const storyboardTrashOpen = ref(false)
@@ -3065,10 +2880,6 @@ function getStoryboardScene(sb) {
   return scenes.value.find(s => s.id === sceneId) || null
 }
 
-function isStoryboardCharacterSelected(sb, charId) {
-  return getStoryboardCharacterIds(sb).includes(charId)
-}
-
 function toggleStoryboardCharacter(sb, charId) {
   const currentIds = getStoryboardCharacterIds(sb)
   const nextIds = currentIds.includes(charId)
@@ -3086,10 +2897,6 @@ function getStoryboardProps(sb) {
   return propItems.value.filter(p => ids.includes(p.id))
 }
 
-function isStoryboardPropSelected(sb, propId) {
-  return getStoryboardPropIds(sb).includes(propId)
-}
-
 function toggleStoryboardProp(sb, propId) {
   const currentIds = getStoryboardPropIds(sb)
   const nextIds = currentIds.includes(propId)
@@ -3102,16 +2909,6 @@ function getSceneName(sb) {
   const scene = getStoryboardScene(sb)
   if (!scene) return ''
   return `${scene.location} · ${scene.time || t('episode.asset.noTime')}`
-}
-
-const sceneOptions = computed(() => [
-  { label: t('episode.sb.unboundScene'), value: '' },
-  ...scenes.value.map(s => ({ label: `${s.location} · ${s.time || t('episode.asset.noTime')}`, value: s.id })),
-])
-
-
-function sceneShotCount(sceneId) {
-  return sbs.value.filter(sb => String(sb?.scene_id || sb?.sceneId || '') === String(sceneId)).length
 }
 
 watch(rawContent, v => { localRaw.value = v }, { immediate: true })
@@ -3163,7 +2960,28 @@ async function refresh() {
 }
 
 function saveRaw() { episodeAPI.update(epId.value, { content: localRaw.value }); episode.value.content = localRaw.value }
+async function continueToRewrite() {
+  if (!localRaw.value.trim() || savingRawNext.value) return
+  savingRawNext.value = true
+  try {
+    await episodeAPI.update(epId.value, { content: localRaw.value })
+    episode.value.content = localRaw.value
+    goSubStep('script:rewrite')
+  } catch (error) { toastError(error) }
+  finally { savingRawNext.value = false }
+}
 function saveScr() { episodeAPI.update(epId.value, { script_content: localScript.value }); episode.value.script_content = localScript.value }
+async function continueToAssets() {
+  if (!localScript.value.trim() || savingScriptNext.value || rn.value) return
+  savingScriptNext.value = true
+  const content = localScript.value
+  try {
+    await episodeAPI.update(epId.value, { script_content: content })
+    episode.value.script_content = content
+    goMainStage('assets')
+  } catch (error) { toastError(error) }
+  finally { savingScriptNext.value = false }
+}
 // 发给 Agent 的 message 是功能性提示词而非 UI 文案：产出语言由后端全局「内容语言」指令控制，
 // 这里保持中文不随界面语言变化
 function doRewrite() { saveRaw(); runAgent('script_rewriter', '请读取剧本并改写为格式化剧本，然后保存', dramaId, epId.value, refresh, chatModelOverride(), chatConfigId()) }
@@ -3904,9 +3722,9 @@ onMounted(async () => { await refresh(); loadConfigs(); syncExtractStatus() })
 // ===== 应用内引导（工作台）：沿左侧进度栏走 6 步流水线 =====
 const EPISODE_TOUR = [
   { element: '.studio-topbar-main', titleKey: 'tour.episode.topbar.title', descKey: 'tour.episode.topbar.desc', popoverSide: 'bottom' },
-  { element: '.pipe-section:nth-of-type(1)', titleKey: 'tour.episode.script.title', descKey: 'tour.episode.script.desc', popoverSide: 'right' },
-  { element: '.pipe-section:nth-of-type(2)', titleKey: 'tour.episode.assets.title', descKey: 'tour.episode.assets.desc', popoverSide: 'right' },
-  { element: '.pipe-section:nth-of-type(2) .pipe-item:last-child', titleKey: 'tour.episode.videos.title', descKey: 'tour.episode.videos.desc', popoverSide: 'right' },
+  { element: '.studio-stage-navigation nav button:nth-child(1)', titleKey: 'tour.episode.script.title', descKey: 'tour.episode.script.desc', popoverSide: 'bottom' },
+  { element: '.studio-stage-navigation nav button:nth-child(2)', titleKey: 'tour.episode.assets.title', descKey: 'tour.episode.assets.desc', popoverSide: 'bottom' },
+  { element: '.studio-stage-navigation nav button:nth-child(3)', titleKey: 'tour.episode.videos.title', descKey: 'tour.episode.videos.desc', popoverSide: 'bottom' },
   { element: '.studio-actions .tour-help-btn', titleKey: 'tour.episode.help.title', descKey: 'tour.episode.help.desc', popoverSide: 'bottom', popoverAlign: 'end' },
 ]
 onMounted(() => setTimeout(() => autoTour('episode', EPISODE_TOUR, t), 900))
@@ -3920,7 +3738,7 @@ onMounted(() => setTimeout(() => autoTour('episode', EPISODE_TOUR, t), 900))
 .asset-generation-tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .asset-generation-tabs button:disabled { opacity: .5; cursor: wait; }
 .asset-generation-model { display: flex; gap: 8px; align-items: center; min-width: 0; max-width: 100%; font-size: 12px; }
-.asset-generation-model select { min-width: 0; max-width: 340px; }
+.asset-generation-model .base-select { min-width: 0; max-width: 340px; }
 .asset-reference-panel { display: flex; flex-direction: column; gap: 20px; }
 .asset-card-actions { display: flex; flex: none; align-items: center; gap: 6px; flex-wrap: nowrap; min-width: 0; }
 .asset-card-actions > :deep(.asset-generation-actions), .asset-foot > :deep(.asset-generation-actions) { flex: none; }
@@ -3959,7 +3777,6 @@ onMounted(() => setTimeout(() => autoTour('episode', EPISODE_TOUR, t), 900))
 }
 
 .studio-topbar-main,
-.sidebar,
 .main {
   background: var(--surface-raised);
   border: 1px solid var(--border);
@@ -4094,15 +3911,6 @@ onMounted(() => setTimeout(() => autoTour('episode', EPISODE_TOUR, t), 900))
 }
 
 /* ===== Sidebar ===== */
-.sidebar {
-  width: 208px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  min-height: 0;
-  border-radius: var(--radius);
-}
 .back-btn {
   min-width: 40px; width: auto; height: 40px; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
@@ -4125,328 +3933,32 @@ onMounted(() => setTimeout(() => autoTour('episode', EPISODE_TOUR, t), 900))
 }
 
 /* Pipeline Nav */
-.pipeline { flex: 1; overflow-y: auto; padding: 12px 10px 8px; display: flex; flex-direction: column; gap: 8px; }
-.pipe-section { display: flex; flex-direction: column; gap: 2px; }
-.pipe-section-label {
-  display: flex; align-items: center; gap: 5px;
-  font-size: 10.5px; font-weight: 700; color: var(--text-3);
-  text-transform: uppercase; letter-spacing: 0.06em;
-  padding: 0 7px 2px;
-}
 /* 分组标题保持中性灰,状态色只在左侧小指示器上 */
-.pipe-section-state {
-  width: 13px; height: 13px; border-radius: 999px; flex-shrink: 0;
-  display: inline-flex; align-items: center; justify-content: center;
-}
-.pipe-section.is-done .pipe-section-state {
-  background: var(--success-bg); color: var(--success);
-  border: 1px solid var(--success-bg);
-}
-.pipe-section-dot {
-  width: 5px; height: 5px; border-radius: 999px;
-  background: var(--text-3); opacity: 0.55;
-}
-.pipe-section-pulse {
-  width: 6px; height: 6px; border-radius: 999px;
-  background: var(--accent);
-  animation: pipeSectionPulse 1.6s var(--ease-out) infinite;
-}
 @keyframes pipeSectionPulse {
   0% { box-shadow: 0 0 0 0 var(--accent-glow); }
   70% { box-shadow: 0 0 0 5px transparent; }
   100% { box-shadow: 0 0 0 0 transparent; }
 }
-.pipe-section-tag {
-  font-size: 9.5px; font-weight: 600; letter-spacing: 0.03em;
-  color: var(--text-2); background: var(--bg-2);
-  border-radius: 999px; padding: 1px 5px;
-  text-transform: none;
-}
 /* 子步骤进行中:与大环节同步的脉冲点 */
-.pipe-item.doing { color: var(--text-1); }
-.pipe-item.doing .pipe-icon {
-  background: var(--accent-bg);
-  border-color: var(--accent-glow);
-}
-.pipe-item-pulse {
-  width: 6px; height: 6px; border-radius: 999px;
-  background: var(--accent);
-  animation: pipeSectionPulse 1.6s var(--ease-out) infinite;
-}
-.pipe-item {
-  position: relative;
-  display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px;
-  padding: 7px 10px;
-  border-radius: var(--radius);
-  font-size: 13px; font-weight: 600;
-  background: transparent; border: 1px solid transparent; color: var(--text-2); cursor: pointer;
-  transition: all 0.18s var(--ease-out); width: 100%; text-align: left;
-}
-.pipe-item:hover {
-  background: var(--bg-hover);
-  border-color: transparent;
-  color: var(--text-0);
-}
-.pipe-item.active {
-  background: var(--sel-bg);
-  color: var(--sel-text);
-  border-color: transparent;
-  box-shadow: none;
-}
 /* ChatFire 签名：激活步骤左侧 3px 品牌色圆角指示条 */
-.pipe-item.active::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 9px;
-  bottom: 9px;
-  width: 3px;
-  border-radius: 999px;
-  background: var(--accent);
-}
-.pipe-item:focus-visible {
-  outline: none;
-  border-color: var(--action-primary);
-  box-shadow: 0 0 0 3px var(--button-focus), var(--button-shadow);
-}
-.pipe-item.done { color: var(--text-2); }
-.pipe-item-sub {
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
-  padding: 5px 8px;
-  position: relative;
-  min-height: 34px;
-}
-
-.pipe-item-sub:not(:last-child)::after {
-  content: '';
-  position: absolute;
-  left: 15px;
-  top: 23px;
-  bottom: -6px;
-  width: 1px;
-  background: var(--border);
-}
-
-.pipe-icon {
-  width: 16px; height: 16px; border-radius: 50%;
-  display: flex; align-items: center; justify-content: center;
-  background: var(--bg-2); border: 1px solid var(--border);
-  color: var(--text-3); flex-shrink: 0; transition: all 0.15s;
-  position: relative;
-  z-index: 1;
-}
-.pipe-item.active .pipe-icon { background: var(--sel); border-color: var(--sel); color: var(--surface-raised); }
-.pipe-item.done .pipe-icon { background: var(--success-bg); border-color: var(--success-bg); color: var(--success); }
-.pipe-item.active.done .pipe-icon { background: var(--sel); border-color: var(--sel); color: var(--surface-raised); }
 .icon-active { background: var(--sel) !important; border-color: var(--sel) !important; color: var(--surface-raised) !important; }
 .icon-done { background: var(--success-bg) !important; border-color: var(--success-bg) !important; color: var(--success) !important; }
-.pipe-item.active.done .icon-done { background: var(--sel) !important; border-color: var(--sel) !important; color: var(--surface-raised) !important; }
-
-.pipe-label { flex: 1; font-size: 12.5px; }
-.pipe-copy { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
-.pipe-sub {
-  display: none;
-  font-size: 10px;
-  line-height: 1.35;
-  color: var(--text-3);
-  font-weight: 500;
-}
-.pipe-badge {
-  font-size: 9px; font-weight: 700; padding: 1px 5px;
-  border-radius: 99px; background: var(--bg-3); color: var(--text-3);
-  font-family: var(--font-mono);
-}
-.pipe-badge.badge-done { background: var(--success-bg); color: var(--success); }
-.pipe-spinner { width: 10px; height: 10px; border: 1.5px solid var(--accent-bg); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
 
 /* Sidebar Bottom */
-.sidebar-bottom {
-  padding: 9px 10px 10px;
-  border-top: 1px solid var(--border);
-  display: flex; flex-direction: column; gap: 7px;
-  flex-shrink: 0;
-  background: var(--surface-soft);
-}
 /* 收起/展开按钮 */
-.sidebar-toggle {
-  display: flex; align-items: center; justify-content: center; gap: 5px;
-  width: 100%; min-height: 22px;
-  border: none; border-radius: 6px;
-  background: transparent; color: var(--text-3);
-  font: 600 11px var(--font-body);
-  cursor: pointer; transition: background 0.14s, color 0.14s;
-}
-.sidebar-toggle:hover { background: var(--bg-hover); color: var(--text-0); }
-.sidebar-toggle-icon { transition: transform 0.22s var(--ease-out); flex-shrink: 0; }
-.sidebar.collapsed .sidebar-toggle-icon { transform: rotate(180deg); }
 
 /* ===== 收起态：窄图标栏 ===== */
-.sidebar { transition: width 0.22s var(--ease-out); }
-.sidebar.collapsed { width: 46px; }
-.sidebar.collapsed .pipeline { padding: 12px 5px 8px; gap: 10px; }
-.sidebar.collapsed .pipe-section-label { justify-content: center; padding: 0 0 2px; }
-.sidebar.collapsed .pipe-section-label > span:not(.pipe-section-state) { display: none; }
-.sidebar.collapsed .pipe-item {
-  grid-template-columns: auto; justify-content: center;
-  padding: 6px 0; min-height: 0;
-}
-.sidebar.collapsed .pipe-item .pipe-copy { display: none; }
-.sidebar.collapsed .pipe-item-sub:not(:last-child)::after { display: none; }
-.sidebar.collapsed .pipe-icon { width: 22px; height: 22px; }
 /* 收起态：进行中步骤的角标脉冲点 */
-.pipe-mini-pulse {
-  position: absolute; top: -3px; right: -3px;
-  width: 7px; height: 7px; border-radius: 50%;
-  background: var(--accent);
-  border: 1.5px solid var(--surface-raised);
-  animation: pipeSectionPulse 1.6s var(--ease-out) infinite;
-}
-.sidebar.collapsed .sidebar-progress { display: none; }
-.sidebar.collapsed .sidebar-bottom { padding: 9px 6px 10px; align-items: center; }
-.sidebar.collapsed .refresh-btn { width: 28px; min-height: 28px; padding: 0; font-size: 0; gap: 0; }
 /* 步骤跑马灯：四段主流程进度条，当前段流动光效 */
-.sidebar-progress {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  padding: 2px 2px 4px;
-}
-.sidebar-progress-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-}
-.sidebar-progress-title {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12.5px;
-  font-weight: 700;
-  color: var(--text-1);
-}
-.sidebar-progress-count {
-  flex-shrink: 0;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-3);
-}
-.sidebar-progress-track {
-  display: flex;
-  gap: 4px;
-}
-.sidebar-progress-seg {
-  position: relative;
-  flex: 1;
-  height: 5px;
-  padding: 0;
-  border: none;
-  border-radius: 999px;
-  background: var(--overlay-track);
-  cursor: pointer;
-  overflow: hidden;
-  transition: background 0.2s var(--ease-out), transform 0.15s var(--ease-out);
-}
-.sidebar-progress-seg:hover { transform: scaleY(1.6); }
-.sidebar-progress-seg:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--button-focus);
-}
-.sidebar-progress-seg.done { background: var(--success); }
-.sidebar-progress-seg.current { background: var(--accent-bg); }
 /* 跑马灯流动光：当前段内的渐变高光持续滑动 */
-.sidebar-progress-seg.current .sidebar-progress-seg-fill {
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(90deg,
-    var(--accent) 0%,
-    color-mix(in srgb, var(--accent) 30%, #fff 70%) 50%,
-    var(--accent) 100%);
-  background-size: 220% 100%;
-  animation: seg-marquee 1.5s linear infinite;
-}
-.sidebar-progress-seg:not(.current) .sidebar-progress-seg-fill { display: none; }
 @keyframes seg-marquee {
   from { background-position: 220% 0; }
   to { background-position: -220% 0; }
-}
-.sidebar-progress-labels {
-  display: flex;
-  gap: 4px;
-}
-.sidebar-progress-labels span {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: center;
-  font-size: 10.5px;
-  color: var(--text-3);
-}
-.sidebar-progress-labels span.done { color: var(--success); }
-.sidebar-progress-labels span.on {
-  color: var(--accent-text);
-  font-weight: 700;
-}
-.refresh-btn {
-  width: 100%; display: flex; align-items: center; justify-content: center; gap: 6px;
-  min-height: 28px;
-  padding: 0 10px; font-size: 12.5px; font-weight: 650; color: var(--button-text);
-  background: var(--button-bg); border: 1px solid var(--button-border); border-radius: var(--button-radius);
-  cursor: pointer; transition: all 0.18s var(--ease-out);
-  box-shadow: var(--button-shadow);
-}
-.refresh-btn:hover {
-  background: var(--button-bg-hover);
-  border-color: var(--button-border-hover);
-  color: var(--button-text-hover);
-  box-shadow: var(--button-shadow-hover);
-}
-.refresh-btn:focus-visible {
-  outline: none;
-  border-color: var(--action-primary);
-  box-shadow: 0 0 0 3px var(--button-focus), var(--button-shadow-hover);
 }
 
 /* ===== Main Content ===== */
 .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; min-height: 0; border-radius: var(--radius); }
 .content-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; min-height: 0; }
-.stage-subnav {
-  align-self: flex-start;
-  margin: 4px 12px 0;
-  max-width: calc(100% - 24px);
-  overflow-x: auto;
-  flex-shrink: 0;
-}
-.stage-subnav-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  white-space: nowrap;
-  /* 压过全局 .seg-item{padding:7px 16px}，收紧子导航高度 */
-  padding: 4px 13px;
-  font-size: 12px;
-}
-.stage-subnav-item.active {
-  background: var(--seg-active-bg);
-  color: var(--text-0);
-  box-shadow: 0 1px 4px rgba(0,0,0,0.12);
-}
-.stage-subnav-item.done {
-  color: var(--text-1);
-}
-.stage-subnav-item.active.done {
-  color: var(--text-0);
-}
-.stage-subnav-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  background: var(--success);
-}
 
 /* Toolbar */
 .step-toolbar {
@@ -4490,6 +4002,20 @@ onMounted(() => setTimeout(() => autoTour('episode', EPISODE_TOUR, t), 900))
   font-family: var(--font-body); background: var(--bg-input); color: var(--text-0);
 }
 .fill-textarea:focus { box-shadow: none; }
+.story-next-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 24px; border-top: 1px solid var(--border); color: var(--text-2); font-size: 12px; }
+.story-next-bar .btn { flex-shrink: 0; gap: 8px; }
+.story-actions { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 8px; margin-left: auto; }
+.rewrite-progress { display: flex; align-items: center; gap: 12px; margin: 18px 24px; padding: 14px 16px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface-soft); }
+.rewrite-progress-icon { display: grid; place-items: center; flex: none; width: 38px; height: 38px; border-radius: 13px; background: var(--accent-bg); color: var(--accent); }
+.rewrite-progress-copy { display: flex; flex: 1; flex-direction: column; gap: 4px; min-width: 0; font-size: 12px; color: var(--text-2); }
+.rewrite-progress-copy strong { color: var(--text-0); font-size: 13px; }
+.rewrite-progress-dots { display: flex; gap: 4px; }
+.rewrite-progress-dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); animation: rewrite-pulse 1.2s ease-in-out infinite; }
+.rewrite-progress-dots i:nth-child(2) { animation-delay: .15s; }
+.rewrite-progress-dots i:nth-child(3) { animation-delay: .3s; }
+@keyframes rewrite-pulse { 0%, 80%, 100% { opacity: .25; transform: scale(.8); } 40% { opacity: 1; transform: scale(1); } }
+@media (prefers-reduced-motion: reduce) { .rewrite-progress-dots i { animation: none; } }
+@media (max-width: 600px) { .story-next-bar { padding: 12px 16px; flex-wrap: wrap; } .rewrite-progress { margin: 14px 16px; } }
 
 /* Step Empty State */
 .step-empty {
@@ -4507,7 +4033,6 @@ onMounted(() => setTimeout(() => autoTour('episode', EPISODE_TOUR, t), 900))
 }
 .empty-title { font-size: 22px; font-weight: 700; font-family: var(--font-display); color: var(--text-0); }
 .empty-desc { font-size: 13px; color: var(--text-2); max-width: 420px; text-align: center; line-height: 1.8; }
-.step-empty-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: center; }
 
 /* Step Loading */
 .step-loading {
@@ -4967,39 +4492,6 @@ onMounted(() => setTimeout(() => autoTour('episode', EPISODE_TOUR, t), 900))
   padding-right: 12px;
   border-right: 1px solid var(--border);
 }
-.asset-final-prompt {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding-top: 7px;
-  border-top: 1px solid var(--border);
-  font-size: 10.5px;
-  line-height: 1.5;
-}
-.afp-label {
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  color: var(--text-3);
-}
-.afp-text {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  overflow: hidden;
-  word-break: break-word;
-  color: var(--text-2);
-}
-.afp-text.dim { color: var(--text-3); }
-.asset-final {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  overflow: hidden;
-  word-break: break-word;
-  color: var(--text-2);
-}
-.asset-final .afp-label { margin-right: 4px; }
 .character-visual-summary {
   max-width: 100%;
   display: flex;
@@ -5076,7 +4568,6 @@ onMounted(() => setTimeout(() => autoTour('episode', EPISODE_TOUR, t), 900))
   text-overflow: ellipsis;
 }
 .asset-foot { display: flex; align-items: center; flex-wrap: nowrap; gap: 6px; padding: 7px 11px; border-top: 1px solid var(--border); }
-.asset-card > .asset-final { margin: 0 11px 9px; padding-top: 7px; border-top: 1px solid var(--border); }
 [data-asset-view="list"] .character-visual-summary { flex-direction: row; gap: 8px; }
 
 /* Frame grid */
@@ -5152,44 +4643,17 @@ onMounted(() => setTimeout(() => autoTour('episode', EPISODE_TOUR, t), 900))
   background: var(--surface-raised);
 }
 .video-task-workbench.has-player {
-  grid-template-columns: var(--vleft, 236px) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
 }
 .video-task-side {
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) var(--vright, 340px);
+  grid-template-columns: minmax(0, 1fr);
   border-left: 1px solid var(--border);
   background: var(--surface-muted);
 }
 /* 三栏拖拽分隔条：透明热区覆盖分界，悬停/拖动时亮起 */
-.video-col-divider {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 9px;
-  z-index: 6;
-  cursor: col-resize;
-  touch-action: none;
-}
-.video-col-divider.is-left { left: calc(var(--vleft, 236px) - 4px); }
-.video-col-divider.is-right { right: calc(var(--vright, 340px) - 4px); }
-.video-col-divider::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 4px;
-  width: 1px;
-  background: transparent;
-  transition: background 0.15s, box-shadow 0.15s;
-}
-.video-col-divider:hover::after,
-.video-col-divider:active::after {
-  background: var(--accent);
-  box-shadow: 0 0 6px var(--accent-glow);
-}
-:global(body.is-video-col-dragging) { cursor: col-resize; user-select: none; }
 /* 中列：纯编辑区（分镜描述/氛围/视频提示词），占满高度 */
 .video-main-col {
   min-width: 0;
@@ -5500,20 +4964,6 @@ button.video-task-metric.on { box-shadow: 0 0 0 2px var(--accent); }
   text-overflow: ellipsis;
 }
 .video-inspector-model { display: block; min-width: 0; }
-.video-inspector-model select {
-  width: 100%;
-  min-height: 32px;
-  padding: 5px 8px;
-  border: 1px solid var(--accent-glow);
-  border-radius: var(--radius);
-  background: var(--accent-bg);
-  color: var(--accent-text);
-  font: 11px var(--font-body);
-  text-overflow: ellipsis;
-  cursor: pointer;
-}
-.video-inspector-model select:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
-.video-inspector-model select:disabled { opacity: .6; cursor: wait; }
 /* 生成参数：强调卡片，时长是当前分镜生成的核心参数 */
 .video-params-card {
   padding: 7px 10px;
@@ -6418,11 +5868,11 @@ button.video-task-metric.on { box-shadow: 0 0 0 2px var(--accent); }
   }
 
   .video-task-workbench.has-player {
-    grid-template-columns: var(--vleft, 208px) minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .video-task-side {
-    grid-template-columns: minmax(0, 1fr) var(--vright, 260px);
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .video-main-grid {
@@ -6600,10 +6050,6 @@ button.video-task-metric.on { box-shadow: 0 0 0 2px var(--accent); }
     justify-content: space-between;
   }
 
-  .sidebar {
-    max-height: 340px;
-  }
-
   .studio-topbar-side,
   .studio-actions {
     flex-wrap: wrap;
@@ -6647,7 +6093,6 @@ button.video-task-metric.on { box-shadow: 0 0 0 2px var(--accent); }
   }
 
   /* 窄屏纵向堆叠后无栏间分界，隐藏拖拽分隔条 */
-  .video-col-divider { display: none; }
 
   .video-task-inspector {
     border-top: 1px solid var(--surface-outline);

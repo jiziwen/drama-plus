@@ -5,8 +5,8 @@ import assert from 'node:assert/strict'
 const appRoot = new URL('../app/', import.meta.url)
 const readApp = (path) => readFileSync(new URL(path, appRoot), 'utf8')
 
-const episodePage = readApp('pages/drama/[id]/episode/[episodeNumber].vue')
-const settingsPage = readApp('pages/settings.vue')
+const episodePage = readApp('views/drama/episode.vue')
+const settingsPage = readApp('components/SettingsContent.vue')
 const useApi = readApp('composables/useApi.ts')
 
 test('frontend API client no longer exposes grid image endpoints', () => {

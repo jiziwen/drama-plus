@@ -80,7 +80,7 @@ async function upload(event: Event) {
 .reference-upload input { position: absolute; inset: 0; width: 100%; opacity: 0; cursor: pointer; }
 .reference-upload:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
 .reference-upload.disabled { opacity: .5; cursor: default; }
-.reference-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; }
+.reference-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 140px), 180px)); align-items: start; gap: 12px; }
 .reference-card { padding: 8px; border: 1px solid var(--border); border-radius: 10px; min-width: 0; }
 .reference-card img { width: 100%; height: 130px; object-fit: contain; background: var(--bg-input); border-radius: 6px; }
 .reference-card .tag { display: inline-block; margin: 6px 0; }

@@ -4,8 +4,8 @@
   "description": "",
   "main": "src/index.ts",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "start": "tsx src/index.ts",
+    "dev": "node scripts/start-server.mjs watch",
+    "start": "node scripts/start-server.mjs",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "backfill-artwork": "tsx scripts/backfill-artwork.ts"

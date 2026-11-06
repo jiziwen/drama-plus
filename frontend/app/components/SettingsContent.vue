@@ -102,6 +102,7 @@
                   </div>
                   <div class="config-sub mono truncate">{{ c.base_url || t('settings.ai.noBaseUrl') }}</div>
                 </div>
+                <div class="config-actions">
                 <button v-if="st.type === 'text' || c.provider === 'comfyui'" class="btn btn-ghost btn-sm" @click="testExistingCfg(c)">{{ t('settings.ai.test') }}</button>
                 <label class="config-switch">
                   <input type="checkbox" class="sr-only" :checked="c.is_active" @change="toggleCfg(c)">
@@ -109,6 +110,7 @@
                 </label>
                 <button class="btn btn-ghost btn-icon btn-sm" @click="startEditCfg(c)"><Pencil :size="13" /></button>
                 <button class="btn btn-danger btn-icon btn-sm" @click="delCfg(c.id)"><Trash2 :size="13" /></button>
+                </div>
               </div>
               <p v-if="!byType(st.type).length" class="config-empty">{{ t('settings.common.empty') }}</p>
             </section>
@@ -140,12 +142,14 @@
                 <div class="config-sub mono truncate">{{ p.prompt }}</div>
                 <div v-if="p.description" class="config-sub truncate">{{ p.description }}</div>
               </div>
+              <div class="config-actions">
               <label class="config-switch">
                 <input type="checkbox" class="sr-only" :checked="p.is_active" @change="toggleStyle(p)">
                 <span class="switch" :class="{ on: p.is_active }"></span>
               </label>
               <button class="btn btn-ghost btn-icon btn-sm" @click="startEditStyle(p)"><Pencil :size="13" /></button>
               <button class="btn btn-danger btn-icon btn-sm" @click="styleToDelete = p"><Trash2 :size="13" /></button>
+              </div>
             </div>
             <p v-if="!stylePresets.length" class="config-empty">{{ t('settings.styles.empty') }}</p>
           </section>
@@ -366,9 +370,7 @@
             <p class="field-hint">{{ t('settings.comfyui.connectionHint') }}</p>
             <div class="field">
               <label class="field-label" for="comfy-resolution">{{ t('settings.comfyui.resolution') }}</label>
-              <select id="comfy-resolution" class="input" :value="cfgForm.comfy_resolution" @change="setComfyResolution($event.target.value)">
-                <option v-for="option in comfyResolutionOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
-              </select>
+              <BaseSelect input-id="comfy-resolution" :model-value="cfgForm.comfy_resolution" :options="comfyResolutionOptions" :aria-label="t('settings.comfyui.resolution')" @update:model-value="setComfyResolution" />
               <div v-if="cfgForm.comfy_resolution !== 'auto'" class="field-row">
                 <label class="field">
                   <span class="field-label">{{ t('settings.comfyui.width') }}</span>

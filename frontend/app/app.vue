@@ -49,8 +49,7 @@ onMounted(() => {
 
 <style>
 @import url('./assets/studio.css');
-@import url('./assets/workspace-theme.css');
-@import url('./assets/workspace-light.css');
+@import url('./assets/soft-studio.css');
 
 /* === 应用内引导（driver.js）主题覆写 — 跟随设计 token === */
 .huobao-tour-popover {

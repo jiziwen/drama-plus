@@ -568,7 +568,7 @@
 </template>
 
 <script setup>
-import { Plus, Pencil, Trash2, FileText, ChevronDown, Check, Loader2, Bot, Cpu, Sparkles, Palette, Star, HardDrive, Database, Languages, SunMoon, X } from 'lucide-vue-next'
+import { Plus, Pencil, Trash2, FileText, ChevronDown, Check, Loader2, Bot, Cpu, Palette, Star, HardDrive, Database, Languages, SunMoon, X } from 'lucide-vue-next'
 import BaseSelect from '~/components/BaseSelect.vue'
 import { toast } from 'vue-sonner'
 import { toastError } from '~/composables/useToast'
@@ -584,7 +584,9 @@ const { t } = useI18n()
 
 const showBrandImage = ref(true)
 const props = defineProps({ initialTab: String, configId: Number, embedded: Boolean })
-const tab = ref(props.initialTab || (useRoute().query.tab === 'calls' ? 'calls' : 'ai'))
+const settingsTabs = ['ai', 'calls', 'general', 'styles', 'agents', 'storage']
+const initialSettingsTab = props.initialTab || useRoute().query.tab
+const tab = ref(settingsTabs.includes(initialSettingsTab) ? initialSettingsTab : 'ai')
 const baseTabs = computed(() => [
   { id: 'ai', label: t('settings.tabs.ai'), icon: Cpu },
   { id: 'calls', label: '接口调用记录', icon: FileText },
@@ -1164,7 +1166,7 @@ async function loadStorage() {
 watch(tab, (active) => {
   if (active === 'storage') loadStorage()
   else stopUsagePoll()
-})
+}, { immediate: true })
 
 async function pickTarget() {
   if (!desktopBridge) return

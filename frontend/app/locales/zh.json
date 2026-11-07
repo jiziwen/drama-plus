@@ -721,6 +721,7 @@
       "lockedModel": "当前集视频模型：",
       "listTitle": "视频任务列表",
       "addShot": "新增分镜",
+      "addVideo": "新增视频",
       "deleteShot": "删除分镜",
       "deleteShotConfirm": "确定将此分镜移入回收站吗？文案、视频和生成记录会保留，可在回收站中恢复。",
       "trash": "回收站",

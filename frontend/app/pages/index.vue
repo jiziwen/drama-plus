@@ -1,5 +1,7 @@
 <template>
-  <div class="page soft-home">
+  <div class="page soft-home" :class="{ 'cine-home-page': isCinematic && route.query.view !== 'library' }">
+    <CinematicProjectGallery v-if="isCinematic && route.query.view !== 'library'" :projects="dramas" :loading="loading" @open="openDrama" @create="showCreate = true" />
+    <template v-if="!isCinematic || route.query.view === 'library'">
 
     <section v-if="route.query.view !== 'library'" class="workspace-welcome">
       <div class="welcome-heading"><div><span class="soft-eyebrow">A LITTLE SPACE FOR BIG IDEAS</span><h1>给灵感，一个发生的地方。</h1><p>写一点，想远一点。今天，又会诞生怎样的世界？</p></div><button class="btn btn-primary" @click="showCreate=true"><Plus :size="16"/>新建故事</button></div>
@@ -154,6 +156,7 @@
       <button v-if="!dramas.length" class="btn btn-primary" @click="showCreate = true">{{ t('index.create') }}</button>
     </div>
 
+    </template>
     <div v-if="showCreate" class="overlay" @click.self="showCreate = false">
       <div class="dialog create-dialog">
         <div class="dialog-head">
@@ -221,6 +224,7 @@ import { startTour, autoTour } from '~/composables/useTour'
 
 const { t, locale } = useI18n()
 const route=useRoute()
+const { isCinematic, interfaceLink } = useStudioInterface()
 const featuredProject=computed(()=>[...dramas.value].sort((a,b)=>new Date(b.updated_at||0)-new Date(a.updated_at||0))[0])
 const counts=computed(()=>projectCounts(dramas.value))
 const featuredCharacterImages = computed(() => [...new Set((featuredProject.value?.characters || [])
@@ -348,7 +352,7 @@ async function confirmDelDrama() {
   }
 }
 
-function focusProjectSearch(event){if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='k'){event.preventDefault();document.querySelector('.soft-home input[aria-label="搜索项目"],.soft-home .search-box input')?.focus()}}
+async function focusProjectSearch(event){if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='k'){event.preventDefault();if(isCinematic.value&&route.query.view!=='library'){await navigateTo(interfaceLink('/?view=library'));await nextTick()}document.querySelector('.soft-home input[aria-label="搜索项目"],.soft-home .search-box input')?.focus()}}
 onMounted(()=>document.addEventListener('keydown',focusProjectSearch))
 onBeforeUnmount(()=>document.removeEventListener('keydown',focusProjectSearch))
 

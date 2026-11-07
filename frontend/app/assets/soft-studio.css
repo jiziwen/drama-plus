@@ -1264,9 +1264,14 @@ html:root body .video-task-row:not(.gen-task-row) .video-task-actions {
   margin-top: auto;
 }
 html:root body .video-task-row:not(.gen-task-row) .video-task-actions .btn {
-  height: 30px;
-  width: 30px;
-  min-width: 30px;
+  height: 36px;
+  width: 36px;
+  min-height: 36px;
+  min-width: 36px;
+  max-height: 36px;
+  max-width: 36px;
+  flex: 0 0 36px;
+  padding: 0;
   border-radius: 50%;
 }
 html:root body .video-task-error {
@@ -1300,11 +1305,13 @@ html:root body .shot-editor-scrim {
   background: var(--scrim);
   backdrop-filter: blur(6px);
   display: flex;
-  justify-content: flex-end;
+  justify-content: center;
+  align-items: center;
+  padding: 16px;
 }
 html:root body .shot-editor-sheet {
   height: auto;
-  width: min(1040px, calc(100vw - 32px));
+  width: min(1040px, 100%);
   max-width: none;
   padding: 20px;
   background: var(--surface-muted);
@@ -1314,7 +1321,7 @@ html:root body .shot-editor-sheet {
   box-shadow: var(--shadow-xl);
   animation: soft-sheet-in .25s ease;
   max-height: calc(100dvh - 32px);
-  margin: 16px;
+  margin: 0;
   align-self: center;
   display: flex;
   flex-direction: column;
@@ -1799,10 +1806,21 @@ html:root body .shot-editor-sheet .video-player-stage video {
   object-fit: contain;
 }
 html:root body .shot-editor-sheet .video-inspector-footer {
-  flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: nowrap;
+  align-items: stretch;
   gap: 12px;
   padding: 14px;
 }
+html:root body .shot-editor-sheet .video-inspector-footer > * {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+html:root body .shot-editor-sheet .video-param-row { flex-wrap: wrap; white-space: normal; }
+html:root body .shot-editor-sheet .video-param-control { flex-shrink: 0; }
+html:root body .shot-editor-sheet .video-param-hint { overflow-wrap: anywhere; white-space: normal; line-height: 1.7; }
 html:root body .shot-editor-sheet .video-inspector-effective {
   padding: 10px 12px;
   border-radius: 12px;
@@ -2842,12 +2860,12 @@ html:root body .bento-progress {
     gap: 20px;
   }
   html:root body .shot-editor-sheet {
-    margin: auto 0 0;
+    margin: 0;
     width: 100%;
     height: auto;
-    max-height: calc(100dvh - 12px);
+    max-height: calc(100dvh - 32px);
     padding: 16px;
-    border-radius: 24px 24px 0 0;
+    border-radius: 20px;
   }
   html:root body .shot-editor-sheet .video-task-side {
     gap: 16px;
@@ -2996,7 +3014,7 @@ html:root body .bento-progress {
 html:root body :is(.asset-groups, .prod-content[data-asset-view="grid"]) .asset-category :is(.character-asset-card, .asset-card) {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto 72px 36px 68px;
+  grid-template-rows: auto minmax(86px, auto) 36px 68px;
   gap: 10px;
   padding: 10px;
   align-content: start;
@@ -3022,6 +3040,10 @@ html:root body :is(.asset-groups, .prod-content[data-asset-view="grid"]) .asset-
 html:root body :is(.asset-groups, .prod-content[data-asset-view="grid"]) .asset-category :is(.character-name, .asset-name) {
   font-size: 14px;
   line-height: 20px;
+}
+/* Preserve full line boxes when scene descriptions occupy both summary lines. */
+html:root body :is(.asset-groups, .prod-content[data-asset-view="grid"]) .asset-category .asset-body > :is(.asset-name, .asset-meta) {
+  flex-shrink: 0;
 }
 html:root body :is(.asset-groups, .prod-content[data-asset-view="grid"]) .asset-category :is(.asset-card-actions, .asset-foot) {
   grid-row: 3;
@@ -3202,3 +3224,36 @@ html:root body .collage-window.front > .collage-character {
   filter: none;
   background: var(--soft-paper);
 }
+
+/* Video browsing shares the asset list/grid control, with compact rows by default. */
+html:root body .studio .prod-content[data-video-view="list"] .video-task-list > .video-task-table {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+}
+html:root body .studio .prod-content[data-video-view="list"] .video-task-row:not(.gen-task-row) {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px;
+  padding: 12px;
+  border-radius: 17px;
+}
+html:root body .studio .prod-content[data-video-view="list"] .video-task-row:not(.gen-task-row):hover { transform: none; }
+html:root body .studio .prod-content[data-video-view="list"] .video-task-row:not(.gen-task-row) .video-task-preview {
+  width: 120px;
+  height: 76px;
+  aspect-ratio: auto;
+  border-radius: 11px;
+}
+html:root body .studio .prod-content[data-video-view="list"] .video-task-row:not(.gen-task-row) .video-task-main { padding: 0; }
+html:root body .studio .prod-content[data-video-view="list"] .video-task-name { -webkit-line-clamp: 2; }
+html:root body .studio .prod-content[data-video-view="list"] .video-task-row:not(.gen-task-row) .video-task-actions { margin: 0; padding: 0 4px; }
+html:root body .studio .studio-body > .main.video-workspace { scrollbar-width: none; scrollbar-gutter: auto; padding-right: 0; }
+html:root body .studio .studio-body > .main.video-workspace::-webkit-scrollbar { display: none; }
+@media (max-width: 650px) {
+  html:root body .studio .prod-content[data-video-view="list"] .video-task-row:not(.gen-task-row) { grid-template-columns: 84px minmax(0, 1fr); gap: 10px 12px; }
+  html:root body .studio .prod-content[data-video-view="list"] .video-task-row:not(.gen-task-row) .video-task-preview { width: 84px; height: 68px; }
+  html:root body .studio .prod-content[data-video-view="list"] .video-task-row:not(.gen-task-row) .video-task-actions { grid-column: 2; justify-content: flex-end; }
+}
+html:root body .studio .studio-body > .main.video-workspace .prod-content[data-video-view] { scrollbar-width: none; scrollbar-gutter: auto; padding-right: 0; }
+html:root body .studio .studio-body > .main.video-workspace .prod-content[data-video-view]::-webkit-scrollbar { display: none; }

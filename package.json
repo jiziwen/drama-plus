@@ -1,10 +1,16 @@
 {
-  "name": "huobao-drama",
+  "name": "drama-plus",
   "version": "1.0.0",
   "private": true,
   "description": "小李短剧 — AI 短剧制作工具（桌面版编排入口）",
+  "engines": {
+    "node": ">=22.13.0",
+    "npm": ">=10"
+  },
   "scripts": {
-    "dev": "concurrently --raw \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "postinstall": "npm run install:apps",
+    "install:apps": "npm --prefix backend ci && npm --prefix frontend ci",
+    "dev": "concurrently --kill-others --raw \"npm run dev:backend\" \"npm run dev:frontend\"",
     "dev:backend": "cd backend && npm run dev",
     "dev:frontend": "cd frontend && npm run dev",
     "dev:desktop": "cd desktop && npm run dev",

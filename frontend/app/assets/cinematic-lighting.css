@@ -1,0 +1,69 @@
+/* Crisp white typography on stable dark panels; blue light belongs to the edges. */
+html:root[data-studio-preview='cinematic'] {
+  --cine-panel-gradient: linear-gradient(145deg, #152b3ef5, #0b1828f7);
+  --cine-panel-soft: linear-gradient(125deg, #1b3b50e6, #11283be8);
+}
+html:root[data-studio-preview='cinematic'] body .cine-content { color: var(--text-1); }
+html:root[data-studio-preview='cinematic'] body :is(.cine-gallery-intro h1, .cine-selected-story h2, .welcome-heading h1, .settings-title, .dialog-title, .shot-sheet-header strong) {
+  color: var(--text-0);
+  text-shadow: 0 1px 3px #02091180, 0 0 24px #9edbff1f;
+}
+html:root[data-studio-preview='cinematic'] body :is(.cine-gallery-intro p, .cine-selected-story p, .welcome-heading p, .settings-desc, .field-hint, .gallery-copy p, .page-meta, .page-tabs .tab-btn, .soft-eyebrow, .cine-kicker, .cine-preview-badge) {
+  color: var(--text-2);
+}
+html:root[data-studio-preview='cinematic'] body :is(.cine-gallery-intro h1 em, .cine-enter, .cine-navigation a) { color: #edf8ff; }
+html:root[data-studio-preview='cinematic'] body :is(.page-head, .ep-card, .gallery-card, .gallery-controls, .settings-nav, .settings-card) {
+  box-shadow: var(--shadow-card);
+  border-color: #a9dbf345;
+}
+html:root[data-studio-preview='cinematic'] body :is(.dialog, .settings-panel, .mat-detail-dialog, .asset-detail-dialog, .confirm-dialog) {
+  background: var(--cine-panel-gradient);
+  border-color: #aedff266;
+  box-shadow: var(--shadow-elevated), inset 0 1px 0 #d8f3ff18;
+}
+html:root[data-studio-preview='cinematic'] body .studio.cinematic-episode :is(.studio-stage-navigation, .cinematic-screening-bar, .step-editor, .character-asset-card, .asset-card, .video-task-row, .merge-card, .exp-card) {
+  box-shadow: var(--shadow-card);
+  border-color: #b2def141;
+}
+html:root[data-studio-preview='cinematic'] body .studio.cinematic-episode :is(.studio-meta-inline, .studio-meta-pill, .video-task-meta-line, .video-task-meta, .video-task-desc, .dim, .char-count, .character-visual-summary, .asset-prompt-summary, .story-next-bar > span, .cinematic-screening-copy p) {
+  color: var(--text-2);
+}
+html:root[data-studio-preview='cinematic'] body .studio.cinematic-episode :is(.character-name, .asset-name, .video-task-name, .video-task-title, .step-name, .asset-section-title, .cinematic-screening-copy strong) { color: var(--text-0); }
+html:root[data-studio-preview='cinematic'] body .studio.cinematic-episode .shot-editor-sheet {
+  background: var(--cine-panel-gradient);
+  border-color: #bce5f375;
+  box-shadow: var(--shadow-elevated), inset 0 1px 0 #e0f7ff1f;
+}
+html:root[data-studio-preview='cinematic'] body .studio.cinematic-episode .shot-editor-sheet :is(.video-main-col, .video-task-inspector) {
+  background: linear-gradient(150deg, #142a3bf5, #0a1725fa);
+  border-color: #a9d7ea47;
+  box-shadow: 0 8px 28px #020a1633, inset 0 1px 0 #d2efff08;
+}
+html:root[data-studio-preview='cinematic'] body .studio.cinematic-episode .shot-editor-sheet :is(.video-inspector-label, .field-label, .video-param-name, .video-player-title) { color: var(--text-0); }
+html:root[data-studio-preview='cinematic'] body .studio.cinematic-episode .shot-editor-sheet :is(.dim, .video-param-hint, .video-param-unit, .video-player-sub, .video-player-empty, .video-bound-refs-empty) { color: var(--text-2); }
+html:root[data-studio-preview='cinematic'] body .studio.cinematic-episode .shot-editor-sheet :is(.textarea, .input) {
+  background: #07131fe8;
+  border-color: #acd7e85c;
+  color: #f3f8fc;
+  caret-color: #c4edff;
+}
+html:root[data-studio-preview='cinematic'] body .studio.cinematic-episode .shot-editor-sheet .video-inspector-footer { background: var(--cine-panel-soft); }
+html:root[data-studio-preview='cinematic'] body .studio.cinematic-episode .shot-editor-sheet .video-params-card {
+  background: #91d5ec12;
+  border-color: #a5dbe551;
+}
+html:root[data-studio-preview='cinematic'] body .studio.cinematic-episode .shot-editor-sheet .orbit-editor-tabs button { color: #d3e6f3; }
+html:root[data-studio-preview='cinematic'] body .studio.cinematic-episode .shot-editor-sheet .orbit-editor-tabs button[aria-pressed='true'] { color: #f3fcff; background: #335f70; }
+html:root[data-studio-preview='cinematic'] body .btn:not(:disabled):hover { box-shadow: var(--button-shadow-hover); }
+html:root[data-studio-preview='cinematic'] body .btn-primary { box-shadow: 0 4px 18px #8ddde62b, 0 0 30px #8fd1ed1c !important; }
+
+/* Settings, reusable form controls and Teleported tools use the same text levels. */
+html:root[data-studio-preview='cinematic'] body .settings-page :is(.setup-desc, .settings-desc, .svc-group-sub, .config-sub, .config-empty, .skills-empty-desc, .field-hint) {
+  color: var(--text-2);
+  font-weight: 500;
+}
+html:root[data-studio-preview='cinematic'] body .settings-page :is(.nav-item, .cfg-model-chip, .model-chip, .template-type-chip, .preset-pill, .lang-option, .agent-pane-tab, .skills-agent-item) { color: var(--text-1); }
+html:root[data-studio-preview='cinematic'] body .settings-page :is(.nav-item.active, .cfg-model-chip.is-default, .model-chip.is-default, .lang-option.on, .agent-pane-tab.active, .skills-agent-item.active) { color: var(--text-0); }
+html:root[data-studio-preview='cinematic'] body :is(.settings-page, .dialog, .settings-panel, .app-menu) :is(.field-label, .reference-title, .model-select-label, .base-select-option) { color: var(--text-1); }
+html:root[data-studio-preview='cinematic'] body :is(.settings-page, .dialog, .settings-panel) :is(.input, .textarea, .agent-prompt-input, .skill-content-input) { color: var(--text-1); }
+html:root[data-studio-preview='cinematic'] body :is(.settings-page, .dialog, .settings-panel) :is(input, textarea)::placeholder { color: var(--text-3); opacity: 1; }

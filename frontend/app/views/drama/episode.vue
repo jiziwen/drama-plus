@@ -1,5 +1,5 @@
 <template>
-  <div class="studio" v-if="drama">
+  <div class="studio" :class="{ 'cinematic-episode': isCinematic }" v-if="drama">
     <header class="studio-topbar">
       <div class="studio-topbar-main">
         <button class="back-btn topbar-back" @click="navigateTo(`/drama/${dramaId}`)">
@@ -72,6 +72,10 @@
       </div>
     </header>
 
+    <CinematicScreening v-if="isCinematic" ref="cinematicScreening"
+      :title="drama.title" :episode-title="episode?.title || ''" :episode-number="episodeNumber"
+      :storyboards="sbs" :characters="chars" :scenes="scenes" :assets="propItems"
+      :merges="exportMerges" :selected-id="selectedSb?.id" :ratio="dramaAspectRatio" />
 
     <div class="studio-stage-navigation">
       <div class="studio-episode-picker">
@@ -87,7 +91,7 @@
 
     <div class="studio-body">
     <!-- ========== MAIN CONTENT ========== -->
-    <main class="main" :class="{ 'story-workspace': panel === 'script' }">
+    <main class="main" :class="{ 'story-workspace': panel === 'script', 'video-workspace': panel === 'production' && prodTab === 'videos' }">
       <div v-if="panel==='script'" class="story-mode-tabs" aria-label="故事编辑模式"><button :aria-pressed="scriptStep===0" @click="goSubStep('script:raw')">{{t('episode.script.raw')}}</button><button :aria-pressed="scriptStep===1" @click="goSubStep('script:rewrite')">{{t('episode.script.rewrite')}}</button></div>
       <!-- ===== SCRIPT PANEL ===== -->
       <div v-if="panel === 'script'" class="content-panel story-panel">
@@ -408,11 +412,15 @@
           </div>
 
           <!-- Sub: Video Production（分镜拆分 + 视频生成 合并） -->
-          <div v-if="prodTab === 'videos'" class="prod-content">
+          <div v-if="prodTab === 'videos'" class="prod-content" :data-video-view="videoView">
             <div class="prod-section-bar">
               <span class="dim" style="font-size:12px">{{ t('episode.prod.videos') }}</span>
               <span class="tag mono">{{ t('episode.sb.segmentStat', { n: sbs.length, dur: totalDuration }) }}</span>
               <span class="tag mono" :title="t('episode.vid.aspectRatio')">{{ dramaAspectRatio }}</span>
+              <div class="orbit-asset-view" role="group" aria-label="视频显示方式">
+                <button type="button" :aria-pressed="videoView === 'list'" @click="videoView = 'list'">{{ t('workspaceView.list') }}</button>
+                <button type="button" :aria-pressed="videoView === 'grid'" @click="videoView = 'grid'">{{ t('workspaceView.grid') }}</button>
+              </div>
               <div class="ml-auto flex gap-1">
                 <button type="button" class="btn btn-sm" @click="openStoryboardTrash">{{ t('episode.vid.trash') }}</button>
                 <button class="btn btn-sm" :disabled="rn" @click="doBreakdown">
@@ -436,6 +444,7 @@
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
                   {{ videoSelectMode && selectedVideoSbIds.length ? t('episode.vid.batchSelected', { n: selectedVideoSbIds.length }) : t('episode.vid.batchVideos') }}
                 </button>
+                <button type="button" class="btn btn-sm" :disabled="rn && rt === 'storyboard_breaker'" @click="openStoryboardCreate"><Plus :size="12" />{{ t('episode.vid.addVideo') }}</button>
               </div>
             </div>
             <div v-if="!sbs.length" class="step-empty video-task-empty-state">
@@ -460,7 +469,6 @@
                   <div class="video-task-title">{{ t('episode.vid.listTitle') }}</div>
                   <div class="video-task-meta">{{ videoListFilter ? t('episode.vid.listMetaFiltered', { n: videoTaskRows.length, total: allVideoTaskRows.length }) : t('episode.vid.listMeta', { n: videoTaskRows.length }) }}</div>
                   </div>
-                  <button type="button" class="btn btn-sm" :disabled="rn && rt === 'storyboard_breaker'" @click="openStoryboardCreate">{{ t('common.add') }}</button>
                 </div>
                 <div class="video-task-metrics">
                   <button type="button" class="video-task-metric is-pending" :class="{ on: videoListFilter === 'pending' }" @click="toggleVideoFilter('pending')">{{ t('episode.vid.metricPending', { n: pendingVideoIds.length }) }}</button>
@@ -652,6 +660,7 @@
                 >
                   {{ t('episode.vid.setMain') }}
                 </button>
+                <button v-if="isCinematic && getVideoUrl(selectedSb)" type="button" class="btn btn-sm cinematic-inline-screen" @click="cinematicScreening?.open({ merge: null, fromStart: false })"><Clapperboard :size="12" />影院预览</button>
                 <a
                   v-if="playerVideoUrl"
                   :href="playerVideoUrl"
@@ -856,6 +865,7 @@
                   <div class="merge-card-meta">
                     <span class="mono">{{ formatHistoryTime(m.created_at) }}</span>
                     <span v-if="m.duration">· {{ m.duration }}s</span>
+                    <button v-if="isCinematic && m.status === 'completed' && m.merged_url" type="button" class="btn btn-sm cinematic-inline-screen" @click.stop="cinematicScreening?.openMerge(m)"><Clapperboard :size="12" />影院放映</button>
                     <a
                       v-if="m.status === 'completed' && m.merged_url"
                       :href="'/' + m.merged_url"
@@ -1487,6 +1497,7 @@ import { useAgent } from '~/composables/useAgent'
 import { resolveTextModelSelection } from '~/utils/text-model-selection'
 import { toastError, mapError, MODERATION_RE } from '~/composables/useToast'
 import { assetModelOptions, assetModelKey, assetModelPatch, resolveAssetModel, assetReferences } from '~/composables/useAssetGeneration'
+import CinematicScreening from '~/components/CinematicScreening.vue'
 
 definePageMeta({ key: route => route.fullPath })
 const { open: openSettings, revision: settingsRevision } = useSettingsPanel()
@@ -1496,6 +1507,8 @@ const { t } = useI18n()
 
 
 const route = useRoute()
+const { isCinematic } = useStudioInterface()
+const cinematicScreening = ref(null)
 const dramaId = Number(route.params.id)
 const episodeNumber = Number(route.params.episodeNumber)
 
@@ -1582,6 +1595,7 @@ watch([panel, scriptStep, prodTab], ([p, s, pt]) => {
 // ===== 视频制作三栏宽度：拖拽调节 + 全局持久化（双击分隔条恢复默认） =====
 const orbitEditorTab = ref('description')
 const orbitAssetView = ref('grid')
+const videoView = ref('list')
 const orbitEditorTabs = [
   { id: 'description', number: '01', labelKey: 'workspaceView.visuals' },
   { id: 'reference', number: '02', labelKey: 'episode.ref.title' },

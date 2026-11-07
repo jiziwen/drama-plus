@@ -1,7 +1,7 @@
 import {test} from 'node:test'
 import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
-import {projectCover,projectCounts} from '../app/utils/projectPresentation.ts'
+import {projectCover,projectCounts,projectGalleryImages} from '../app/utils/projectPresentation.ts'
 import {dramaAPI,listAllDramas} from '../app/composables/useApi.ts'
 const read=p=>readFileSync(new URL('../app/'+p,import.meta.url),'utf8')
 test('project collection follows every API page without dropping later projects',async()=>{
@@ -16,7 +16,7 @@ test('project cover resolves persisted assets and keeps empty projects empty',()
  assert.equal(projectCover({}), '')
  assert.equal(projectCover({characters:[{image_url:'static/cat.webp'}]}),'/static/cat.webp')
  assert.equal(projectCover({characters:[{}],scenes:[{imageUrl:'https://example.com/scene.webp'}]}),'https://example.com/scene.webp')
- assert.equal(projectCover({props:[{localPath:'/static/prop.webp'}]}),'/static/prop.webp')
+ assert.equal(projectCover({props:[{localPath:'/static/prop.webp'}]}),'')
 })
 test('workspace totals reflect real collections including empty projects',()=>{
  assert.deepEqual(projectCounts([]),[0,0,0,0])
@@ -37,4 +37,13 @@ test('production navigation and shot editor retain keyboard and dialog semantics
  assert.match(page,/@keydown.esc.stop="closeShotEditor"/)
  assert.match(page,/@keydown.tab="trapShotFocus"/)
  assert.doesNotMatch(page,/class="sidebar|startColumnDrag|sidebarCollapsed/)
+})
+
+test('gallery prioritizes scenes, excludes props and deduplicates file URLs',()=>{
+ const p={scenes:[{id:1,location:'客厅',image_url:'static/scene.webp?v=1'},{id:2,image_url:'/static/scene.webp?v=2'}],characters:[{id:3,name:'主人',image_url:'static/person.webp'},{id:4,image_url:'/static/scene.webp'}],props:[{image_url:'static/prop.webp'}]}
+ const images=projectGalleryImages(p)
+ assert.deepEqual(images.map(i=>i.kind),['场景','角色'])
+ assert.deepEqual(images.map(i=>i.src),['/static/scene.webp?v=1','/static/person.webp'])
+ assert.equal(projectCover(p),'/static/scene.webp?v=1')
+ assert.equal(projectGalleryImages({props:p.props}).length,0)
 })

@@ -1,5 +1,5 @@
 <template>
-  <div :inert="settingsOpen || undefined"><NuxtLayout>
+  <div :inert="settingsOpen || undefined"><NuxtLayout :name="isCinematic ? 'cinematic' : 'default'">
     <NuxtPage />
   </NuxtLayout></div>
   <Toaster position="top-right" :duration="3000" :theme="resolvedTheme" />
@@ -20,6 +20,8 @@ import { localRuntimeAPI } from '~/composables/useApi'
 const { t } = useI18n()
 const { resolvedTheme } = useTheme()
 const { isOpen: settingsOpen } = useSettingsPanel()
+const { isCinematic } = useStudioInterface()
+useHead(() => ({ htmlAttrs: { 'data-studio-preview': isCinematic.value ? 'cinematic' : null } }))
 
 // 响应式文档标题（nuxt.config.ts 的静态 title 仅作 SSR/兜底）
 useHead(() => ({ title: t('app.title') }))
@@ -50,6 +52,10 @@ onMounted(() => {
 <style>
 @import url('./assets/studio.css');
 @import url('./assets/soft-studio.css');
+@import url('./assets/cinematic.css');
+@import url('./assets/cinematic-panels.css');
+@import url('./assets/cinematic-episode.css');
+@import url('./assets/cinematic-lighting.css');
 
 /* === 应用内引导（driver.js）主题覆写 — 跟随设计 token === */
 .huobao-tour-popover {

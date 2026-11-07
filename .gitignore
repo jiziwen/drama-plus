@@ -3,6 +3,8 @@ node_modules/
 
 # Build output
 dist/
+# Nuxt generate also creates a dist symlink, which the directory-only rule misses.
+/frontend/dist
 
 # IDE
 .idea/

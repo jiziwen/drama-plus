@@ -1,0 +1,17 @@
+name: drama-plus-public
+services:
+  gateway:
+    image: caddy:2.11.9-alpine
+    # Linux server only; reaches the application bound to host 127.0.0.1:5679.
+    network_mode: host
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./access.caddy:/etc/caddy/access.caddy:ro
+      - ./caddy-data:/data
+      - ./caddy-config:/config
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

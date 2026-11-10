@@ -1,0 +1,34 @@
+# Opt in with: docker compose -f compose.yaml -f compose.proxy.yaml up -d
+# proxy/config.yaml contains a private node credential and must stay outside Git.
+services:
+  app:
+    environment:
+      HTTP_PROXY: http://egress:7890
+      HTTPS_PROXY: http://egress:7890
+      NO_PROXY: localhost,127.0.0.1,::1
+      NODE_USE_ENV_PROXY: "1"
+    depends_on:
+      egress:
+        condition: service_started
+  egress:
+    image: metacubex/mihomo:v1.19.33
+    command: ["-d", "/tmp/mihomo", "-f", "/etc/mihomo/config.yaml"]
+    volumes:
+      - type: bind
+        source: ./proxy/config.yaml
+        target: /etc/mihomo/config.yaml
+        read_only: true
+        bind:
+          create_host_path: false
+    # No host ports: only containers on this Compose network can use the proxy.
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"

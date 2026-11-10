@@ -171,11 +171,13 @@ function isOfficialTextHost(baseURL: string) {
   return /api\.openai\.com|generativelanguage\.googleapis\.com/.test(baseURL)
 }
 
-function openaiThinkingOffPatch(): Record<string, any> {
+function openaiThinkingOffPatch(baseURL: string): Record<string, any> {
+  // AICost 的关闭值是 off；none 会在网关参数校验阶段被 400 拒绝。
+  const isAicost = ['aicost.me', 'www.aicost.me'].includes(new URL(baseURL).hostname)
   const fallback = {
     thinking: { type: 'disabled' },   // new-api 通用 / DeepSeek
     enable_thinking: false,           // Qwen / 阿里系
-    reasoning_effort: 'none',         // OpenAI 风格枚举(Gemini 渠道映射为 budget 0)
+    reasoning_effort: isAicost ? 'off' : 'none',
   }
   const raw = process.env.AI_THINKING_OFF_PATCH
   if (!raw) return fallback
@@ -189,7 +191,7 @@ function openaiThinkingOffPatch(): Record<string, any> {
 
 function createThinkingOffFetch(providerName: string, baseURL: string): typeof fetch | undefined {
   if (!thinkingOffEnabled || isOfficialTextHost(baseURL)) return undefined
-  const openaiPatch = openaiThinkingOffPatch()
+  const openaiPatch = openaiThinkingOffPatch(baseURL)
 
   return async (input: any, init?: any) => {
     try {

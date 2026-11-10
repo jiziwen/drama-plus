@@ -14,13 +14,16 @@ RUN npm run generate
 # ===== 后端构建：安装依赖（含原生模块编译） =====
 FROM node:22-bookworm AS backend-build
 WORKDIR /build/backend
+# 与运行镜像一样使用系统 FFmpeg，避免 npm 安装时另从 GitHub 下载静态二进制。
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ffmpeg \
+  && rm -rf /var/lib/apt/lists/*
+ENV FFMPEG_BIN=/usr/bin/ffmpeg FFPROBE_BIN=/usr/bin/ffprobe
 COPY backend/package.json backend/package-lock.json ./
 RUN node -e "const fs=require('fs');const l=JSON.parse(fs.readFileSync('package-lock.json'));for(const p of Object.values(l.packages||{}))delete p.resolved;fs.writeFileSync('package-lock.json',JSON.stringify(l,null,2))" \
-  && npm ci --no-audit --no-fund --registry=https://registry.npmjs.org
+  && npm ci --omit=dev --no-audit --no-fund --registry=https://registry.npmjs.org
 COPY backend/ ./
-# 运行时与既有服务器部署一致走 tsx（源码存在 bundler 风格无扩展名 import，tsc 产物 node 直跑不可行）；
-# tsx 是 devDependency，prune 后单独补装
-RUN npm prune --omit=dev && npm i tsx@^4.21.0 --no-save --no-audit --no-fund --registry=https://registry.npmjs.org
+# 后端通过生产依赖 tsx 运行；完全沿用锁文件，不在构建时额外解析/补装依赖。
 
 # ===== 运行时 =====
 FROM node:22-bookworm-slim

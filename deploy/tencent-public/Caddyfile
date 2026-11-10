@@ -1,0 +1,21 @@
+{
+    admin off
+    default_sni 162.14.83.236
+}
+
+https://162.14.83.236 {
+    tls {
+        issuer acme {
+            dir https://acme-v02.api.letsencrypt.org/directory
+            profile shortlived
+        }
+    }
+    import /etc/caddy/access.caddy
+    header {
+        X-Content-Type-Options nosniff
+        Referrer-Policy same-origin
+    }
+    reverse_proxy 127.0.0.1:5679 {
+        flush_interval -1
+    }
+}

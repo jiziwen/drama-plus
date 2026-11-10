@@ -16,6 +16,8 @@ dist/
 # Environment
 .env
 .env.local
+# Optional server proxy credentials: never commit subscription/node configuration.
+/deploy/tencent-private/proxy/
 
 # Logs
 *.log

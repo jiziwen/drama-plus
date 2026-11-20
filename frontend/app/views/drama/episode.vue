@@ -46,13 +46,14 @@
             :show-config="videoModelMultiCfg"
           />
           <ModelSelect
-            v-if="selectedVideoConfig?.provider !== 'comfyui'"
+            v-if="selectedVideoConfig?.provider !== 'comfyui' && resolutionOptions.length"
             v-model="episodeResolution"
             :label="t('episode.topbar.resolution')"
             :options="resolutionOptions"
             hide-default
           />
-          <button v-else class="btn btn-sm" :title="t('settings.comfyui.editResolution')" @click="openSettings('ai', selectedVideoConfig.id)">{{ comfyVideoSizeLabel }} · {{ t('settings.comfyui.editResolution') }}</button>
+          <button v-else-if="selectedVideoConfig?.provider === 'comfyui'" class="btn btn-sm" :title="t('settings.comfyui.editResolution')" @click="openSettings('ai', selectedVideoConfig.id)">{{ comfyVideoSizeLabel }} · {{ t('settings.comfyui.editResolution') }}</button>
+          <span v-else class="studio-meta-pill">{{ videoResolutionForConfig(selectedVideoConfig, currentTopVideoModel) }}</span>
         </div>
         </details><div class="studio-actions">
           <button class="btn" @click="openSettings('calls')">接口记录</button>
@@ -1498,6 +1499,7 @@ import { resolveTextModelSelection } from '~/utils/text-model-selection'
 import { toastError, mapError, MODERATION_RE } from '~/composables/useToast'
 import { assetModelOptions, assetModelKey, assetModelPatch, resolveAssetModel, assetReferences } from '~/composables/useAssetGeneration'
 import CinematicScreening from '~/components/CinematicScreening.vue'
+import { AICOST_VIDEO_RESOLUTIONS, aicostVideoModelCapabilities } from '../../../../backend/src/services/aicost-video-models'
 
 definePageMeta({ key: route => route.fullPath })
 const { open: openSettings, revision: settingsRevision } = useSettingsPanel()
@@ -2203,14 +2205,22 @@ const RESOLUTION_DISPLAY = {
   aliyun: { '480p': '480P', '720p': '720P', '1080p': '1080P' },
 }
 const resolutionProvider = computed(() => RESOLUTION_TIERS[selectedVideoConfig.value?.provider] ? selectedVideoConfig.value.provider : 'volcengine')
-const resolutionOptions = computed(() => RESOLUTION_TIERS[resolutionProvider.value].map(key => ({
-  key,
-  model: `${RESOLUTION_DISPLAY[resolutionProvider.value][key]} · ${t(`episode.resolution.${key === '480p' ? 'smooth' : key === '720p' ? 'hd' : 'uhd'}`)}`,
-})))
+const resolutionOptions = computed(() => {
+  const isAicost = selectedVideoConfig.value?.provider === 'aicost'
+  const tiers = isAicost
+    ? RESOLUTION_TIERS.aliyun.filter(size => aicostResolutions(currentTopVideoModel.value).includes(size))
+    : RESOLUTION_TIERS[resolutionProvider.value]
+  return tiers.map(key => ({
+    key,
+    model: `${isAicost ? key.toUpperCase() : RESOLUTION_DISPLAY[resolutionProvider.value][key]} · ${t(`episode.resolution.${key === '480p' ? 'smooth' : key === '720p' ? 'hd' : 'uhd'}`)}`,
+  }))
+})
 const episodeResolution = computed({
   get: () => {
     const v = episode.value?.resolution
-    return resolutionOptions.value.some(o => o.key === v) ? v : '720p'
+    const options = resolutionOptions.value
+    if (options.some(option => option.key === v)) return v
+    return options.some(option => option.key === '720p') ? '720p' : options[0]?.key || '720p'
   },
   set: (val) => { void changeEpisodeResolution(val) },
 })
@@ -2277,12 +2287,12 @@ const videoModelOptions = computed(() => collectModelOptions(videoConfigs.value,
 const selectedVideoConfig = computed(() => {
   const selected = videoModelOptions.value.find(option => option.key === videoModel.value)
   if (selected) return videoConfigs.value.find(config => config.id === selected.configId)
-  const locked = videoConfigs.value.find(config => config.id === lockedVideoConfigId.value && config.is_active)
+  const available = videoConfigs.value.filter(config => config.is_active && (config.provider !== 'aicost' || configModels(config).length))
+  const locked = available.find(config => config.id === lockedVideoConfigId.value)
   if (locked) return locked
-  return [...videoConfigs.value]
-    .filter(config => config.is_active)
-    .sort((a, b) => (b.priority || 0) - (a.priority || 0))[0]
+  return available.sort((a, b) => (b.priority || 0) - (a.priority || 0))[0]
 })
+const currentTopVideoModel = computed(() => bareModelName(videoModel.value) || configModels(selectedVideoConfig.value)[0] || '')
 function videoSizeForConfig(config) {
   const settings = config?.comfyui
   const [rw, rh] = dramaAspectRatio.value.split(':').map(Number)
@@ -2296,18 +2306,18 @@ function videoSizeForConfig(config) {
 }
 const comfyVideoSizeLabel = computed(() => videoSizeForConfig(selectedVideoConfig.value))
 
-// 参考图上限（Wan 3.0 官方 10 张，其他模型 9 张），绑定素材收集与 @名字 映射统一读取
+// 绑定素材收集与 @名字 映射统一读取参考图上限。
 function shotReferenceLimit(sb) {
   const config = shotVideoConfig(sb)
+  const model = shotVideoSelection(sb).model
+  if (config?.provider === 'aicost') return aicostVideoModelCapabilities(model || configModels(config)[0] || '')?.maxReferences ?? Infinity
   return config?.provider === 'comfyui' ? config.comfyui?.maxReferences ?? 6
-    : config?.provider === 'aliyun' || shotVideoSelection(sb).model?.startsWith('wan3.0-video') ? 10 : 9
+    : config?.provider === 'aliyun' || model?.startsWith('wan3.0-video') ? 10 : 9
 }
 
 // 本次生成的生效配置（模型/分辨率/时长），用于右侧小结与批量确认弹窗
 const effectiveVideoModelLabel = computed(() => {
-  const explicit = bareModelName(videoModel.value)
-  if (explicit) return modelLabel(explicit)
-  return modelLabel(configModels(selectedVideoConfig.value)[0] || '')
+  return modelLabel(currentTopVideoModel.value)
 })
 const effectiveVideoDuration = computed(() => videoGenerationDuration(selectedSb.value?.duration))
 // 分镜覆盖单独持久化；顶栏仍控制没有覆盖的镜头。配置 ID 是键的一部分，避免同名模型串配置。
@@ -2333,18 +2343,25 @@ function shotVideoConfig(sb) {
 function shotVideoModelLabel(sb) {
   return modelLabel(shotVideoSelection(sb).model || configModels(shotVideoConfig(sb))[0] || '') || t('episode.vid.defaultModel')
 }
-function videoResolutionForConfig(config) {
+function aicostResolutions(model) {
+  return aicostVideoModelCapabilities(model)?.resolutions ?? AICOST_VIDEO_RESOLUTIONS
+}
+function videoResolutionForConfig(config, model = configModels(config)[0] || '') {
   if (config?.provider === 'comfyui') return videoSizeForConfig(config)
-  const display = RESOLUTION_DISPLAY[config?.provider] || RESOLUTION_DISPLAY.volcengine
   const resolution = episode.value?.resolution || '720p'
+  if (config?.provider === 'aicost') {
+    const choices = aicostResolutions(model)
+    return (choices.includes(resolution) ? resolution : choices.includes('720p') ? '720p' : choices[0]).toUpperCase()
+  }
+  const display = RESOLUTION_DISPLAY[config?.provider] || RESOLUTION_DISPLAY.volcengine
   return display[resolution] || resolution
 }
-function shotVideoResolutionLabel(sb) { return videoResolutionForConfig(shotVideoConfig(sb)) }
+function shotVideoResolutionLabel(sb) { return videoResolutionForConfig(shotVideoConfig(sb), shotVideoSelection(sb).model) }
 const shotVideoSelectOptions = computed(() => [
-  { value: '', label: `${t('episode.inspector.followTop', { model: effectiveVideoModelLabel.value || t('episode.vid.defaultModel') })} · ${videoResolutionForConfig(selectedVideoConfig.value)} · ${effectiveVideoDuration.value}s` },
+  { value: '', label: `${t('episode.inspector.followTop', { model: effectiveVideoModelLabel.value || t('episode.vid.defaultModel') })} · ${videoResolutionForConfig(selectedVideoConfig.value, currentTopVideoModel.value)} · ${effectiveVideoDuration.value}s` },
   ...(shotVideoModelKey(selectedSb.value) && !shotVideoModelOptions.value.some(option => option.key === shotVideoModelKey(selectedSb.value))
     ? [{ value: shotVideoModelKey(selectedSb.value), label: t('episode.inspector.invalidModel', { model: selectedSb.value?.video_model || selectedSb.value?.videoModel || '' }), disabled: true }] : []),
-  ...shotVideoModelOptions.value.map(option => ({ value: option.key, label: `${modelLabel(option.model)} · ${option.configName} · ${videoResolutionForConfig(option.config)} · ${effectiveVideoDuration.value}s` })),
+  ...shotVideoModelOptions.value.map(option => ({ value: option.key, label: `${modelLabel(option.model)} · ${option.configName} · ${videoResolutionForConfig(option.config, option.model)} · ${effectiveVideoDuration.value}s` })),
 ])
 async function changeShotVideoModel(sb, key) {
   if (!sb || savingShotVideoIds.value.includes(sb.id)) return
@@ -3726,7 +3743,7 @@ async function loadConfigs() {
       aiConfigAPI.list('text'),
     ])
     imageConfigs.value = imgCfgs || []
-    videoConfigs.value = vidCfgs || []
+    videoConfigs.value = (vidCfgs || []).filter(config => config.provider !== 'jimeng')
     textConfigs.value = txtCfgs || []
   } catch (e) { console.error('Failed to load AI configs', e) }
 }

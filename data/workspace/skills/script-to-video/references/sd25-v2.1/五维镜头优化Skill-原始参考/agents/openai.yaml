@@ -1,0 +1,4 @@
+interface:
+  display_name: "五维度分镜 v8.2"
+  short_description: "支持SD25自动混合封装、长视频、时间戳与连续性。"
+  default_prompt: "Use $five-dimension-storyboard to turn this script into a v8.2 director storyboard with SD25 AUTO-HYBRID packaging when appropriate."

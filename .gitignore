@@ -16,6 +16,7 @@ dist/
 # Environment
 .env
 .env.local
+.reference-media-signing-key*
 # Optional server proxy credentials: never commit subscription/node configuration.
 /deploy/tencent-private/proxy/
 
@@ -41,6 +42,7 @@ data/*.bak*
 data/static/
 data/local-runtime/
 data/storage/
+data/libtv/
 
 # Config
 configs/config.yaml
@@ -63,3 +65,5 @@ desktop/build/
 desktop/dist/
 desktop/release/
 desktop/resources/
+# Imported scripts, asset bindings, AI candidates and video task state are local project data.
+data/script-video/

@@ -8,8 +8,18 @@ services:
     environment:
       NODE_ENV: production
       HUOBAO_LOCAL_RUNTIME_ENABLED: "false"
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      PUBLIC_MEDIA_SIGNED_URLS: "true"
+      JIMENG_PRIVATE_ORIGIN: ${JIMENG_PRIVATE_ORIGIN:-}
+      JIMENG_PRIVATE_PROXY_SECRET: ${JIMENG_PRIVATE_PROXY_SECRET:-}
+      LIBTV_CLI_BIN: ${LIBTV_CLI_BIN:-/app/data/libtv/libtv}
+      LIBTV_CONFIG_DIR: ${LIBTV_CONFIG_DIR:-/app/data/libtv/state}
+      LIBTV_PROJECT_ID: ${LIBTV_PROJECT_ID:-}
+      RELEASE_NOTES_ADMIN_USER: ${RELEASE_NOTES_ADMIN_USER:-}
+      FEEDBACK_ADMIN_USER: ${FEEDBACK_ADMIN_USER:-}
     volumes:
       - ./data:/app/data
+      - jimeng-data:/var/lib/drama-plus/jimeng
     restart: unless-stopped
     init: true
     stop_grace_period: 60s
@@ -18,3 +28,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+volumes:
+  jimeng-data:

@@ -21,6 +21,7 @@ const { default: storyboards } = await import('../src/routes/storyboards.js')
 const { default: tasks } = await import('../src/routes/tasks.js')
 const { resolveMediaConfig, resolveAssetImageRequest } = await import('../src/services/media-selection.js')
 const { GeminiImageAdapter } = await import('../src/services/adapters/gemini-image.js')
+const { OpenAIImageAdapter } = await import('../src/services/adapters/openai-image.js')
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN1sAAAAASUVORK5CYII=', 'base64')
 const ref = `data:image/png;base64,${png.toString('base64')}`
 const requests: { url: string; body: string }[] = []
@@ -187,6 +188,68 @@ test('official Gemini reference editing includes image parts rather than losing 
   const request = new GeminiImageAdapter().buildGenerateRequest({ provider: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com', apiKey: 'test', model: 'gemini-3-pro-image' }, { id: 1, prompt: 'edit', referenceImages: JSON.stringify([ref]) })
   assert.match(request.url, /generateContent/)
   assert.ok((request.body as any).contents[0].parts[0].inline_data)
+})
+
+test('official Gemini preserves ordered public and inline references with their MIME types', () => {
+  const adapter = new GeminiImageAdapter()
+  const config = { provider: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com', apiKey: 'test', model: 'gemini-3.1-flash-image' }
+  const publicImage = 'https://media.example.test/ref.WEBP?signature=example'
+  const request = adapter.buildGenerateRequest(config, { id: 1, prompt: 'edit', referenceImages: JSON.stringify([publicImage, ref]) })
+  assert.match(request.url, /generateContent/)
+  assert.deepEqual(request.body.contents[0].parts, [
+    { file_data: { mime_type: 'image/webp', file_uri: publicImage } },
+    { inline_data: { mime_type: 'image/png', data: png.toString('base64') } },
+    { text: 'edit' },
+  ])
+  assert.equal(adapter.supportsReferenceImageUrls(config, 'gemini-2.0-flash-exp-image-generation', publicImage), false)
+  assert.equal(adapter.supportsReferenceImageUrls({ ...config, baseUrl: 'https://generativelanguage.googleapis.com.example.test' }, config.model, publicImage), false)
+  assert.equal(adapter.supportsReferenceImageUrls(config, config.model, 'https://media.example.test/no-media-extension'), false)
+})
+
+test('OpenAI public edits accept JSON URLs while upload-only gateways keep multipart', () => {
+  const adapter = new OpenAIImageAdapter()
+  const official = { provider: 'openai', baseUrl: 'https://api.openai.com', apiKey: 'test', model: 'gpt-image-2' }
+  const aicost = { ...official, baseUrl: 'https://www.aicost.me' }
+  const publicImage = 'https://media.example.test/static/uploads/main.png'
+  const draft = { id: 1, prompt: 'edit', referenceImages: JSON.stringify([publicImage, ref]) }
+  for (const cfg of [official, { ...aicost, model: 'gpt-image-mj' }]) {
+    const request = adapter.buildGenerateRequest(cfg, draft)
+    assert.match(request.url, /\/v1\/images\/edits$/u)
+    assert.equal(request.headers['Content-Type'], 'application/json')
+    assert.deepEqual(request.body.images, [{ image_url: publicImage }, { image_url: ref }])
+  }
+  assert.equal(adapter.supportsReferenceImageUrls(aicost, aicost.model), false)
+  const uploaded = adapter.buildGenerateRequest(aicost, { ...draft, referenceImages: JSON.stringify([ref]) })
+  assert.ok(uploaded.body instanceof FormData)
+  assert.equal(uploaded.body.getAll('image[]').length, 1)
+})
+
+test('a configured public origin sends hosted references through the ordinary image generation route', async (t) => {
+  const publicBase = process.env.PUBLIC_BASE_URL
+  t.after(() => {
+    if (publicBase === undefined) delete process.env.PUBLIC_BASE_URL
+    else process.env.PUBLIC_BASE_URL = publicBase
+  })
+  process.env.PUBLIC_BASE_URL = 'https://media.example.test'
+  const dir = path.join(root, 'static', 'uploads')
+  await fs.mkdir(dir, { recursive: true })
+  await fs.writeFile(path.join(dir, 'public-edit.png'), png)
+  const selected = config('image', ['gpt-image-2'])
+  db.update(schema.aiServiceConfigs).set({ baseUrl: 'https://api.openai.com' }).where(eq(schema.aiServiceConfigs.id, selected.id)).run()
+  const submissions: unknown[] = []
+  t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+    assert.equal(String(input), 'https://api.openai.com/v1/images/edits')
+    submissions.push(JSON.parse(String(init?.body)))
+    return Response.json({ data: [{ b64_json: png.toString('base64') }] })
+  })
+  const response = await request(tasks, '/', { type: 'image', config_id: selected.id, prompt: 'edit', reference_images: ['/static/uploads/public-edit.png', ref] })
+  assert.equal(response.status, 201, JSON.stringify(response.body))
+  const result = await finished(response.body.data.id)
+  assert.equal(result.status, 'completed', result.errorMsg || '')
+  assert.deepEqual(submissions, [{
+    model: 'gpt-image-2', prompt: 'edit', size: '1920x1088', n: 1,
+    images: [{ image_url: 'https://media.example.test/static/uploads/public-edit.png' }, { image_url: ref }],
+  }])
 })
 
 after(async () => { await new Promise<void>(resolve => server.close(() => resolve())) })

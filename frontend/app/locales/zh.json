@@ -34,6 +34,21 @@
   "app": {
     "title": "小李短剧"
   },
+  "siteSession": {
+    "loginTitle": "登录小李短剧",
+    "username": "账号",
+    "password": "密码",
+    "login": "登录",
+    "signingIn": "正在登录…",
+    "badCredentials": "账号或密码不正确，请重试。",
+    "loginFailed": "暂时无法登录，请稍后再试。",
+    "current": "当前站点账号 {username}",
+    "administrator": "站点管理员",
+    "member": "站点成员",
+    "switch": "切换账号",
+    "logout": "退出登录",
+    "logoutFailed": "暂时无法退出登录，请重试。"
+  },
   "common": {
     "confirm": "确认",
     "cancel": "取消",
@@ -95,7 +110,8 @@
   "components": {
     "mention": {
       "noMatch": "无匹配的参考",
-      "fallbackGroup": "参考"
+      "fallbackGroup": "参考",
+      "searchAssets": "搜索素材"
     },
     "baseSelect": {
       "placeholder": "请选择...",
@@ -276,13 +292,89 @@
       "qwenImage": "Work-Fisher · 三视图生成编辑",
       "h3Video": "Work-Fisher · 多参生视频编辑"
     },
+    "cliAccount": {
+      "disconnect": "断开账号",
+      "cancelAuthorization": "取消授权",
+      "disconnectConfirm": "断开后，站内成员需等新的 {provider} 账号连接后才能用这个服务生成视频。",
+      "cancelAuthorizationConfirm": "结束本次 {provider} 授权？已打开的授权页可以关闭。",
+      "disconnecting": "正在断开…",
+      "reconnectWeb": "更换账号时，请先在官网切换到要用的账号，再回这里连接。",
+      "openWebsite": "打开官网",
+      "reconnectPhone": "重新连接时，请使用要用的 LibTV 账号绑定的手机号。"
+    },
+    "jimeng": {
+      "provider": "即梦积分",
+      "cli": "官方 CLI",
+      "billing": "使用已授权即梦账号的积分，生成前显示官方报价",
+      "account": "即梦账号与积分",
+      "viewAccount": "查看账号",
+      "connected": "已连接",
+      "disconnected": "待授权",
+      "pending": "正在等待授权",
+      "checking": "正在读取即梦账号…",
+      "connect": "连接即梦账号",
+      "disconnectFailed": "无法断开即梦账号，请稍后重试。",
+      "openAuthorization": "打开即梦官方授权页",
+      "completeAuthorization": "在即梦官网完成授权后，请回来点「刷新账号与积分」。",
+      "refresh": "刷新账号与积分",
+      "credits": "可用积分 {n}",
+      "creditsUnknown": "可用积分暂不可用",
+      "unavailable": "后端的即梦官方 CLI 暂不可用。",
+      "expired": "本次授权已结束，请重新连接。",
+      "invalidAuthorizationUrl": "即梦官方授权地址不可用，请重试。",
+      "seedance25": "Seedance 2.5 · 即梦积分",
+      "seedance25Draft": "Seedance 2.5 样片 · 即梦积分",
+      "seedance25Flash": "Seedance 2.5 Flash · 即梦积分",
+      "seedance20": "Seedance 2.0 · 即梦积分"
+    },
+    "libtv": {
+      "description": "通过服务端 LibTV 账号在指定画布生成视频",
+      "account": "LibTV 账号与画布",
+      "connected": "已连接",
+      "disconnected": "待授权",
+      "pending": "正在等待授权",
+      "checking": "正在读取 LibTV 账号…",
+      "connect": "连接 LibTV 账号",
+      "disconnectFailed": "无法断开 LibTV 账号，请稍后重试。",
+      "openAuthorization": "打开 LibTV 官方授权页",
+      "completeAuthorization": "在 LibTV 官方页面完成登录后，此处会自动更新。",
+      "refresh": "刷新账号与画布",
+      "credits": "可用积分 {n}",
+      "canvasReady": "画布可用",
+      "canvasUnavailable": "LibTV 账号已连接，画布尚未准备好。",
+      "prepareCanvas": "准备画布",
+      "preparingCanvas": "正在准备 LibTV 画布…",
+      "authorizationUnavailable": "当前访问地址暂不可发起 LibTV 网页授权。",
+      "phoneTitle": "手机号验证",
+      "phoneAccountHint": "请使用已绑定现有 LibTV 账号的手机号。连接后，站内所有成员的 LibTV 视频任务都会使用该账号。",
+      "phoneNumber": "中国大陆手机号",
+      "phoneSend": "发送验证码",
+      "phoneSent": "已向 {phone} 发送 LibTV 短信验证码。",
+      "phoneCode": "短信验证码",
+      "phoneVerify": "验证并连接",
+      "phoneResend": "重发验证码",
+      "phoneChange": "更换手机号",
+      "phoneInvalid": "请输入 11 位中国大陆手机号。",
+      "phoneSendFailed": "无法发送 LibTV 短信，请稍后重试。",
+      "phoneCodeInvalid": "请输入 6 位短信验证码。",
+      "phoneCodeExpired": "验证码已过期，请重新发送。",
+      "phoneVerifyFailed": "未能验证 LibTV 账号，请重试。",
+      "unavailable": "服务端的 LibTV 官方 CLI 暂不可用。",
+      "expired": "本次 LibTV 授权已结束，请重新连接。",
+      "invalidAuthorizationUrl": "LibTV 官方授权地址不可用，请重试。",
+      "draft": "Seedance 2.5 样片",
+      "flash": "Seedance 2.5 Flash",
+      "standard": "Seedance 2.5"
+    },
     "groupBase": "基础",
     "tabs": {
       "general": "通用",
       "ai": "AI 服务",
       "styles": "风格预设",
       "storage": "存储位置",
-      "agents": "Agent 配置"
+      "agents": "Agent 配置",
+      "releaseNotes": "发布更新",
+      "feedback": "问题反馈"
     },
     "common": {
       "disabled": "已停用",
@@ -381,6 +473,9 @@
     "cfg": {
       "editTitle": "编辑服务配置",
       "addTitle": "添加{type}服务",
+      "deleteTitle": "删除视频服务配置",
+      "deleteMessage": "要删除「{name}」吗？",
+      "deleteLastCli": "删除「{name}」也会断开此站的 {provider} 账号。下次使用时需要重新授权。",
       "sub": "推荐先选择模板，系统会自动填入更合理的 `Base URL` 与默认模型。",
       "name": "配置名称",
       "namePlaceholder": "如 小李默认图像服务",

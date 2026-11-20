@@ -15,6 +15,8 @@
 
         <!-- ===== 通用 ===== -->
         <div v-if="tab === 'calls'" class="settings-scroll"><ApiCallLogPanel /></div>
+        <div v-else-if="tab === 'feedback'" class="settings-scroll"><FeedbackPanel /></div>
+        <div v-else-if="tab === 'release-notes' && canPublishUpdates" class="settings-scroll"><ReleaseNotesSettings /></div>
         <div v-else-if="tab === 'general'" class="settings-scroll">
           <div class="settings-head">
             <h2 class="settings-title">{{ t('settings.general.title') }}</h2>
@@ -81,12 +83,13 @@
               <div v-for="c in byType(st.type)" :key="c.id" class="config-row">
                 <div class="provider-badge" :class="{ 'has-icon': !!providerIconUrl(c.provider) }" :data-provider="c.provider">
                   <img v-if="providerIconUrl(c.provider)" class="provider-badge-icon" :src="providerIconUrl(c.provider)" alt="" />
-                  <template v-else>{{ c.provider.slice(0, 1).toUpperCase() }}</template>
+                  <template v-else>{{ c.provider === 'jimeng' ? '即' : c.provider.slice(0, 1).toUpperCase() }}</template>
                 </div>
                 <div class="config-main">
                   <div class="config-line">
                     <span class="config-name">{{ c.name || `${c.provider}-${c.service_type}` }}</span>
-                    <span :class="['tag', c.api_key || c.provider === 'comfyui' ? 'tag-success' : 'tag-error']">{{ c.provider === 'comfyui' ? t('settings.comfyui.localService') : c.api_key ? t('settings.ai.hasKey') : t('settings.ai.noKey') }}</span>
+                    <span v-if="isServerVideoCli(c.provider)" class="tag tag-accent">{{ t('settings.jimeng.cli') }}</span>
+                    <span v-else :class="['tag', c.api_key || c.provider === 'comfyui' ? 'tag-success' : 'tag-error']">{{ c.provider === 'comfyui' ? t('settings.comfyui.localService') : c.api_key ? t('settings.ai.hasKey') : t('settings.ai.noKey') }}</span>
                     <span v-if="!c.is_active" class="tag">{{ t('settings.common.disabled') }}</span>
                   </div>
                   <div class="config-models">
@@ -100,16 +103,17 @@
                       {{ modelLabel(m) }}
                     </button>
                   </div>
-                  <div class="config-sub mono truncate">{{ c.base_url || t('settings.ai.noBaseUrl') }}</div>
+                  <div class="config-sub truncate" :class="{ mono: !isServerVideoCli(c.provider) }">{{ c.provider === 'jimeng' ? t('settings.jimeng.billing') : c.provider === 'libtv' ? t('settings.libtv.description') : c.base_url || t('settings.ai.noBaseUrl') }}</div>
                 </div>
                 <div class="config-actions">
-                <button v-if="st.type === 'text' || c.provider === 'comfyui'" class="btn btn-ghost btn-sm" @click="testExistingCfg(c)">{{ t('settings.ai.test') }}</button>
+                <button v-if="isServerVideoCli(c.provider)" class="btn btn-ghost btn-sm" @click="startEditCfg(c)">{{ t('settings.jimeng.viewAccount') }}</button>
+                <button v-else-if="st.type === 'text' || ['comfyui', 'aicost'].includes(c.provider)" class="btn btn-ghost btn-sm" @click="testExistingCfg(c)">{{ t('settings.ai.test') }}</button>
                 <label class="config-switch">
                   <input type="checkbox" class="sr-only" :checked="c.is_active" @change="toggleCfg(c)">
                   <span class="switch" :class="{ on: c.is_active }"></span>
                 </label>
                 <button class="btn btn-ghost btn-icon btn-sm" @click="startEditCfg(c)"><Pencil :size="13" /></button>
-                <button class="btn btn-danger btn-icon btn-sm" @click="delCfg(c.id)"><Trash2 :size="13" /></button>
+                <button class="btn btn-danger btn-icon btn-sm" :title="t('common.delete')" :aria-label="t('common.delete')" :disabled="deletingCfg" @click="requestCfgDeletion(c)"><Trash2 :size="13" /></button>
                 </div>
               </div>
               <p v-if="!byType(st.type).length" class="config-empty">{{ t('settings.common.empty') }}</p>
@@ -331,12 +335,12 @@
     </div>
 
     <!-- AI Config Dialog -->
-    <div v-if="cfgDialog" class="overlay" @click.self="cfgDialog = false">
+    <div v-if="cfgDialog" class="overlay" @click.self="closeCfgDialog">
       <form class="dialog config-dialog" @submit.prevent="saveCfg">
         <div class="dialog-head">
           <div>
             <div class="dialog-title">{{ cfgEditId ? t('settings.cfg.editTitle') : t('settings.cfg.addTitle', { type: serviceMeta[cfgForm.service_type].label }) }}</div>
-            <div class="dialog-sub">{{ t('settings.cfg.sub') }}</div>
+            <div class="dialog-sub">{{ t(cfgForm.provider === 'jimeng' ? 'settings.jimeng.billing' : cfgForm.provider === 'libtv' ? 'settings.libtv.description' : 'settings.cfg.sub') }}</div>
           </div>
           <span class="tag tag-accent ml-auto">{{ serviceMeta[cfgForm.service_type].label }}</span>
         </div>
@@ -347,6 +351,7 @@
               :key="`${cfgForm.service_type}-${preset.key}`"
               type="button"
               class="preset-pill"
+              :disabled="cfgOperationPending"
               @click="applyProviderPreset(cfgForm.service_type, preset.key)"
             >
               {{ preset.label }}
@@ -357,15 +362,82 @@
             <input v-model="cfgForm.name" class="input" :placeholder="t('settings.cfg.namePlaceholder')" />
           </label>
           <label class="field"><span class="field-label">{{ t('settings.cfg.provider') }}</span>
-            <BaseSelect v-model="cfgForm.provider" :options="providerSelectOptions" :placeholder="t('settings.cfg.providerPlaceholder')" searchable />
+            <BaseSelect :model-value="cfgForm.provider" :options="providerSelectOptions" :placeholder="t('settings.cfg.providerPlaceholder')" :disabled="cfgOperationPending" searchable @update:model-value="selectCfgProvider" />
           </label>
           <label class="field">
             <span class="field-label">{{ t('settings.cfg.priority') }}</span>
             <input v-model.number="cfgForm.priority" class="input" type="number" min="0" max="999" />
             <span class="field-hint">{{ t('settings.cfg.priorityHint') }}</span>
           </label>
-          <label class="field"><span class="field-label">API Key</span><input v-model="cfgForm.api_key" class="input" type="password" placeholder="sk-..." /></label>
-          <label class="field"><span class="field-label">Base URL</span><input v-model="cfgForm.base_url" class="input" placeholder="https://..." /></label>
+          <section v-if="activeVideoCli" class="test-result video-cli-account" aria-labelledby="video-cli-account-label">
+            <div class="test-result-head">
+              <span id="video-cli-account-label" class="field-label">{{ cliLabel('account') }}</span>
+              <span v-if="cliAccount?.authenticated" class="tag tag-success">{{ cliLabel('connected') }}</span>
+              <span v-else-if="cliAccount?.available" class="tag tag-accent">{{ cliLabel(cliPending ? 'pending' : 'disconnected') }}</span>
+            </div>
+            <div v-if="cliAccount?.authenticated" class="video-cli-account-details">
+              <span v-if="cliAccount.username">{{ cliAccount.username }}</span>
+              <span v-if="cliAccount.plan || cliAccount.membership">{{ cliAccount.plan || cliAccount.membership }}</span>
+              <strong v-if="activeVideoCli === 'jimeng' || cliAccount.credits != null">{{ cliAccount.credits == null ? cliLabel('creditsUnknown') : t(`settings.${activeVideoCli}.credits`, { n: cliAccount.credits }) }}</strong>
+              <span v-if="activeVideoCli === 'libtv' && cliAccount.canvas_ready" class="tag tag-success">{{ cliAccount.canvas_name || cliLabel('canvasReady') }}</span>
+            </div>
+            <p v-if="cliError" class="field-hint" role="alert">{{ cliError }}</p>
+            <p v-else-if="cliBusy && !cliAccount" class="field-hint" role="status">{{ cliLabel('checking') }}</p>
+            <p v-else-if="cliAccount?.available === false" class="field-hint" role="status">{{ cliAccount.message || cliLabel('unavailable') }}</p>
+            <p v-else-if="cliPending" class="field-hint" role="status">{{ cliLabel(activeVideoCli === 'libtv' && (cliAccount?.authenticated || cliAccount?.canvas_preparing) ? 'preparingCanvas' : 'completeAuthorization') }}</p>
+            <p v-else-if="activeVideoCli === 'libtv' && cliAccount?.can_authorize === false && !cliAccount.can_authorize_phone && !cliAccount.authenticated" class="field-hint" role="status">{{ cliAccount.message || cliLabel('authorizationUnavailable') }}</p>
+            <p v-else-if="activeVideoCli === 'libtv' && cliAccount?.authenticated && cliAccount.canvas_ready === false" class="field-hint" role="status">{{ cliAccount.message || cliLabel('canvasUnavailable') }}</p>
+            <p v-else-if="cliJustDisconnected && !cliAccount?.authenticated && !cliPhoneOpen" class="field-hint" role="status">
+              {{ t(cliAccount?.can_authorize_phone ? 'settings.cliAccount.reconnectPhone' : 'settings.cliAccount.reconnectWeb') }}
+              <a v-if="!cliAccount?.can_authorize_phone" class="video-cli-switch-link" :href="cliWebsites[activeVideoCli]" target="_blank" rel="noopener noreferrer">{{ t('settings.cliAccount.openWebsite') }}</a>
+            </p>
+            <div class="video-cli-account-actions">
+              <a v-if="cliVerificationUrl && !cfgOperationPending" class="btn btn-sm" :href="cliVerificationUrl" target="_blank" rel="noopener noreferrer">{{ cliLabel('openAuthorization') }}</a>
+              <button v-else-if="activeVideoCli === 'jimeng' && cliAccount?.available && !cliAccount.authenticated && cliPending" type="button" class="btn btn-sm" :disabled="cliBusy || cfgOperationPending" @click="authorizeCli">{{ cliLabel('openAuthorization') }}</button>
+              <button v-else-if="activeVideoCli === 'libtv' && cliAccount?.available && cliAccount.can_authorize_phone && !cliAccount.authenticated && !cliPending && !cliPhoneOpen" ref="cliConnectButton" type="button" class="btn btn-sm" :disabled="cliBusy" @click="startCliPhone">{{ cliLabel('connect') }}</button>
+              <button v-else-if="cliAccount?.available && cliAccount.can_authorize !== false && !cliAccount.authenticated && !cliPending && !cliPhoneOpen" ref="cliConnectButton" type="button" class="btn btn-sm" :disabled="cliBusy" @click="authorizeCli">{{ cliLabel('connect') }}</button>
+              <button v-else-if="activeVideoCli === 'libtv' && cliAccount?.authenticated && cliAccount.canvas_ready === false && (cliAccount.can_prepare_canvas ?? cliAccount.can_authorize !== false) && !cliPending" type="button" class="btn btn-sm" :disabled="cliBusy" @click="prepareCliCanvas">{{ cliLabel('prepareCanvas') }}</button>
+              <button type="button" class="btn btn-ghost btn-sm" :disabled="cliBusy || cliPhoneBusy || cfgOperationPending" @click="refreshCliAccount">{{ cliLabel('refresh') }}</button>
+              <button v-if="canDisconnectCli" type="button" class="btn btn-danger btn-sm" :disabled="cliBusy || cfgOperationPending" @click="cliDisconnectConfirm = true">{{ t(cliAccount?.authenticated ? 'settings.cliAccount.disconnect' : 'settings.cliAccount.cancelAuthorization') }}</button>
+            </div>
+            <div v-if="cliPhoneOpen" class="video-cli-phone" role="group" aria-labelledby="libtv-phone-title" :aria-busy="cliPhoneBusy">
+              <span id="libtv-phone-title" class="field-label">{{ t('settings.libtv.phoneTitle') }}</span>
+              <p class="field-hint">{{ t('settings.libtv.phoneAccountHint') }}</p>
+              <template v-if="cliPhoneChallenge">
+                <p class="field-hint" role="status">{{ t('settings.libtv.phoneSent', { phone: cliMaskedPhone }) }}</p>
+                <label class="field">
+                  <span class="field-label">{{ t('settings.libtv.phoneCode') }}</span>
+                  <input ref="libtvPhoneInput" v-model="cliPhoneCode" class="input" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6"
+                    :disabled="cliPhoneBusy || cliPhoneExpired" :aria-invalid="!!cliPhoneError" :aria-describedby="cliPhoneError || cliPhoneExpired ? 'libtv-phone-error' : undefined"
+                    @keydown.enter.prevent="verifyCliPhone" />
+                </label>
+                <div class="video-cli-account-actions">
+                  <button type="button" class="btn btn-sm" :disabled="cliPhoneBusy || cliPhoneExpired" @click="verifyCliPhone">{{ t('settings.libtv.phoneVerify') }}</button>
+                  <button type="button" class="btn btn-ghost btn-sm" :disabled="cliPhoneBusy" @click="sendCliPhone">{{ t('settings.libtv.phoneResend') }}</button>
+                  <button type="button" class="btn btn-ghost btn-sm" :disabled="cliPhoneBusy" @click="changeCliPhone">{{ t('settings.libtv.phoneChange') }}</button>
+                  <button type="button" class="btn btn-ghost btn-sm" @click="cancelLibTVPhone">{{ t('common.cancel') }}</button>
+                </div>
+              </template>
+              <template v-else>
+                <label class="field">
+                  <span class="field-label">{{ t('settings.libtv.phoneNumber') }}</span>
+                  <input ref="libtvPhoneInput" v-model="cliPhoneNumber" class="input" type="tel" inputmode="numeric" autocomplete="tel-national" maxlength="11"
+                    :disabled="cliPhoneBusy" :aria-invalid="!!cliPhoneError" :aria-describedby="cliPhoneError ? 'libtv-phone-error' : undefined"
+                    @keydown.enter.prevent="sendCliPhone" />
+                </label>
+                <div class="video-cli-account-actions">
+                  <button type="button" class="btn btn-sm" :disabled="cliPhoneBusy" @click="sendCliPhone">{{ t('settings.libtv.phoneSend') }}</button>
+                  <button type="button" class="btn btn-ghost btn-sm" @click="cancelLibTVPhone">{{ t('common.cancel') }}</button>
+                </div>
+              </template>
+              <p v-if="cliPhoneError" id="libtv-phone-error" class="field-hint" role="alert">{{ cliPhoneError }}</p>
+              <p v-else-if="cliPhoneExpired" id="libtv-phone-error" class="field-hint" role="status">{{ t('settings.libtv.phoneCodeExpired') }}</p>
+            </div>
+          </section>
+          <template v-else>
+            <label class="field"><span class="field-label">API Key</span><input v-model="cfgForm.api_key" class="input" type="password" placeholder="sk-..." /></label>
+            <label class="field"><span class="field-label">Base URL</span><input v-model="cfgForm.base_url" class="input" placeholder="https://..." /></label>
+          </template>
           <template v-if="cfgForm.provider === 'comfyui'">
             <p class="field-hint">{{ t('settings.comfyui.connectionHint') }}</p>
             <div class="field">
@@ -412,11 +484,14 @@
                 :title="t('settings.cfg.modelChipHint')"
                 @click="pinModelTop(i)"
               >
-                {{ m }}<em v-if="i === 0">{{ t('common.default') }}</em>
-                <button type="button" class="model-chip-x" :title="t('common.delete')" @click.stop="removeModel(i)"><X :size="11" /></button>
+                {{ modelLabel(m) }}<em v-if="i === 0">{{ t('common.default') }}</em>
+                <button v-if="!isServerVideoCli(cfgForm.provider) || cfgForm.models.length > 1" type="button" class="model-chip-x" :title="t('common.delete')" @click.stop="removeModel(i)"><X :size="11" /></button>
               </span>
             </div>
-            <div class="model-add-row">
+            <div v-if="isServerVideoCli(cfgForm.provider)" class="preset-picker">
+              <button v-for="model in cliModelOptions" :key="model" type="button" class="btn btn-ghost btn-sm" @click="cfgForm.models.push(model)"><Plus :size="12" /> {{ modelLabel(model) }}</button>
+            </div>
+            <div v-else class="model-add-row">
               <input
                 v-model="modelInput" class="input" :placeholder="t('settings.cfg.modelPlaceholder')"
                 @keydown.enter.prevent="addModel"
@@ -424,7 +499,7 @@
               />
               <button type="button" class="btn btn-sm" :disabled="!modelInput.trim()" @click="addModel">{{ t('common.add') }}</button>
             </div>
-            <span class="field-hint">{{ t('settings.cfg.modelsHint') }}</span>
+            <span v-if="!isServerVideoCli(cfgForm.provider)" class="field-hint">{{ t('settings.cfg.modelsHint') }}</span>
           </div>
           <label v-if="cfgForm.service_type === 'text'" class="field">
             <span class="field-label">Temperature <span class="dim">({{ t('settings.cfg.tempHint') }})</span></span>
@@ -441,12 +516,12 @@
           </div>
         </div>
         <div class="dialog-foot">
-          <button type="button" class="btn btn-ghost test-draft-btn" :disabled="cfgTesting" @click="testDraftCfg">
+          <button v-if="cfgForm.provider !== 'jimeng'" type="button" class="btn btn-ghost test-draft-btn" :disabled="cfgTesting || cfgOperationPending" @click="testDraftCfg">
             <Loader2 v-if="cfgTesting" :size="12" class="animate-spin" />
             <span v-else>{{ t('settings.cfg.test') }}</span>
           </button>
-          <button type="button" class="btn" @click="cfgDialog = false">{{ t('common.cancel') }}</button>
-          <button type="submit" class="btn btn-primary">{{ t('common.save') }}</button>
+          <button type="button" class="btn" :disabled="cfgOperationPending" @click="closeCfgDialog">{{ t('common.cancel') }}</button>
+          <button type="submit" class="btn btn-primary" :disabled="cfgOperationPending">{{ t('common.save') }}</button>
         </div>
       </form>
     </div>
@@ -549,6 +624,24 @@
       </form>
     </div>
     <ConfirmDialog
+      :open="!!cfgToDelete"
+      :title="t('settings.cfg.deleteTitle')"
+      :message="cfgDeleteMessage"
+      :loading="deletingCfg"
+      @confirm="removeCfg(cfgToDelete)"
+      @cancel="!deletingCfg && (cfgToDelete = null)"
+    />
+    <ConfirmDialog
+      :open="cliDisconnectConfirm"
+      :title="cliDisconnectTitle"
+      :message="t(cliAccount?.authenticated ? 'settings.cliAccount.disconnectConfirm' : 'settings.cliAccount.cancelAuthorizationConfirm', { provider: cliProviderName(activeVideoCli) })"
+      :confirm-text="cliDisconnectTitle"
+      :loading-text="t('settings.cliAccount.disconnecting')"
+      :loading="cliDisconnecting"
+      @confirm="confirmCliDisconnect"
+      @cancel="!cliDisconnecting && (cliDisconnectConfirm = false)"
+    />
+    <ConfirmDialog
       :open="!!styleToDelete"
       :title="t('settings.styleDelete.title')"
       :message="t('settings.styleDelete.message', { name: styleToDelete?.name })"
@@ -568,25 +661,43 @@
 </template>
 
 <script setup>
-import { Plus, Pencil, Trash2, FileText, ChevronDown, Check, Loader2, Bot, Cpu, Palette, Star, HardDrive, Database, Languages, SunMoon, X } from 'lucide-vue-next'
+import { Plus, Pencil, Trash2, FileText, ChevronDown, Check, Loader2, Bot, Cpu, Palette, Star, HardDrive, Database, Languages, SunMoon, X, MessageSquare, Bell } from 'lucide-vue-next'
 import BaseSelect from '~/components/BaseSelect.vue'
+import FeedbackPanel from '~/components/FeedbackPanel.vue'
 import { toast } from 'vue-sonner'
 import { toastError } from '~/composables/useToast'
 import { useI18n } from 'vue-i18n'
-import { aiConfigAPI, promptAPI, skillsAPI, storageAPI, stylePresetAPI } from '~/composables/useApi'
+import { aiConfigAPI, api, promptAPI, releaseNotesAPI, skillsAPI, storageAPI, stylePresetAPI } from '~/composables/useApi'
 import { useDesktopBridge } from '~/composables/useDesktopBridge'
 import { useMigrateState } from '~/composables/useMigrateState'
+import { useVideoCliAccount } from '~/composables/useVideoCliAccount'
+import { useSiteSession } from '~/composables/useSiteSession'
 import { useTheme } from '~/composables/useTheme'
 import { providerIconUrl } from '~/composables/useProviderIcon'
 import { startTour, autoTour } from '~/composables/useTour'
+import { libtvVideoModels } from '../../../backend/src/services/libtv-video-models'
 
 const { t } = useI18n()
 
 const showBrandImage = ref(true)
 const props = defineProps({ initialTab: String, configId: Number, embedded: Boolean })
-const settingsTabs = ['ai', 'calls', 'general', 'styles', 'agents', 'storage']
-const initialSettingsTab = props.initialTab || useRoute().query.tab
+const route = useRoute()
+const settingsTabs = ['ai', 'calls', 'general', 'styles', 'agents', 'storage', 'feedback', 'release-notes']
+const initialSettingsTab = props.initialTab || route.query.tab
 const tab = ref(settingsTabs.includes(initialSettingsTab) ? initialSettingsTab : 'ai')
+const { account: siteAccount } = useSiteSession()
+const localPublishAccess = ref(null)
+const canPublishUpdates = computed(() => siteAccount.value?.administrator ?? (localPublishAccess.value === true))
+watch([tab, siteAccount, localPublishAccess], () => {
+  if (tab.value === 'release-notes' && (siteAccount.value || localPublishAccess.value !== null) && !canPublishUpdates.value) {
+    tab.value = 'ai'
+  }
+}, { immediate: true })
+onMounted(async () => {
+  if (siteAccount.value) return
+  try { localPublishAccess.value = (await releaseNotesAPI.access()).canPublish === true }
+  catch { localPublishAccess.value = false }
+})
 const baseTabs = computed(() => [
   { id: 'ai', label: t('settings.tabs.ai'), icon: Cpu },
   { id: 'calls', label: '接口调用记录', icon: FileText },
@@ -594,6 +705,8 @@ const baseTabs = computed(() => [
   { id: 'styles', label: t('settings.tabs.styles'), icon: Palette },
   { id: 'agents', label: t('settings.tabs.agents'), icon: Bot },
   { id: 'storage', label: t('settings.tabs.storage'), icon: HardDrive },
+  ...(canPublishUpdates.value ? [{ id: 'release-notes', label: t('settings.tabs.releaseNotes'), icon: Bell }] : []),
+  { id: 'feedback', label: t('settings.tabs.feedback'), icon: MessageSquare },
 ])
 
 // ===== AI Service Configs =====
@@ -602,8 +715,65 @@ const modelLabel = useModelLabel()
 const cfgDialog = ref(false)
 const cfgEditId = ref(null)
 const cfgTesting = ref(false)
+const cfgSaving = ref(false)
 const cfgTestResult = ref(null)
+const cfgToDelete = ref(null)
+const deletingCfg = ref(false)
 const cfgForm = reactive({ name: '', provider: '', api_key: '', base_url: '', models: [], service_type: 'text', priority: 0, temperature: '', comfy_timeout: 120, comfy_resolution: 'auto', comfy_width: 1024, comfy_height: 1024, comfy_json: '' })
+const isServerVideoCli = provider => provider === 'jimeng' || provider === 'libtv'
+const activeVideoCli = computed(() => cfgDialog.value && isServerVideoCli(cfgForm.provider) ? cfgForm.provider : undefined)
+const {
+  account: cliAccount, busy: cliBusy, pending: cliPending, error: cliError, verificationUrl: cliVerificationUrl,
+  phone: cliPhone, refresh: refreshCliAccount, authorize: authorizeCli, prepare: prepareCliCanvas,
+  canDisconnect: canDisconnectCli, disconnecting: cliDisconnecting, disconnect: disconnectCli,
+} = useVideoCliAccount(activeVideoCli, t)
+const {
+  open: cliPhoneOpen, number: cliPhoneNumber, code: cliPhoneCode, challenge: cliPhoneChallenge,
+  busy: cliPhoneBusy, error: cliPhoneError, expired: cliPhoneExpired, masked: cliMaskedPhone,
+  start: startCliPhone, close: closeCliPhone, change: changeCliPhone, send: sendCliPhone, verify: verifyCliPhone,
+} = cliPhone
+const libtvPhoneInput = ref(null)
+const cliConnectButton = ref(null)
+const cliDisconnectConfirm = ref(false)
+const cliJustDisconnected = ref(false)
+const cfgOperationPending = computed(() => cfgSaving.value || cliDisconnecting.value || cliDisconnectConfirm.value)
+const cliProviderName = provider => provider === 'jimeng' ? t('settings.jimeng.provider') : 'LibTV'
+const cliWebsites = { jimeng: 'https://jimeng.jianying.com/', libtv: 'https://www.liblib.tv/zh' }
+const cliDisconnectTitle = computed(() => t(cliAccount.value?.authenticated ? 'settings.cliAccount.disconnect' : 'settings.cliAccount.cancelAuthorization'))
+const cfgDeleteMessage = computed(() => {
+  const config = cfgToDelete.value
+  if (!config) return ''
+  const name = config.name || `${config.provider}-${config.service_type}`
+  const multiple = cfgs.value.some(item => item.id !== config.id && item.service_type === 'video' && item.provider === config.provider)
+  return t(multiple ? 'settings.cfg.deleteMessage' : 'settings.cfg.deleteLastCli', { name, provider: cliProviderName(config.provider) })
+})
+watch(activeVideoCli, () => {
+  cliDisconnectConfirm.value = false
+  cliJustDisconnected.value = false
+})
+watch([cliPhoneOpen, cliPhoneChallenge], ([open]) => {
+  if (open) libtvPhoneInput.value?.focus()
+}, { flush: 'post' })
+function cancelLibTVPhone() {
+  closeCliPhone()
+  void nextTick(() => cliConnectButton.value?.focus())
+}
+async function confirmCliDisconnect() {
+  if (!cliDisconnectConfirm.value || cliBusy.value || cliPhoneBusy.value || cfgSaving.value) return
+  const disconnected = await disconnectCli()
+  cliDisconnectConfirm.value = false
+  if (!disconnected) return
+  cliJustDisconnected.value = true
+  void nextTick(() => cliConnectButton.value?.focus())
+}
+function closeCfgDialog() {
+  if (!cfgOperationPending.value) cfgDialog.value = false
+}
+const cliLabel = key => t(`settings.${activeVideoCli.value}.${key}`)
+const cliModelOptions = computed(() => {
+  const models = cfgForm.provider === 'libtv' ? libtvVideoModels : cliAccount.value?.models
+  return Array.isArray(models) ? models.filter(model => !cfgForm.models.includes(model)) : []
+})
 const comfyConfigError = ref('')
 const comfyResolutionOptions = computed(() => [
   { value: 'auto', label: t('settings.comfyui.autoSize') },
@@ -681,7 +851,12 @@ const serviceTypes = computed(() => [
   { type: 'video', label: t('common.serviceType.video') },
 ])
 const providers = ['gemini', 'openai', 'volcengine', 'minimax', 'aliyun', 'comfyui']
-const providerSelectOptions = computed(() => providers.filter(p => p !== 'comfyui' || cfgForm.service_type !== 'text').map(p => ({ label: p === 'comfyui' ? 'ComfyUI' : p, value: p })))
+const providerSelectOptions = computed(() => {
+  const available = providers.filter(provider => provider !== 'comfyui' || cfgForm.service_type !== 'text')
+    .map(provider => ({ label: provider === 'comfyui' ? 'ComfyUI' : provider, value: provider }))
+  if (cfgForm.service_type === 'video') available.push({ label: 'AICost', value: 'aicost' }, { label: '即梦积分', value: 'jimeng' }, { label: 'LibTV', value: 'libtv' })
+  return available
+})
 const serviceMeta = computed(() => ({
   text: { label: t('common.serviceType.text'), desc: t('settings.ai.meta.text') },
   image: { label: t('common.serviceType.image'), desc: t('settings.ai.meta.image') },
@@ -700,9 +875,12 @@ const providerPresets = {
   video: {
     comfyui: { label: 'ComfyUI · Work-Fisher H3', baseUrl: 'http://127.0.0.1:8188', models: ['wf-minimax-h3'] },
     aliyun: { label: '阿里云百炼 Wan 3.0', baseUrl: 'https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com', models: ['wan3.0-video', 'wan3.0-video-prime'] },
-    volcengine: { label: 'Seedance 2.0 官方', baseUrl: 'https://ark.cn-beijing.volces.com', models: ['doubao-seedance-2-0-mini-260615', 'doubao-seedance-2-0-fast-260128', 'doubao-seedance-2-0-260128'] },
+    volcengine: { label: 'Seedance 2.0 / 2.5 官方', baseUrl: 'https://ark.cn-beijing.volces.com', models: ['doubao-seedance-2-0-mini-260615', 'doubao-seedance-2-0-fast-260128', 'doubao-seedance-2-0-260128', 'doubao-seedance-2-5-260628', 'doubao-seedance-2-5-flash-261115'] },
     agentPlan: { provider: 'volcengine', label: '火山 Agent Plan', baseUrl: 'https://ark.cn-beijing.volces.com/api/plan/v3', models: ['doubao-seedance-2.0-mini', 'doubao-seedance-2.0-fast', 'doubao-seedance-2.0'] },
     minimax: { label: 'MiniMax H3 官方', baseUrl: 'https://api.minimaxi.com', models: ['MiniMax-H3'] },
+    aicost: { label: 'AICost', baseUrl: 'https://www.aicost.me', models: [] },
+    jimeng: { label: '即梦积分 · 官方 CLI', baseUrl: '', models: ['jimeng-seedance-2.5'] },
+    libtv: { label: 'LibTV · 官方 CLI', baseUrl: '', models: libtvVideoModels },
   },
 }
 function byType(t) { return cfgs.value.filter(c => c.service_type === t) }
@@ -711,6 +889,16 @@ function fmtModel(m) { return Array.isArray(m) ? m.join(', ') : m || '—' }
 function presetsByType(type) {
   const group = providerPresets[type] || {}
   return Object.entries(group).map(([key, preset]) => ({ key, provider: key, ...preset }))
+}
+function selectCfgProvider(provider) {
+  if (cfgOperationPending.value || cfgForm.provider === provider) return
+  if (isServerVideoCli(provider)) {
+    applyProviderPreset('video', provider)
+    return
+  }
+  if (isServerVideoCli(cfgForm.provider)) cfgForm.models = []
+  cfgForm.provider = provider
+  cfgTestResult.value = null
 }
 function applyProviderPreset(type, key) {
   const preset = providerPresets[type]?.[key]
@@ -726,7 +914,7 @@ function applyProviderPreset(type, key) {
   cfgForm.base_url = preset.baseUrl
   cfgForm.models = [...preset.models]
   // 配置名持久化进 DB：用 provider 英文 + 服务类型英文标识拼
-  cfgForm.name = `${preset.label}-${type}`
+  cfgForm.name = key === 'jimeng' ? t('settings.jimeng.provider') : key === 'libtv' ? 'LibTV' : `${preset.label}-${type}`
 }
 
 async function loadCfgs() { try { cfgs.value = await aiConfigAPI.list() } catch (e) { toastError(e) } }
@@ -734,7 +922,8 @@ async function loadCfgs() { try { cfgs.value = await aiConfigAPI.list() } catch 
 // ===== 默认模型选择 =====
 // 默认解析规则与工作台/后端一致：启用配置中优先级最高者的模型列表首位
 function defaultModelOf(type) {
-  const active = cfgs.value.filter(c => c.service_type === type && c.is_active)
+  const active = cfgs.value.filter(c => c.service_type === type && c.is_active
+    && (c.provider !== 'aicost' || c.model?.length))
   if (!active.length) return null
   const top = [...active].sort((a, b) => (b.priority || 0) - (a.priority || 0))[0]
   const first = Array.isArray(top.model) ? top.model[0] : null
@@ -764,7 +953,27 @@ async function setDefaultModel(type, c, m) {
   }
 }
 async function toggleCfg(c) { await aiConfigAPI.update(c.id, { is_active: !c.is_active }); loadCfgs() }
-async function delCfg(id) { await aiConfigAPI.del(id); toast.success(t('index.deleted')); loadCfgs() }
+function requestCfgDeletion(config) {
+  if (deletingCfg.value) return
+  if (config.service_type === 'video' && isServerVideoCli(config.provider)) cfgToDelete.value = config
+  else void removeCfg(config)
+}
+async function removeCfg(config) {
+  if (!config || deletingCfg.value) return
+  deletingCfg.value = true
+  try {
+    await aiConfigAPI.del(config.id)
+    cfgs.value = cfgs.value.filter(item => item.id !== config.id)
+    cfgToDelete.value = null
+    toast.success(t('index.deleted'))
+    await loadCfgs()
+  } catch (error) {
+    cfgToDelete.value = null
+    toastError(error)
+  } finally {
+    deletingCfg.value = false
+  }
+}
 function startAddCfg(t) {
   cfgEditId.value = null
   cfgTestResult.value = null
@@ -832,21 +1041,36 @@ async function testExistingCfg(c) {
   })
 }
 async function saveCfg() {
+  if (cfgOperationPending.value) return
   if (!cfgForm.provider) { toast.warning(t('settings.cfg.providerRequired')); return }
   const models = [...cfgForm.models]
   const temperature = cfgForm.temperature === '' || cfgForm.temperature === null ? null : Number(cfgForm.temperature)
   if (temperature !== null && (!Number.isFinite(temperature) || temperature < 0 || temperature > 2)) {
     toast.warning(t('settings.cfg.tempInvalid')); return
   }
+  cfgSaving.value = true
   try {
     const comfyui = comfyOptions()
     comfyConfigError.value = ''
-    if (cfgEditId.value) await aiConfigAPI.update(cfgEditId.value, { name: cfgForm.name, provider: cfgForm.provider, api_key: cfgForm.api_key, base_url: cfgForm.base_url, model: models, priority: cfgForm.priority, temperature, comfyui })
-    else await aiConfigAPI.create({ service_type: cfgForm.service_type, provider: cfgForm.provider, name: cfgForm.name || `${cfgForm.provider}-${cfgForm.service_type}`, api_key: cfgForm.api_key, base_url: cfgForm.base_url, model: models, priority: cfgForm.priority, temperature, comfyui })
+    const isCli = isServerVideoCli(cfgForm.provider)
+    const payload = {
+      name: cfgForm.name,
+      provider: cfgForm.provider,
+      api_key: isCli ? '' : cfgForm.api_key,
+      base_url: isCli ? '' : cfgForm.base_url,
+      model: models,
+      priority: cfgForm.priority,
+      temperature,
+      comfyui,
+    }
+    if (cfgEditId.value) await aiConfigAPI.update(cfgEditId.value, payload)
+    else await aiConfigAPI.create({ ...payload, service_type: cfgForm.service_type, name: cfgForm.name || `${cfgForm.provider}-${cfgForm.service_type}` })
     cfgDialog.value = false; toast.success(t('common.saved')); loadCfgs()
   } catch (e) {
     if (cfgForm.provider === 'comfyui') comfyConfigError.value = e.message
     toastError(e)
+  } finally {
+    cfgSaving.value = false
   }
 }
 
@@ -1549,6 +1773,15 @@ onBeforeUnmount(stopUsagePoll)
   color: var(--text-2);
   word-break: break-all;
 }
+.video-cli-account-details,
+.video-cli-account-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.video-cli-account-details { font-size: 12px; color: var(--text-2); }
+.video-cli-account-details strong { color: var(--text-0); }
+.video-cli-account-actions a { text-decoration: none; }
+.video-cli-switch-link { color: var(--accent); text-decoration: underline; }
+.video-cli-phone { display: grid; gap: 9px; padding-top: 10px; border-top: 1px solid var(--border); }
+.video-cli-phone .field { max-width: 320px; }
+.video-cli-phone [role="alert"] { color: var(--error); }
 
 /* 存储位置 */
 .storage-breakdown {

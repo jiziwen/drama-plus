@@ -1,11 +1,12 @@
 const BASE = '/api/v1'
 
-async function req<T = any>(method: string, path: string, body?: any): Promise<T> {
-  const opts: RequestInit = { method, headers: { 'Content-Type': 'application/json' } }
-  if (body) opts.body = JSON.stringify(body)
+async function req<T = any>(method: string, path: string, body?: any, logBody = true): Promise<T> {
+  const opts: RequestInit = body instanceof FormData
+    ? { method, body }
+    : { method, headers: { 'Content-Type': 'application/json' }, ...(body && { body: JSON.stringify(body) }) }
 
   const start = performance.now()
-  console.log(`%c[API] %c${method} %c${path}`, 'color:#888', 'color:#4fc3f7;font-weight:bold', 'color:#ccc', body || '')
+  console.log(`%c[API] %c${method} %c${path}`, 'color:#888', 'color:#4fc3f7;font-weight:bold', 'color:#ccc', logBody ? body || '' : '')
 
   try {
     const resp = await fetch(`${BASE}${path}`, opts)
@@ -13,8 +14,8 @@ async function req<T = any>(method: string, path: string, body?: any): Promise<T
     const ms = Math.round(performance.now() - start)
 
     if (!resp.ok || (json.code && json.code >= 400)) {
-      console.log(`%c[API] %c${method} ${path} %c${resp.status} %c${ms}ms`, 'color:#888', 'color:#ef5350', 'color:#ef5350;font-weight:bold', 'color:#888', json.message || '')
-      throw new Error(json.message || `${resp.status}`)
+      console.log(`%c[API] %c${method} ${path} %c${resp.status} %c${ms}ms`, 'color:#888', 'color:#ef5350', 'color:#ef5350;font-weight:bold', 'color:#888', logBody ? json.message || '' : '')
+      throw Object.assign(new Error(json.message || `${resp.status}`), { status: resp.status })
     }
 
     console.log(`%c[API] %c${method} ${path} %c${resp.status} %c${ms}ms`, 'color:#888', 'color:#66bb6a', 'color:#66bb6a;font-weight:bold', 'color:#888')
@@ -22,7 +23,7 @@ async function req<T = any>(method: string, path: string, body?: any): Promise<T
   } catch (err: any) {
     if (!err.message?.match(/^\d{3}$/)) {
       const ms = Math.round(performance.now() - start)
-      console.log(`%c[API] %c${method} ${path} %cERROR %c${ms}ms`, 'color:#888', 'color:#ef5350', 'color:#ef5350;font-weight:bold', 'color:#888', err.message)
+      console.log(`%c[API] %c${method} ${path} %cERROR %c${ms}ms`, 'color:#888', 'color:#ef5350', 'color:#ef5350;font-weight:bold', 'color:#888', logBody ? err.message : '')
     }
     throw err
   }
@@ -35,10 +36,64 @@ export const api = {
   del: <T = any>(p: string) => req<T>('DELETE', p),
 }
 
+export const libtvPhoneAPI = {
+  send: (phone: string) => req<{ challenge_id: string; expires_at: number }>(
+    'POST', '/libtv/auth/phone/send', { phone }, false,
+  ),
+  verify: <T>(challengeId: string, code: string) => req<T>(
+    'POST', '/libtv/auth/phone/verify', { challenge_id: challengeId, code }, false,
+  ),
+}
+
 export const apiCallLogAPI = {
   list: (query: URLSearchParams) => api.get(`/api-call-logs?${query}`),
   detail: (id: number, grouped = false) => api.get(`/api-call-logs/${id}?grouped=${grouped ? '1' : '0'}`),
 }
+
+export type FeedbackStatus = 'open' | 'in_progress' | 'resolved'
+
+export interface FeedbackEntry {
+  id: number
+  title: string
+  description: string
+  contact: string
+  pagePath: string
+  submittedBy: string
+  status: FeedbackStatus
+  operatorNote: string
+  revision: number
+  createdAt: string
+  screenshotCount: number
+}
+
+export const feedbackAPI = {
+  access: () => api.get<{ canManage: boolean }>('/settings/feedback/access'),
+  submit: (body: Pick<FeedbackEntry, 'title' | 'description' | 'contact' | 'pagePath'>, screenshots: readonly File[] = []) => {
+    if (!screenshots.length) return req<{ id: number }>('POST', '/settings/feedback', body, false)
+    const form = new FormData()
+    for (const [name, value] of Object.entries(body)) form.set(name, value)
+    for (const screenshot of screenshots) form.append('screenshots', screenshot)
+    return req<{ id: number }>('POST', '/settings/feedback', form, false)
+  },
+  screenshotUrl: (id: number, position: number) => `${BASE}/settings/feedback/${id}/screenshots/${position}`,
+  list: (params: URLSearchParams) => api.get<{ items: FeedbackEntry[]; total: number; pageSize: number }>(`/settings/feedback/manage?${params}`),
+  save: (id: number, body: Pick<FeedbackEntry, 'status' | 'operatorNote' | 'revision'>) => req<FeedbackEntry>('PUT', `/settings/feedback/manage/${id}`, body, false),
+}
+
+export interface ReleaseNote {
+  id: number
+  title: string
+  changes: string[]
+  publishedAt: string
+}
+
+export const releaseNotesAPI = {
+  list: () => api.get<{ items: ReleaseNote[] }>('/settings/release-notes'),
+  access: () => api.get<{ canPublish: boolean }>('/settings/release-notes/access'),
+  publish: (body: Pick<ReleaseNote, 'title' | 'changes'> & { requestId: string }) =>
+    req<ReleaseNote>('POST', '/settings/release-notes', body, false),
+}
+
 export const localRuntimeAPI = {
   status: () => api.get('/local-runtime'),
   configure: (enabled: boolean) => api.put('/local-runtime', { enabled }),

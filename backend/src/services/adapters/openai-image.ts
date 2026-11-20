@@ -1,7 +1,7 @@
 /**
- * OpenAI DALL-E 图片生成 Adapter
+ * OpenAI 图片生成 Adapter
  * 文生图端点: /v1/images/generations (注意 /v1 前缀)
- * 参考生图端点: /v1/images/edits (multipart/form-data, image[] 文件上传)
+ * 参考生图端点: /v1/images/edits （公网图片 URL 或 multipart 文件上传）
  * 响应格式: { data: [{ url: "..." }] } 或 { data: [{ b64_json: "..." }] }
  */
 import type {
@@ -18,6 +18,22 @@ import { parseDataUrl } from '../../utils/storage.js'
 export class OpenAIImageAdapter implements ImageProviderAdapter {
   provider = 'openai'
 
+  supportsReferenceImageUrls(config: AIConfig, model: string, url?: string): boolean {
+    try {
+      const host = new URL(config.baseUrl).hostname
+      if (host === 'api.openai.com') {
+        if (!/^gpt-image-\d|^chatgpt-image-latest$/u.test(model)) return false
+      } else if ((host !== 'aicost.me' && host !== 'www.aicost.me') || model !== 'gpt-image-mj') {
+        return false
+      }
+      if (!url) return true
+      const source = new URL(url)
+      return ['https:', 'http:'].includes(source.protocol) && !source.username && !source.password
+    } catch {
+      return false
+    }
+  }
+
   buildGenerateRequest(config: AIConfig, record: ImageGenerationRecord): ProviderRequest {
     const model = record.model || config.model || 'gpt-image-2'
     const isGptImage = model.startsWith('gpt-image-')
@@ -28,7 +44,7 @@ export class OpenAIImageAdapter implements ImageProviderAdapter {
       ? this.normalizeGptImageSize(record.size)
       : record.size || '1024x1024'
 
-    // 有参考图 → 走 edits（multipart 上传图片文件）；无参考图 → 纯文生图 generations
+    // 有参考图走 edits，无参考图走纯文生图 generations。
     const refs = this.parseReferenceImages(record.referenceImages)
     if (refs.length) {
       return this.buildEditsRequest(config, model, record.prompt, size, refs)
@@ -66,11 +82,6 @@ export class OpenAIImageAdapter implements ImageProviderAdapter {
     }
   }
 
-  /**
-   * /v1/images/edits：参考图以 multipart/form-data 的 image[] 文件上传。
-   * 参考图在 generation.ts 已归一化为 data URL（本地压缩 / 远程下载），
-   * 这里只做 base64 → Blob 的转换；multipart 边界由 fetch 自动设置，不要手填 Content-Type。
-   */
   private buildEditsRequest(
     config: AIConfig,
     model: string,
@@ -78,30 +89,39 @@ export class OpenAIImageAdapter implements ImageProviderAdapter {
     size: string,
     refs: string[],
   ): ProviderRequest {
+    const url = joinProviderUrl(config.baseUrl, '/v1', '/images/edits')
+    const headers = { 'Authorization': `Bearer ${config.apiKey}` }
+    if (refs.some(ref => this.supportsReferenceImageUrls(config, model, ref))) {
+      if (!refs.every(ref => this.supportsReferenceImageUrls(config, model, ref) || parseDataUrl(ref)?.mimeType.startsWith('image/'))) {
+        throw new Error('参考图片必须是可访问的 HTTP(S) URL 或图片 data URL')
+      }
+      return {
+        url,
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: { model, prompt: prompt || '', size, n: 1, images: refs.map(image_url => ({ image_url })) },
+      }
+    }
+
+    // fetch 生成 multipart 边界，兼容需要文件上传的网关和本地素材。
     const form = new FormData()
     form.append('model', model)
     form.append('prompt', prompt || '')
     form.append('size', size)
     form.append('n', '1')
 
-    let appended = 0
-    for (const ref of refs) {
+    for (const [index, ref] of refs.entries()) {
       const parsed = parseDataUrl(ref)
-      if (!parsed) continue
+      if (!parsed?.mimeType.startsWith('image/')) throw new Error('参考图片无法解析为可上传的文件')
       const buffer = Buffer.from(parsed.data, 'base64')
       const ext = parsed.mimeType === 'image/png' ? 'png' : parsed.mimeType === 'image/webp' ? 'webp' : 'jpg'
-      form.append('image[]', new Blob([buffer], { type: parsed.mimeType }), `reference-${++appended}.${ext}`)
-    }
-    if (!appended) {
-      throw new Error('参考图片无法解析为可上传的文件（仅支持 data URL 形式的图片）')
+      form.append('image[]', new Blob([buffer], { type: parsed.mimeType }), `reference-${index + 1}.${ext}`)
     }
 
     return {
-      url: joinProviderUrl(config.baseUrl, '/v1', '/images/edits'),
+      url,
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${config.apiKey}`,
-      },
+      headers,
       body: form,
     }
   }

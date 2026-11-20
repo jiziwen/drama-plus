@@ -7,6 +7,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { STORAGE_ROOT } from './paths.js'
 import { ffmpeg, checkFfmpegSuite } from './ffmpeg.js'
 import { downloadVideo } from '../services/video-download.js'
+import { writeStableTailFrame, type TailShotRange } from './video-tail-frame.js'
 
 /** 由视频相对路径推导海报帧路径：static/videos/x.mp4 → static/videos/x_poster.jpg */
 export function posterPathFor(relativePath: string): string {
@@ -24,7 +25,18 @@ function localVideoPath(source: string): { relative: string; absolute: string } 
   return { relative: `static/${rel.split(path.sep).join('/')}`, absolute }
 }
 
-async function hasJpeg(file: string): Promise<boolean> {
+/** Resolve a downloaded generation before handing its local path to a decoder. */
+export async function resolveStoredVideo(source: string) {
+  const local = localVideoPath(source)
+  if (!local?.relative.startsWith('static/videos/')) return null
+  const videos = path.join(await fs.realpath(STORAGE_ROOT), 'videos')
+  const input = await fs.realpath(local.absolute)
+  if (!input.startsWith(videos + path.sep)) return null
+  const stat = await fs.stat(input)
+  return stat.isFile() && stat.size > 0 ? { input, videos, stat } : null
+}
+
+export async function hasJpeg(file: string): Promise<boolean> {
   try {
     const bytes = await fs.readFile(file)
     return bytes.length > 4 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[bytes.length - 2] === 0xff && bytes[bytes.length - 1] === 0xd9
@@ -39,6 +51,42 @@ async function extractFrame(input: string, output: string, seek: number) {
     command.on('end', () => { clearTimeout(timer); resolve() })
       .on('error', error => { clearTimeout(timer); reject(error) }).run()
   })
+}
+
+/** Keep the real last picture when usable, otherwise recover the nearest
+ * stable picture within the previous segment's final shot. */
+export async function extractVideoTailFrame(source: string, range?: TailShotRange): Promise<string | null> {
+  try {
+    if (range && (!Number.isFinite(range.shotStartSeconds) || !Number.isFinite(range.shotEndSeconds) ||
+        range.shotStartSeconds < 0 || range.shotEndSeconds <= range.shotStartSeconds)) return null
+    const local = await resolveStoredVideo(source)
+    if (!local) return null
+    const { input, videos, stat } = local
+    const digest = createHash('sha256').update(JSON.stringify([
+      'stable-tail-v1', input, stat.ino, stat.size, stat.mtimeMs, range?.shotStartSeconds, range?.shotEndSeconds,
+    ])).digest('hex')
+    const name = `${digest}_tail.jpg`
+    const output = path.join(videos, name)
+    const relative = `/static/videos/${name}`
+    const pending = extracting.get(output)
+    if (pending) return pending
+
+    const operation = (async () => {
+      if (await hasJpeg(output)) return relative
+      if (!(await checkFfmpegSuite()).ffmpeg) return null
+      const folder = await fs.mkdtemp(path.join(videos, '.tail-'))
+      const temporary = path.join(folder, 'tail.jpg')
+      try {
+        if (!await writeStableTailFrame(input, folder, temporary, range) || !await hasJpeg(temporary)) return null
+        await fs.rename(temporary, output)
+        return relative
+      } finally {
+        await fs.rm(folder, { recursive: true, force: true }).catch(() => {})
+      }
+    })().catch(() => null).finally(() => { extracting.delete(output) })
+    extracting.set(output, operation)
+    return operation
+  } catch { return null }
 }
 
 /** Existing videos get their poster on demand. Source is always a stored task/shot URL. */

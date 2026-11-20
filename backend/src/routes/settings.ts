@@ -4,8 +4,12 @@
 import { Hono } from 'hono'
 import { getContentLanguage, setContentLanguage, getToursSeen, setToursSeen, CONTENT_LANGUAGES, type ContentLanguage } from '../services/app-settings.js'
 import { success, badRequest } from '../utils/response.js'
+import feedback from './feedback.js'
+import releaseNotes from './release-notes.js'
 
 const app = new Hono()
+app.route('/feedback', feedback)
+app.route('/release-notes', releaseNotes)
 
 // GET /content-language — 当前 AI 内容语言
 app.get('/content-language', async (c) => {

@@ -10,17 +10,30 @@ fi
 deploy_dir="${DRAMA_DEPLOY_DIR:-/opt/drama-plus}"
 image="drama-plus:$release_tag"
 docker compose version >/dev/null
-docker build --build-arg "HUOBAO_VERSION=$release_tag" -t "$image" "$repo_dir"
+app_image="$image"
+if [[ -f "$deploy_dir/.env" ]] && grep -Eq '^JIMENG_PRIVATE_ORIGIN=https://' "$deploy_dir/.env"; then
+  app_image="${image}-app"
+fi
+docker build --build-arg "HUOBAO_VERSION=$release_tag" -t "$app_image" "$repo_dir"
+if [[ "$app_image" != "$image" ]]; then
+  docker build --build-arg "DRAMA_PLUS_BASE_IMAGE=$app_image" \
+    -f "$repo_dir/docker/Dockerfile.jimeng" -t "$image" "$repo_dir"
+fi
 mkdir -p "$deploy_dir/data" "$deploy_dir/backups"
 if [[ -f "$deploy_dir/compose.yaml" ]] && ! cmp -s "$repo_dir/deploy/tencent-private/compose.yaml" "$deploy_dir/compose.yaml"; then
   cp "$deploy_dir/compose.yaml" "$deploy_dir/compose.previous.yaml"
 fi
 cp "$repo_dir/deploy/tencent-private/compose.yaml" "$deploy_dir/compose.yaml"
-if [[ -f "$deploy_dir/.env" ]]; then
-  cp "$deploy_dir/.env" "$deploy_dir/.env.previous"
-fi
 umask 077
-printf 'DRAMA_IMAGE=%s\n' "$image" > "$deploy_dir/.env"
+env_tmp=$(mktemp "$deploy_dir/.env.XXXXXX")
+trap 'rm -f -- "$env_tmp"' EXIT
+if [[ -f "$deploy_dir/.env" ]]; then
+  install -m 600 "$deploy_dir/.env" "$deploy_dir/.env.previous"
+  awk '!/^[[:space:]]*(export[[:space:]]+)?DRAMA_IMAGE[[:space:]]*=/' "$deploy_dir/.env" > "$env_tmp"
+fi
+printf 'DRAMA_IMAGE=%s\n' "$image" >> "$env_tmp"
+mv -- "$env_tmp" "$deploy_dir/.env"
+trap - EXIT
 cd "$deploy_dir"
 docker compose config --quiet
 docker compose up -d

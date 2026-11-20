@@ -248,24 +248,33 @@ test('single-shot screening overrides the selected merge and closes back into th
 
 test('all settings query tabs work, storage loads on first open, mounting only calls reads', async () => {
   const calls = []
+  const siteAccount = vue.ref(null)
+  let localCanPublish = true
   const apiGroup = name => new Proxy({}, { get(_object, method) {
     return async () => {
       calls.push([name, method])
-      if (!['list', 'get', 'info'].includes(method)) throw new Error(`Unexpected write/generation ${name}.${String(method)}`)
+      if (!['list', 'get', 'info', 'access'].includes(method)) throw new Error(`Unexpected write/generation ${name}.${String(method)}`)
       if (name === 'storageAPI') return { mode: 'server', usage: { total: 1 }, usageStale: false }
+      if (name === 'releaseNotesAPI') return { canPublish: localCanPublish }
       if (name === 'promptAPI' && method === 'get') return { name: '测试提示', system_prompt: '', model: '', is_default: true }
       return []
     }
   } })
   const imports = {
-    '~/components/BaseSelect.vue': {}, 'vue-sonner': { toast: { success() {} } },
+    '~/components/BaseSelect.vue': {}, '~/components/FeedbackPanel.vue': {}, 'vue-sonner': { toast: { success() {} } },
+    '../../../backend/src/services/libtv-video-models': { libtvVideoModels: [] },
+    '~/composables/useVideoCliAccount': { useVideoCliAccount: () => ({
+      account: vue.ref(null), busy: vue.ref(false), error: vue.ref(''), pending: vue.ref(false), verificationUrl: vue.ref(''),
+      phone: { open: vue.ref(false), challenge: vue.ref(undefined) },
+    }) },
+    '~/composables/useSiteSession': { useSiteSession: () => ({ account: siteAccount }) },
     '~/composables/useToast': { toastError(error) { throw error } }, 'vue-i18n': { useI18n: () => ({ t: key => key }) },
-    '~/composables/useApi': Object.fromEntries(['aiConfigAPI', 'promptAPI', 'skillsAPI', 'storageAPI', 'stylePresetAPI'].map(name => [name, apiGroup(name)])),
+    '~/composables/useApi': Object.fromEntries(['aiConfigAPI', 'promptAPI', 'releaseNotesAPI', 'skillsAPI', 'storageAPI', 'stylePresetAPI'].map(name => [name, apiGroup(name)])),
     '~/composables/useDesktopBridge': { useDesktopBridge: () => null }, '~/composables/useMigrateState': { useMigrateState: () => ({}) },
     '~/composables/useTheme': { useTheme: () => ({ themeMode: vue.ref('dark'), setThemeMode() {} }) },
     '~/composables/useProviderIcon': { providerIconUrl: () => '' }, '~/composables/useTour': { startTour() {}, autoTour() {} },
   }
-  for (const tab of ['ai', 'calls', 'general', 'styles', 'agents', 'storage']) {
+  for (const tab of ['ai', 'calls', 'general', 'styles', 'agents', 'storage', 'feedback', 'release-notes']) {
     const component = setupComponent('components/SettingsContent.vue', { embedded: true }, { imports, route: { query: { tab } } })
     assert.equal(component.model.tab.value, tab)
     if (tab === 'storage') {
@@ -278,12 +287,49 @@ test('all settings query tabs work, storage loads on first open, mounting only c
   await component.mount()
   assert.equal(component.model.storageInfo.value.usage.total, 1)
   assert.ok(calls.some(([name, method]) => name === 'storageAPI' && method === 'info'))
-  assert.ok(calls.every(([, method]) => ['list', 'get', 'info'].includes(method)))
+  assert.ok(calls.every(([, method]) => ['list', 'get', 'info', 'access'].includes(method)))
   component.destroy()
+
+  const openPublishTab = () => setupComponent('components/SettingsContent.vue', { embedded: true }, { imports, route: { query: { tab: 'release-notes' } } })
+  const hasPublishTab = instance => instance.model.baseTabs.value.some(item => item.id === 'release-notes')
+  const local = openPublishTab()
+  assert.equal(hasPublishTab(local), false)
+  await local.mount()
+  assert.equal(hasPublishTab(local), true)
+  assert.equal(local.model.tab.value, 'release-notes')
+  local.destroy()
+
+  localCanPublish = false
+  const localDenied = openPublishTab()
+  await localDenied.mount()
+  assert.equal(hasPublishTab(localDenied), false)
+  assert.equal(localDenied.model.tab.value, 'ai')
+  localDenied.destroy()
+
+  const fallbackRequests = calls.filter(([name]) => name === 'releaseNotesAPI').length
+  siteAccount.value = { username: 'member', administrator: false }
+  const member = openPublishTab()
+  await member.mount()
+  assert.equal(hasPublishTab(member), false)
+  assert.equal(member.model.tab.value, 'ai')
+  assert.ok(member.model.baseTabs.value.some(item => item.id === 'feedback'))
+  member.destroy()
+
+  siteAccount.value = { username: 'owner', administrator: true }
+  const owner = openPublishTab()
+  await owner.mount()
+  assert.equal(hasPublishTab(owner), true)
+  assert.equal(owner.model.tab.value, 'release-notes')
+  assert.equal(calls.filter(([name]) => name === 'releaseNotesAPI').length, fallbackRequests)
+  owner.destroy()
 })
 
 test('cinematic SFCs and their shared home template compile', () => {
-  for (const path of ['app.vue', 'pages/index.vue', 'layouts/cinematic.vue', 'components/CinematicProjectGallery.vue', 'components/CinematicScreening.vue', 'components/SettingsContent.vue']) {
+  for (const path of [
+    'app.vue', 'pages/index.vue', 'layouts/cinematic.vue', 'components/CinematicProjectGallery.vue',
+    'components/CinematicScreening.vue', 'components/SettingsContent.vue', 'components/ReleaseNotesSettings.vue',
+    'components/ReleaseNotesBell.vue',
+  ]) {
     const { descriptor, errors } = parse(read(path), { filename: path })
     assert.deepEqual(errors, [])
     const script = compileScript(descriptor, { id: path })

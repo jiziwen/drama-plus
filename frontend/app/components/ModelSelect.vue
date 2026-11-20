@@ -1,9 +1,9 @@
 <template>
   <div class="model-select">
     <span class="model-select-label">{{ label }}</span>
-    <AppMenu v-model:open="isOpen" :min-width="280">
+    <AppMenu v-model:open="isOpen" :min-width="280" :disabled="disabled">
       <template #trigger>
-        <button type="button" class="model-select-trigger" :class="{ open: isOpen }">
+        <button type="button" class="model-select-trigger" :class="{ open: isOpen }" :disabled="disabled">
           <img v-if="triggerIcon" :src="triggerIcon" class="model-select-icon" alt="" />
           <span v-else-if="currentOption?.provider" class="model-select-provider">{{ currentOption.provider }}</span>
           <span class="model-select-value">{{ currentLabel }}</span>
@@ -44,6 +44,7 @@ const props = defineProps({
   defaultLabel: { type: String, default: '' },      // 缺省回退 t('common.default')
   showConfig: { type: Boolean, default: false },    // 多配置时显示来源配置名
   hideDefault: { type: Boolean, default: false },   // 无「默认」语义的选择器（如分辨率）隐藏默认项
+  disabled: { type: Boolean, default: false },
 })
 const emit = defineEmits(['update:modelValue'])
 

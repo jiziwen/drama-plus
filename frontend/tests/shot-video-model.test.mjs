@@ -49,9 +49,12 @@ test('shot overrides are independent and inheritance follows toolbar changes', (
 })
 
 test('reference limits and prompt indices use the target shot even when another shot is selected', () => {
-  const { ctx } = setup()
+  const { ctx, configs } = setup()
   const local = { id: 1, video_model: 'wf-minimax-h3', video_config_id: 10 }
   const cloud = { id: 2, video_model: 'wan3.0-video', video_config_id: 20 }
+  const gateway = { id: 3, video_model: 'model-fixed-1440p', video_config_id: 30 }
+  configs.push({ id: 30, provider: 'aicost', name: 'gateway', is_active: true, model: [gateway.video_model] })
+  ctx.aicostVideoModelCapabilities = model => model === gateway.video_model ? { maxReferences: 5, resolutions: ['1440p'] } : null
   ctx.selectedSb.value = local
   ctx.getStoryboardScene = () => ({ location: 'scene', image_url: 'scene.png' })
   ctx.getStoryboardCharacters = () => Array.from({ length: 12 }, (_, i) => ({ name: `c${i}`, image_url: `c${i}.png` }))
@@ -60,10 +63,13 @@ test('reference limits and prompt indices use the target shot even when another 
   runInNewContext(section('function getShotReferenceIndexMap(', '// 将视频提示词里的'), ctx)
   assert.equal(ctx.getShotReferenceImages(local).length, 4)
   assert.equal(ctx.getShotReferenceImages(cloud).length, 10)
+  assert.equal(ctx.getShotReferenceImages(gateway).length, 5)
   assert.equal(ctx.getShotReferenceIndexMap(cloud).c8, 10)
+  assert.equal(ctx.getShotReferenceIndexMap(gateway).c3, 5)
   assert.equal(ctx.getShotReferenceIndexMap(local).c3, undefined)
   assert.equal(ctx.shotVideoResolutionLabel(local), '1024 × 576')
   assert.equal(ctx.shotVideoResolutionLabel(cloud), '1080P')
+  assert.equal(ctx.shotVideoResolutionLabel(gateway), '1440P')
 })
 
 test('saving a model updates only its shot and preserves all editing fields after switching selection', async () => {

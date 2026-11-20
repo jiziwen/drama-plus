@@ -1,9 +1,12 @@
 <template>
-  <div class="base-select">
+  <div class="base-select" :class="{ 'base-select-inspector': variant === 'inspector' }">
     <AppMenu v-model:open="isOpen" :disabled="disabled" block match-width :min-width="132" :max-height="380">
       <template #trigger>
-        <button :id="inputId || undefined" ref="triggerEl" type="button" class="base-select-trigger" :class="{ open: isOpen }" :disabled="disabled" :aria-label="ariaLabel || undefined" :aria-expanded="isOpen" aria-haspopup="menu" @keydown="onTriggerKeydown">
-          <span :class="selectedLabel ? '' : 'placeholder'" class="base-select-label" :title="selectedLabel || effectivePlaceholder">{{ selectedLabel || effectivePlaceholder }}</span>
+        <button :id="inputId || undefined" ref="triggerEl" type="button" class="base-select-trigger" :class="{ open: isOpen }" :disabled="disabled" :aria-label="ariaLabel || undefined" :aria-describedby="inspectorValueId" :aria-expanded="isOpen" aria-haspopup="menu" @keydown="onTriggerKeydown">
+          <span :id="inspectorValueId" :class="selectedLabel ? '' : 'placeholder'" class="base-select-label" :title="selectedLabel || effectivePlaceholder">
+            <slot v-if="selectedLabel" name="label" :option="selectedOption.source">{{ selectedLabel }}</slot>
+            <template v-else>{{ effectivePlaceholder }}</template>
+          </span>
           <ChevronDown :size="13" class="base-select-arrow" :class="{ open: isOpen }" />
         </button>
       </template>
@@ -21,7 +24,7 @@
       </div>
 
       <!-- Options -->
-      <div ref="optionsEl" class="base-select-options" @keydown="onOptionsKeydown">
+      <div ref="optionsEl" class="base-select-options" :class="{ 'base-select-options-inspector': variant === 'inspector' }" @keydown="onOptionsKeydown">
         <template v-if="flatOptions.length">
           <template v-for="(group, gi) in filteredGroups" :key="gi">
             <div v-if="group.label" class="app-menu-group-label">{{ group.label }}</div>
@@ -31,12 +34,19 @@
               type="button"
               class="app-menu-item"
               :class="{ selected: opt.value === modelValue, highlighted: highlightedIdx === getGlobalIdx(gi, oi) }"
-              role="menuitem"
+              :role="variant === 'inspector' ? 'menuitemradio' : 'menuitem'"
+              :aria-checked="variant === 'inspector' ? opt.value === modelValue : undefined"
               :disabled="opt.disabled"
               :tabindex="opt.disabled || (!searchable && highlightedIdx !== getGlobalIdx(gi, oi)) ? -1 : 0"
               @click="pick(opt)"
               @mousemove="!opt.disabled && (highlightedIdx = getGlobalIdx(gi, oi))"
-            >{{ opt.label }}</button>
+            >
+              <span v-if="variant === 'inspector'" class="base-select-inspector-option">
+                <slot name="label" :option="opt.source">{{ opt.label }}</slot>
+              </span>
+              <slot v-else name="label" :option="opt.source">{{ opt.label }}</slot>
+              <Check v-if="variant === 'inspector'" :size="12" class="app-menu-item-check" aria-hidden="true" />
+            </button>
           </template>
         </template>
         <div v-else class="base-select-empty">{{ t('components.baseSelect.noMatch') }}</div>
@@ -46,9 +56,9 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick, useId } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ChevronDown, Search } from 'lucide-vue-next'
+import { Check, ChevronDown, Search } from 'lucide-vue-next'
 
 const props = defineProps({
   modelValue: { type: [String, Number], default: '' },
@@ -58,11 +68,14 @@ const props = defineProps({
   ariaLabel: { type: String, default: '' },
   inputId: { type: String, default: '' },
   disabled: { type: Boolean, default: false },
+  variant: { type: String, default: 'default' },
 })
-const emit = defineEmits(['update:modelValue'])
+const emit = defineEmits(['update:modelValue', 'open'])
 
 const { t } = useI18n()
 const effectivePlaceholder = computed(() => props.placeholder || t('components.baseSelect.placeholder'))
+const valueId = useId()
+const inspectorValueId = computed(() => props.variant === 'inspector' && props.ariaLabel ? valueId : undefined)
 
 const isOpen = ref(false)
 const searchQuery = ref('')
@@ -72,13 +85,16 @@ const optionsEl = ref()
 const highlightedIdx = ref(-1)
 
 // Normalize options: support both flat list and grouped format
+function normalizeOption(option) {
+  return { label: String(option.label ?? option), value: option.value ?? option, disabled: !!option.disabled, source: option }
+}
 const normalizedGroups = computed(() => {
   if (!props.options.length) return []
   // Check if already grouped
   if (props.options[0]?.options) {
     return props.options.map(g => ({
       label: g.label || '',
-      options: g.options.map(o => ({ label: String(o.label ?? o), value: o.value ?? o, disabled: !!o.disabled })),
+      options: g.options.map(normalizeOption),
     }))
   }
   // Flat list with optional group property
@@ -86,7 +102,7 @@ const normalizedGroups = computed(() => {
   for (const o of props.options) {
     const label = o.group || ''
     if (!map.has(label)) map.set(label, [])
-    map.get(label).push({ label: String(o.label ?? o), value: o.value ?? o, disabled: !!o.disabled })
+    map.get(label).push(normalizeOption(o))
   }
   return Array.from(map.entries()).map(([label, options]) => ({ label, options }))
 })
@@ -112,13 +128,8 @@ function getGlobalIdx(gi, oi) {
   return idx + oi
 }
 
-const selectedLabel = computed(() => {
-  for (const g of normalizedGroups.value) {
-    const found = g.options.find(o => o.value === props.modelValue)
-    if (found) return found.label
-  }
-  return ''
-})
+const selectedOption = computed(() => normalizedGroups.value.flatMap(g => g.options).find(o => o.value === props.modelValue))
+const selectedLabel = computed(() => selectedOption.value?.label || '')
 
 function pick(opt) {
   if (props.disabled || opt.disabled) return
@@ -128,7 +139,7 @@ function pick(opt) {
 }
 
 function focusOption() {
-  optionsEl.value?.querySelectorAll('[role="menuitem"]')[highlightedIdx.value]?.focus()
+  optionsEl.value?.querySelectorAll('[role="menuitem"], [role="menuitemradio"]')[highlightedIdx.value]?.focus()
 }
 function onTriggerKeydown(event) {
   if (props.disabled) return
@@ -170,6 +181,7 @@ watch(searchQuery, () => { highlightedIdx.value = flatOptions.value.findIndex(op
 // 打开时初始化键盘高亮并聚焦搜索框（定位/关闭由 AppMenu 负责）
 watch(isOpen, async (val) => {
   if (val) {
+    emit('open')
     searchQuery.value = ''
     await nextTick()
     highlightedIdx.value = flatOptions.value.findIndex(o => o.value === props.modelValue && !o.disabled)
@@ -272,6 +284,49 @@ function onSearchKeydown(e) {
 }
 .base-select-arrow.open {
   transform: rotate(180deg);
+}
+
+.base-select-inspector .base-select-trigger {
+  min-height: 36px;
+  padding: 0 10px;
+  font-weight: 500;
+  color: var(--text-0);
+  background: var(--surface-input, var(--bg-input));
+  border-color: var(--border-strong);
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+.base-select-inspector .base-select-trigger:is(:hover, .open):not(:disabled) {
+  color: var(--text-0);
+  background: var(--surface-soft);
+  border-color: var(--accent);
+}
+
+.base-select-inspector .base-select-trigger:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--button-focus);
+}
+
+.base-select-options-inspector .app-menu-item {
+  min-height: 31px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.base-select-options-inspector .app-menu-item.selected {
+  color: var(--accent-text);
+  background: var(--accent-bg);
+}
+
+.base-select-options-inspector .app-menu-item:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.base-select-inspector-option {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 /* Search（Teleport 面板内的 slot 内容，随父作用域） */

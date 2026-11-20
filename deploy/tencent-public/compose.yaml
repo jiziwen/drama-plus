@@ -4,6 +4,9 @@ services:
     image: caddy:2.11.9-alpine
     # Linux server only; reaches the application bound to host 127.0.0.1:5679.
     network_mode: host
+    environment:
+      JIMENG_PRIVATE_PROXY_SECRET: ${JIMENG_PRIVATE_PROXY_SECRET:-}
+      DRAMA_SITE_SESSIONS: ${DRAMA_SITE_SESSIONS:-false}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./access.caddy:/etc/caddy/access.caddy:ro

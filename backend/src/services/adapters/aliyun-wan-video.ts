@@ -58,6 +58,10 @@ function cleanUrl(value?: string | null): string {
   return String(value || '').trim()
 }
 
+export function aliyunWanVideoPrompt(value?: string | null): string {
+  return cleanUrl(value).replace(/@图片(\d+)/g, '图$1')
+}
+
 function validateMediaUrl(type: WanMediaType, url: string) {
   const isWebUrl = /^https?:\/\//i.test(url)
   const isOssUrl = /^oss:\/\//i.test(url)
@@ -97,7 +101,7 @@ export class AliyunWanVideoAdapter implements VideoProviderAdapter {
     }
 
     // 官方对超过 20000 字符的部分自动截断；同时将项目内部 @图片N 标记转为官方的 图N 引用。
-    const prompt = cleanUrl(record.prompt).replace(/@图片(\d+)/g, '图$1').slice(0, PROMPT_MAX_CHARS)
+    const prompt = aliyunWanVideoPrompt(record.prompt).slice(0, PROMPT_MAX_CHARS)
 
     const refImages = parseUrlArray(record.referenceImageUrls)
     const refVideos = parseUrlArray(record.referenceVideoUrls)

@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { runInNewContext } from 'node:vm'
 
 const settingsPage = readFileSync(new URL('../app/components/SettingsContent.vue', import.meta.url), 'utf8')
 const useApi = readFileSync(new URL('../app/composables/useApi.ts', import.meta.url), 'utf8')
@@ -16,7 +17,7 @@ function providerPresetBlock(serviceType) {
   return settingsPage.slice(start, end)
 }
 
-test('settings page exposes official provider templates only', () => {
+test('settings page retains the supported provider templates', () => {
   assert.doesNotMatch(settingsPage, /provider:\s*'chatfire'/i)
   assert.doesNotMatch(settingsPage, /openrouter/i)
   assert.doesNotMatch(settingsPage, /huobaoPreset/i)
@@ -70,8 +71,9 @@ test('settings page offers official default model IDs', () => {
   assert.doesNotMatch(settingsPage, /speech-2\.8-hd/)
 })
 
-test('text and ComfyUI service configs expose the connection test button', () => {
-  assert.match(settingsPage, /v-if="st\.type === 'text' \|\| c\.provider === 'comfyui'" class="btn btn-ghost btn-sm" @click="testExistingCfg\(c\)">\{\{ t\('settings\.ai\.test'\) \}\}/)
+test('CLI video configs expose account details and text, ComfyUI and AICost offer a connection test', () => {
+  assert.match(settingsPage, /v-if="isServerVideoCli\(c\.provider\)" class="btn btn-ghost btn-sm" @click="startEditCfg\(c\)">\{\{ t\('settings\.jimeng\.viewAccount'\) \}\}/)
+  assert.match(settingsPage, /v-else-if="st\.type === 'text' \|\| \['comfyui', 'aicost'\]\.includes\(c\.provider\)" class="btn btn-ghost btn-sm" @click="testExistingCfg\(c\)">\{\{ t\('settings\.ai\.test'\) \}\}/)
 })
 
 test('settings page offers the supported official provider presets', () => {
@@ -83,4 +85,35 @@ test('settings page offers the supported official provider presets', () => {
   assert.match(providerPresetBlock('video'), /aliyun/)
   assert.doesNotMatch(providerPresetBlock('video'), /'vidu'/i)
   assert.doesNotMatch(settingsPage, /audio:\s*\{/)
+})
+
+test('AICost is offered only for video and its preset starts without models', () => {
+  const providers = settingsPage.slice(settingsPage.indexOf('const providers ='), settingsPage.indexOf('const serviceMeta ='))
+  const presets = settingsPage.slice(settingsPage.indexOf('const providerPresets ='), settingsPage.indexOf('function byType(t)'))
+  const applyPreset = settingsPage.slice(settingsPage.indexOf('function applyProviderPreset('), settingsPage.indexOf('async function loadCfgs('))
+  const defaultModel = settingsPage.slice(settingsPage.indexOf('function defaultModelOf('), settingsPage.indexOf('function isDefaultModel('))
+  const cfgForm = { models: ['previous-video-model'], service_type: 'video' }
+  const cfgs = { value: [
+    { id: 1, service_type: 'video', provider: 'aicost', model: [], is_active: true, priority: 5 },
+    { id: 2, service_type: 'video', provider: 'volcengine', model: ['previous-video-model'], is_active: true, priority: 1 },
+  ] }
+  const libtvVideoModels = ['star-video2.5-flash', 'star-video2.5-draft', 'star-video2.5']
+  const context = { cfgForm, cfgs, computed: fn => fn, cfgTestResult: { value: null }, comfyConfigError: { value: '' }, libtvVideoModels }
+  runInNewContext(`${providers}\n${presets}\n${applyPreset}\n${defaultModel}\nObject.assign(this, { providerSelectOptions, providerPresets, applyProviderPreset, defaultModelOf })`, context)
+  assert.equal(context.providerSelectOptions().find(option => option.value === 'aicost')?.label, 'AICost')
+  context.applyProviderPreset('video', 'aicost')
+  assert.equal(cfgForm.provider, 'aicost')
+  assert.equal(cfgForm.base_url, 'https://www.aicost.me')
+  assert.equal(cfgForm.models.length, 0)
+  assert.equal(context.defaultModelOf('video').configId, 2)
+  cfgs.value[0].model.push('user-entered-model')
+  assert.equal(context.defaultModelOf('video').model, 'user-entered-model')
+  context.applyProviderPreset('video', 'libtv')
+  assert.equal(cfgForm.base_url, '')
+  assert.deepEqual(Array.from(cfgForm.models), libtvVideoModels)
+  for (const type of ['text', 'image']) {
+    cfgForm.service_type = type
+    assert.ok(!context.providerSelectOptions().some(option => ['aicost', 'libtv'].includes(option.value)))
+    assert.equal(context.providerPresets[type].aicost, undefined)
+  }
 })

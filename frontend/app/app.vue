@@ -1,5 +1,5 @@
 <template>
-  <div :inert="settingsOpen || undefined"><NuxtLayout :name="isCinematic ? 'cinematic' : 'default'">
+  <div :inert="settingsOpen || undefined"><NuxtLayout :name="route.meta.layout === false ? false : isCinematic ? 'cinematic' : 'default'">
     <NuxtPage />
   </NuxtLayout></div>
   <Toaster position="top-right" :duration="3000" :theme="resolvedTheme" />
@@ -18,6 +18,7 @@ import { useTheme } from '~/composables/useTheme'
 import { localRuntimeAPI } from '~/composables/useApi'
 
 const { t } = useI18n()
+const route = useRoute()
 const { resolvedTheme } = useTheme()
 const { isOpen: settingsOpen } = useSettingsPanel()
 const { isCinematic } = useStudioInterface()
@@ -30,7 +31,7 @@ const bridge = useDesktopBridge()
 const { state, begin, update, end } = useMigrateState()
 
 onMounted(() => {
-  void localRuntimeAPI.ensureComfyui().catch(() => {})
+  if (route.meta.layout !== false) void localRuntimeAPI.ensureComfyui().catch(() => {})
   if (!bridge) return
   bridge.onMigrateProgress((p) => {
     if (p.phase === 'done') {

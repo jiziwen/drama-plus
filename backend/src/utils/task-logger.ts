@@ -58,9 +58,14 @@ export function redactUrl(rawUrl: string) {
   }
 }
 
+const binaryDataUrl = /^data:[^;,]+;base64,/i
+
 function sanitizeValue(value: unknown): unknown {
   if (value == null) return value
-  if (typeof value === 'string') return truncateString(value)
+  if (typeof value === 'string') {
+    if (/^https?:\/\/\S*\/api\/v1\/reference-media\//iu.test(value)) return truncateString(redactUrl(value))
+    return binaryDataUrl.test(value) ? `[二进制编码已省略，${value.length} 字符]` : truncateString(value)
+  }
   if (typeof value === 'number' || typeof value === 'boolean') return value
 
   if (Array.isArray(value)) {
@@ -74,6 +79,11 @@ function sanitizeValue(value: unknown): unknown {
       if (['authorization', 'api_key', 'apikey', 'apiKey', 'token', 'access_token'].includes(key) ||
         lower.includes('authorization') || lower.includes('token') || lower.includes('apikey') || lower.includes('api_key')) {
         out[key] = '***'
+        continue
+      }
+
+      if (typeof raw === 'string' && binaryDataUrl.test(raw)) {
+        out[key] = sanitizeValue(raw)
         continue
       }
 

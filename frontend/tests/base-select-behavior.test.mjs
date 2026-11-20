@@ -10,7 +10,7 @@ function setup(options, value = '') {
   const context = {
     defineProps: () => props, defineEmits: () => (name, value) => events.push([name, value]),
     ref: value => ({ value }), computed: get => ({ get value() { return get() } }),
-    watch() {}, nextTick: async callback => callback?.(), useI18n: () => ({ t: value => value }),
+    watch() {}, nextTick: async callback => callback?.(), useId: () => 'test-select-value', useI18n: () => ({ t: value => value }),
   }
   runInNewContext(script + '\nglobalThis.select = { pick, moveHighlight, onTriggerKeydown, onSearchKeydown, onOptionsKeydown, triggerEl, getGlobalIdx, searchQuery, highlightedIdx, normalizedGroups, selectedLabel, isOpen }', context)
   return { ...context.select, props, events }

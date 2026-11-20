@@ -1,4 +1,5 @@
 import 'dotenv/config'
+import { config as loadEnv } from 'dotenv'
 import { serve } from '@hono/node-server'
 import { serveStatic } from '@hono/node-server/serve-static'
 import { Hono } from 'hono'
@@ -24,12 +25,23 @@ import settings from './routes/settings.js'
 import storage from './routes/storage.js'
 import apiCallLogs from './routes/apiCallLogs.js'
 import localRuntime from './routes/localRuntime.js'
+import scriptVideo from './routes/script-video.js'
+import jimeng from './routes/jimeng.js'
+import libtv from './routes/libtv.js'
+import siteSession, { requireLocalSiteSession } from './routes/site-session.js'
 import { requestLogger, errorHandler } from './middleware/logger.js'
 import { resumeInterruptedTasks } from './services/generation.js'
+import { SIGNED_REFERENCE_MEDIA_PATH, signedReferenceMediaRoutes } from './services/signed-reference-media.js'
 import { DATA_ROOT } from './utils/paths.js'
+import { localSiteCredentials } from './utils/private-access.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const projectRoot = path.resolve(__dirname, '../..')
+
+if (process.env.NODE_ENV !== 'production' && process.env.HUOBAO_DESKTOP !== '1') {
+  loadEnv({ path: path.join(__dirname, '..', '.env.local'), quiet: true })
+}
+const localSiteLogin = !!localSiteCredentials()
 
 const app = new Hono()
 
@@ -50,6 +62,9 @@ app.get('/api/v1/health', (c) => c.json({
 
 // API routes
 const api = new Hono()
+api.route('/site-session', siteSession)
+api.route(SIGNED_REFERENCE_MEDIA_PATH, signedReferenceMediaRoutes)
+api.use('*', requireLocalSiteSession)
 api.route('/dramas', dramas)
 api.route('/episodes', episodes)
 api.route('/storyboards', storyboards)
@@ -69,14 +84,17 @@ api.route('/storage', storage)
 api.route('/settings', settings)
 api.route('/api-call-logs', apiCallLogs)
 api.route('/local-runtime', localRuntime)
+api.route('/script-video', scriptVideo)
+api.route('/jimeng', jimeng)
+api.route('/libtv', libtv)
 
 app.route('/api/v1', api)
 
 // Serve static files (storage)
 // 生成的图片/视频按 uuid 命名、内容不变，标记为 immutable 让浏览器长缓存
-app.use('/static/*', async (c, next) => {
+app.use('/static/*', requireLocalSiteSession, async (c, next) => {
   await next()
-  if (c.res.ok) c.header('Cache-Control', 'public, max-age=31536000, immutable')
+  if (c.res.ok) c.header('Cache-Control', localSiteLogin ? 'private, no-store' : 'public, max-age=31536000, immutable')
 })
 app.use('/static/*', serveStatic({ root: DATA_ROOT }))
 
@@ -90,4 +108,4 @@ console.log(`🚀 Huobao Drama TS server on http://localhost:${port}`)
 
 await resumeInterruptedTasks()
 
-serve({ fetch: app.fetch, port })
+serve({ fetch: app.fetch, port, ...(localSiteLogin ? { hostname: '127.0.0.1' } : {}) })

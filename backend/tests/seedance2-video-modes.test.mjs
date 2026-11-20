@@ -5,35 +5,14 @@ import assert from 'node:assert/strict'
 const root = new URL('..', import.meta.url)
 const read = (path) => readFileSync(new URL(path, root), 'utf8')
 
-test('volcengine video adapter only supports Seedance 2.0 models and reference mode only', () => {
+test('volcengine adapter uses the model-specific Seedance reference-generation contract', () => {
   const adapter = read('src/services/adapters/volcengine-video.ts')
-
-  // 模型白名单：仅 doubao-seedance-2-0-* 前缀
-  assert.match(adapter, /SEEDANCE2_MODEL_PREFIX = 'doubao-seedance-2-0'/)
-  assert.match(adapter, /startsWith\(SEEDANCE2_MODEL_PREFIX\)/)
-
-  // 只保留多模态参考：其他模式分支与历史映射已清理
-  assert.doesNotMatch(adapter, /mode === 'text'/)
-  assert.doesNotMatch(adapter, /mode === 'first_frame'/)
-  assert.doesNotMatch(adapter, /mode === 'first_last'/)
-  assert.doesNotMatch(adapter, /LEGACY_MODE_MAP/)
-  assert.doesNotMatch(adapter, /first_frame/)
-  assert.doesNotMatch(adapter, /last_frame/)
-
-  // 多模态 content 项角色
+  assert.match(adapter, /seedanceModelLimits\(model\)/)
   assert.match(adapter, /role: 'reference_image'/)
   assert.match(adapter, /role: 'reference_video'/)
   assert.match(adapter, /role: 'reference_audio'/)
-
-  // 素材上限 9/3/3、音频需视觉素材约束、至少一个素材或 prompt
-  assert.match(adapter, /REF_LIMITS = \{ images: 9, videos: 3, audios: 3 \}/)
-  assert.match(adapter, /参考音频需要至少 1 个参考图片或视频/)
-  assert.match(adapter, /多模态参考模式需要至少一个参考素材或 prompt/)
-
-  // generate_audio 可配置（默认开），时长支持 4-15 秒；分辨率随集固定（480p/720p，默认 720p）
   assert.match(adapter, /generate_audio:\s*record\.generateAudio/)
-  assert.match(adapter, /Math\.min\(15, Math\.max\(4, parsed\)\)/)
-  assert.match(adapter, /resolution: record\.resolution === '480p' \? '480p' : '720p'/)
+  assert.doesNotMatch(adapter, /LEGACY_MODE_MAP/)
 })
 
 test('video generation service resolves reference media and persists new fields', () => {
@@ -64,7 +43,7 @@ test('video resolution is fixed per episode, editable, and locked into video tas
   assert.match(tasks, /episodeResolution = ep\.resolution/)
   assert.match(tasks, /resolution: episodeResolution \|\| videoBody!\.resolution/)
   // 服务落入 params 并传给适配器
-  assert.match(service, /resolution: normalizeStoredVideoResolution\(params\.resolution\)/)
+  assert.match(service, /resolution: normalizeStoredVideoResolution\(params\.resolution, config\.provider\)/)
   assert.match(service, /resolution: params\.resolution,/)
 })
 

@@ -15,8 +15,32 @@ import type {
 import { joinProviderUrl } from './url'
 import { parseDataUrl } from '../../utils/storage.js'
 
+const publicImageTypes: Record<string, string> = {
+  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', bmp: 'image/bmp',
+}
+
+function isOfficialHost(baseUrl: string): boolean {
+  try { return new URL(baseUrl).hostname === 'generativelanguage.googleapis.com' }
+  catch { return false }
+}
+
+function publicImageMimeType(value: string): string | undefined {
+  if (!value.startsWith('https://')) return
+  try {
+    const url = new URL(value)
+    if (url.username || url.password) return
+    const extension = /\.([a-z]+)$/iu.exec(url.pathname)?.[1]
+    return extension ? publicImageTypes[extension.toLowerCase()] : undefined
+  } catch { return }
+}
+
 export class GeminiImageAdapter implements ImageProviderAdapter {
   provider = 'gemini'
+
+  supportsReferenceImageUrls(config: AIConfig, model: string, url?: string): boolean {
+    const native = isOfficialHost(config.baseUrl) && /^(?:models\/)?gemini-(?:2\.5-|[3-9](?:\.\d+)?-|nano-banana-)/u.test(model)
+    return native && (url === undefined || !!publicImageMimeType(url))
+  }
 
   buildGenerateRequest(config: AIConfig, record: ImageGenerationRecord): ProviderRequest {
     // Gemini 模型名格式: "models/gemini-3-pro-image" 或直接 "gemini-3-pro-image"
@@ -24,10 +48,9 @@ export class GeminiImageAdapter implements ImageProviderAdapter {
     // interactions 端点仅官方 API 可用;中转站(new-api 类)普遍未配置该端点类型,
     // 会报 "endpointType=GEMINI_INTERACTIONS 未启用",此类端点回退到 generateContent 分支
     const isGemini3Image = /gemini-3.*image/.test(modelName)
-    const isOfficialHost = /generativelanguage\.googleapis\.com/.test(config.baseUrl || '')
 
     // The existing generateContent branch carries reference image parts; interactions below is text-only.
-    if (isGemini3Image && isOfficialHost && !record.referenceImages) {
+    if (isGemini3Image && isOfficialHost(config.baseUrl) && !record.referenceImages) {
       return {
         url: joinProviderUrl(config.baseUrl, '/v1beta', '/interactions'),
         method: 'POST',
@@ -52,20 +75,18 @@ export class GeminiImageAdapter implements ImageProviderAdapter {
     // Google REST 风格请求体
     const parts: any[] = []
     if (record.referenceImages) {
-      try {
-        const refs = JSON.parse(record.referenceImages)
-        for (const ref of refs) {
-          const parsed = parseDataUrl(String(ref || ''))
-          if (parsed) {
-            parts.push({
-              inline_data: {
-                mime_type: parsed.mimeType,
-                data: parsed.data,
-              },
-            })
-          }
+      const refs: unknown = JSON.parse(record.referenceImages)
+      if (!Array.isArray(refs)) throw new Error('参考图片列表无效')
+      for (const ref of refs) {
+        if (typeof ref !== 'string') throw new Error('参考图片无效')
+        if (this.supportsReferenceImageUrls(config, modelName, ref)) {
+          parts.push({ file_data: { mime_type: publicImageMimeType(ref), file_uri: ref } })
+          continue
         }
-      } catch {}
+        const parsed = parseDataUrl(ref)
+        if (!parsed?.mimeType.startsWith('image/')) throw new Error('参考图片无法解析为内嵌图片')
+        parts.push({ inline_data: { mime_type: parsed.mimeType, data: parsed.data } })
+      }
     }
     parts.push({ text: record.prompt || 'Generate an image' })
 

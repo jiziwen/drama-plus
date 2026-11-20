@@ -1,3 +1,5 @@
+import { seedanceModelLimits } from '../services/seedance-models.js'
+import { aicostVideoModelCapabilities } from '../services/aicost-video-models.js'
 import { Hono } from 'hono'
 import { and, desc, eq } from 'drizzle-orm'
 import { db, schema } from '../db/index.js'
@@ -79,7 +81,7 @@ function normalizeVideoRequest(body: any) {
   }
 }
 
-function validateVideoRequest(body: any, provider?: string): string | null {
+function validateVideoRequest(body: any, provider?: string, model?: string): string | null {
   for (const key of ['reference_image_urls', 'reference_video_urls', 'reference_audio_urls']) {
     if (body[key] !== undefined && !Array.isArray(body[key])) return `${key} 必须为数组`
     if (Array.isArray(body[key]) && body[key].some((url: any) => typeof url !== 'string' || !url.trim())) {
@@ -108,6 +110,7 @@ function validateVideoRequest(body: any, provider?: string): string | null {
   const file = Boolean(body.file_url)
   const link = Boolean(body.link_url)
 
+  const seedance = provider === 'volcengine' && model ? seedanceModelLimits(model) : null
   if ((provider || '').toLowerCase() === 'aliyun') {
     if (imgs > 10 || vids > 5 || auds > 5) return 'Wan 3.0 参考素材超限：图片≤10、视频≤5、音频≤5'
     if (last && !first) return 'Wan 3.0 尾帧必须与首帧同时传入'
@@ -117,6 +120,17 @@ function validateVideoRequest(body: any, provider?: string): string | null {
     }
     const total = imgs + vids + auds + Number(first) + Number(last) + Number(file) + Number(link)
     if (total > 20) return 'Wan 3.0 input.media 最多 20 项'
+  } else if ((provider || '').toLowerCase() === 'aicost') {
+    const limits = model && aicostVideoModelCapabilities(model)
+    if (limits && (
+      (limits.maxReferences !== null && imgs > limits.maxReferences) ||
+      (limits.maxVideoReferences !== null && vids > limits.maxVideoReferences) ||
+      (limits.maxAudioReferences !== null && auds > limits.maxAudioReferences)
+    )) return '所选 AICost 模型参考素材超限，请检查模型支持的图片、视频与音频数量'
+  } else if (seedance?.version === '2.5') {
+    if (imgs > seedance.images || vids > seedance.videos || auds > seedance.audios) {
+      return `所选模型参考素材上限：${seedance.images} 张图、${seedance.videos} 段视频、${seedance.audios} 段音频`
+    }
   } else {
     if (imgs > 9 || vids > 3 || auds > 3) return '参考素材超限：图片≤9、视频≤3、音频≤3'
     if (auds > 0 && imgs + vids === 0) return '参考音频需要至少 1 个参考图片或视频'
@@ -172,8 +186,15 @@ app.post('/', async (c) => {
 
     if (type === 'video' && videoBody) {
       const effectiveConfig = await resolveMediaConfig('video', { configId, model: videoBody.model })
-      const validationError = validateVideoRequest(videoBody, effectiveConfig?.provider)
+      const validationError = validateVideoRequest(videoBody, effectiveConfig?.provider, effectiveConfig?.model)
       if (validationError) return badRequest(c, validationError)
+      if (episodeResolution && effectiveConfig.provider.toLowerCase() === 'aicost') {
+        const resolutions = aicostVideoModelCapabilities(effectiveConfig.model)?.resolutions
+        if (resolutions && !resolutions.includes(episodeResolution.toLowerCase())) {
+          const requested = String(videoBody.resolution || '').toLowerCase()
+          episodeResolution = resolutions.includes(requested) ? requested : resolutions.includes('720p') ? '720p' : resolutions[0]
+        }
+      }
     }
 
     logTaskStart('TaskAPI', 'generate', {

@@ -1,0 +1,113 @@
+/** Verbatim source: workspace/skills/script-to-video/references/项目风格前缀原文.txt.
+ * JS template literals normalize physical line endings; restore the original CRLF.
+ * The shared module runs in the browser as well as the backend, without filesystem access. */
+export type ScriptVideoStylePreset = {
+  id: 'cool' | 'warm' | 'custom'
+  name: string
+  prefix: string
+}
+const cool = `冷色调
+
+全局核心要求复核确认画面风格：电影级写实人像、低调戏剧光人像、伦勃朗光人像、硬调肖像
+相机 / 镜头参数全画幅高像素机身、85mm/105mm 中长焦定焦、f/1.4 大光圈、8K RAW、眼部对焦、超浅景深
+光影质感Chiaroscuro 明暗对比、高反差硬光、侧前方主光、弱轮廓光、低调布光、深邃阴影、硬光质感
+画质规格8K 超高清、无损 RAW、高动态范围、14bit 色深、焦点锐利、焦外柔焦、皮肤细节还原
+色调倾向暖色调、电影 LUT 调色、暗色系、冷暖对比。
+具体内容（需根据角色外观服装去生成）（需根据风格参考去生成）不许出现文字，不许出现字幕，不许出现背景音乐，不要出现重复的人物，只有音效，和角色台词：
+
+3A游戏CG渲染风格，虚幻引擎5级画面质感，电影级光影表现，HDR高动态范围成像，细节极度丰富真实，整体画面明亮通透，曝光充足偏高但高光不死白，色彩干净通透，高饱和自然，画面清晰锐利，真实高级游戏CG质感。需要有皮肤纹理。
+
+画面带有柔和泛光与轻微发光感，空气中有薄雾和细腻氛围感，远景空气透视明显，空间纵深强。清晰方向光照射，形成明显光影对比与长阴影，体积光清晰可见，光束穿过薄雾，增强空间层次和电影感。
+
+整体画面清爽、明亮、通透、干净。
+
+人物皮肤触发高级次表面散射SSS，皮肤内部透出温润半透明红晕，带自然血色与生命感，肤质细腻真实，血肉感饱满但不恐怖，面部光影柔和立体，角色具有高品质3A游戏CG人物质感。
+图片画风影调参考 。
+具体内容（需根据角色外观服装去生成）（需根据风格参考去生成）不许出现文字，不许出现字幕，不许出现背景音乐，只有音效，和角色台词：
+
+影调：低调，高反差影调，蓝灰低饱和调色，暗部压黑但保留细节，具体内容，不许出现字幕，禁止生成背景音乐，禁止生成环境氛围音，仅保留对白和必要的物理音效
+
+
+
+
+
+
+
+
+`.replaceAll('\n', '\r\n')
+const warm = `暖色调
+
+全局核心要求复核确认画面为3D漫剧风格：电影级写实人像、低调戏剧光人像、伦勃朗光人像、硬调肖像
+相机 / 镜头参数全画幅高像素机身、85mm/105mm 中长焦定焦、f/1.4 大光圈、8K RAW、眼部对焦、超浅景深
+光影质感Chiaroscuro 明暗对比、高反差硬光、侧前方主光、弱轮廓光、低调布光、深邃阴影、硬光质感
+画质规格8K 超高清、无损 RAW、高动态范围、14bit 色深、焦点锐利、焦外柔焦、皮肤细节还原
+色调倾向暖色调、甜宠剧电影 LUT 调色、清爽明亮、干净通透、自然高饱和、低油腻感、轻微冷暖对比、肤色自然红润、整体色彩高级柔和。
+
+具体内容（需根据角色外观服装去生成）（需根据风格参考去生成）不许出现文字，不许出现字幕，不许出现背景音乐，不要出现重复的人物，只有必要物理音效和角色台词：
+
+3A游戏CG渲染风格，虚幻引擎5级画面质感，电影级光影表现，HDR高动态范围成像，细节极度丰富真实，整体画面明亮通透，曝光充足偏高但高光不死白，色彩干净通透，高饱和自然，画面清晰锐利，真实高级游戏CG质感。
+
+画面带有柔和泛光与轻微发光感，空气中有干净细腻的氛围感，远景空气透视自然，空间纵深强。清晰自然方向光照射，形成柔和但明确的光影层次，体积光轻微可见，光线穿过室内窗边、街道阳光、咖啡厅玻璃或城市夜景灯光，增强现代浪漫感和电影感。
+
+整体画面清爽、明亮、通透、干净、甜美、高级、有恋爱氛围。
+
+人物皮肤触发高级次表面散射SSS，皮肤内部透出温润半透明红晕，带自然血色与生命感，肤质细腻真实，血肉感饱满但不恐怖，面部光影柔和立体，角色具有高品质3A游戏CG人物质感。
+
+图片画风影调参考。
+具体内容（需根据角色外观服装去生成）（需根据风格参考去生成）禁止出现文字，禁止出现字幕，禁止出现背景音乐，只有必要物理音效和角色台词
+
+影调：现代甜宠3D漫剧明亮高质感影调，清爽通透，柔和高反差但不压黑，暗部保留充足细节，白天场景保持明亮自然日光，禁止生成黑夜感，室内场景保持干净柔和补光，夜晚场景使用城市灯光、暖色室内光或霓虹反射增强浪漫氛围，人物面部必须清晰可见。具体内容，不许出现字幕，禁止生成背景音乐，禁止生成环境氛围音，仅保留对白和必要的物理音效。
+
+禁止出现文字，禁止出现字幕，禁止出现背景音乐，只有必要物理音效和角色台词
+
+`.replaceAll('\n', '\r\n')
+
+export const SCRIPT_VIDEO_STYLE_PRESETS: ReadonlyArray<Readonly<ScriptVideoStylePreset>> =
+  Object.freeze([
+    Object.freeze({ id: 'cool', name: '冷色调', prefix: cool }),
+    Object.freeze({ id: 'warm', name: '暖色调', prefix: warm }),
+  ])
+
+export function getScriptVideoStylePreset(id: string): ScriptVideoStylePreset | undefined {
+  const preset = SCRIPT_VIDEO_STYLE_PRESETS.find((p) => p.id === id)
+  return preset ? { ...preset } : undefined
+}
+
+export function isScriptVideoStylePreset(value: unknown): value is ScriptVideoStylePreset {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const obj = value as Record<string, unknown>
+  return (
+    (obj.id === 'cool' || obj.id === 'warm' || obj.id === 'custom') &&
+    typeof obj.name === 'string' &&
+    !!obj.name.trim() &&
+    typeof obj.prefix === 'string' &&
+    obj.prefix.length > 0 &&
+    obj.prefix.length <= 20000
+  )
+}
+
+export function formatScriptVideoStylePreset(preset: ScriptVideoStylePreset): string {
+  return preset.prefix
+}
+
+/** The source heading names a UI choice. Only the instructions inside the
+ * selected section belong in a text-model request or a video prompt. */
+export function scriptVideoPromptStylePrefix(preset: ScriptVideoStylePreset): string {
+  const text = preset.prefix.trim()
+  const firstLine = text.split(/\r\n|[\r\n]/u, 1)[0]
+  return firstLine.trim() === preset.name.trim() ? text.slice(firstLine.length).trim() : text
+}
+
+export function styleVisualSpecs(
+  preset: ScriptVideoStylePreset,
+  delivery?: { aspectRatio?: string; resolution?: string; videoModel?: string },
+) {
+  return [
+    delivery?.aspectRatio,
+    delivery?.resolution,
+    delivery?.videoModel,
+    '项目预设：' + preset.name,
+  ]
+    .filter(Boolean)
+    .join('，')
+}

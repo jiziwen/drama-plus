@@ -63,6 +63,14 @@ export const skillWorkspaces: Record<string, Workspace> = Object.fromEntries(
   ]),
 )
 
+// The SD2.5 source is an immutable reference archive, not another active skill.
+// Older persistent workspaces may retain the original combat skill at its former
+// location; ignoring that subtree prevents it from being injected into rewriting.
+const INACTIVE_SKILL_SUBTREES = new Set([
+  'script-to-video/references/sd25-v2.1',
+  'script-rewriter/fight-choreography',
+])
+
 /** 递归扫描 workspace/skills/ 下所有含 SKILL.md 的目录（相对 workspace 根的路径） */
 function scanSkillPaths(): string[] {
   const found: string[] = []
@@ -71,6 +79,7 @@ function scanSkillPaths(): string[] {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue
       const rel = prefix ? `${prefix}/${entry.name}` : entry.name
+      if (INACTIVE_SKILL_SUBTREES.has(rel)) continue
       const full = path.join(dir, entry.name)
       if (fs.existsSync(path.join(full, 'SKILL.md'))) found.push(`skills/${rel}`)
       walk(full, rel)

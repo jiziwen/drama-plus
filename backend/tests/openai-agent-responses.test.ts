@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createOpenAI } from '@ai-sdk/openai'
-import { adaptOfficialOpenAIFetch, selectAgentOpenAIModel } from '../src/agents/openai-model.js'
+import { adaptAicostTextFetch, adaptOfficialOpenAIFetch, selectAgentOpenAIModel } from '../src/agents/openai-model.js'
 
 test('official agent serializes tool calls and results using Responses', async () => {
   const requests: { url: string; body: any }[] = []
@@ -37,4 +37,38 @@ test('compatible endpoints keep Chat Completions', () => {
   const provider = createOpenAI({ apiKey: 'test-key' })
   assert.equal(selectAgentOpenAIModel(provider, 'model', 'https://example.com/v1').provider, 'openai.chat')
   assert.equal(selectAgentOpenAIModel(provider, 'model', 'https://api.openai.com.example.com/v1').provider, 'openai.chat')
+})
+
+test('only Haiku 5.5 on AICost uses the provider sampling defaults', async () => {
+  for (const [host, model, stripsSampling] of [
+    ['aicost.me', 'claude-haiku-5-5', true],
+    ['www.aicost.me', 'anthropic/claude-haiku-5.5', true],
+    ['www.aicost.me', 'anthropic.claude-haiku-5-5', true],
+    ['www.aicost.me', 'claude-haiku-5-5-custom', false],
+    ['www.aicost.me', 'deepseek-v4.1-flash', false],
+    ['api.302ai.com', 'claude-haiku-5-5', false],
+    ['www.aicost.me.example.com', 'claude-haiku-5-5', false],
+  ] as const) {
+    const baseURL = 'https://' + host + '/v1'
+    const payload = {
+      model,
+      stream: false,
+      max_tokens: 128_000,
+      messages: [{ role: 'user', content: '读取剧本' }],
+      tool_choice: { type: 'function', function: { name: 'submit_draft' } },
+    }
+    const sampling = { temperature: 0, top_p: 0.6, top_k: 32 }
+    const fetch = adaptAicostTextFetch(async (url, init) => {
+      assert.equal(String(url), baseURL + '/chat/completions')
+      assert.deepEqual(Object.fromEntries(new Headers(init?.headers)), { 'content-type': 'application/json' })
+      assert.deepEqual(JSON.parse(String(init?.body)), stripsSampling ? payload : { ...payload, ...sampling })
+      return Response.json({ ok: true })
+    }, baseURL)
+    const result = await fetch(baseURL + '/chat/completions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...payload, ...sampling }),
+    })
+    assert.deepEqual(await result.json(), { ok: true })
+  }
 })

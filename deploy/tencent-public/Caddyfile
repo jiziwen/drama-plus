@@ -10,12 +10,85 @@ https://162.14.83.236 {
             profile shortlived
         }
     }
-    import /etc/caddy/access.caddy
     header {
         X-Content-Type-Options nosniff
         Referrer-Policy same-origin
     }
-    reverse_proxy 127.0.0.1:5679 {
-        flush_interval -1
+    @referenceMedia {
+        method GET HEAD
+        path /api/v1/reference-media/*
+        query expires=* signature=*
+    }
+    handle @referenceMedia {
+        reverse_proxy 127.0.0.1:5679 {
+            header_up -X-Drama-Jimeng-Private-Proxy
+            header_up -X-Drama-Authenticated-User
+        }
+    }
+    # Site session handlers. Enable only once the app has the matching HTTPS origin and proxy secret.
+    @siteSessionCheck path /api/v1/site-session/check
+    handle @siteSessionCheck {
+        respond 404
+    }
+    @sitePasswordLogin {
+        expression `'{$DRAMA_SITE_SESSIONS:false}' == 'true'`
+        method POST
+        path /api/v1/site-session/login
+    }
+    handle @sitePasswordLogin {
+        import /etc/caddy/access.caddy
+        reverse_proxy 127.0.0.1:5679 {
+            header_up -Authorization
+            header_up X-Drama-Jimeng-Private-Proxy {env.JIMENG_PRIVATE_PROXY_SECRET}
+            header_up X-Drama-Authenticated-User {http.auth.user.id}
+        }
+    }
+    @siteLoginPage {
+        expression `'{$DRAMA_SITE_SESSIONS:false}' == 'true'`
+        method GET HEAD
+        path /site-login /site-login/ /_nuxt/* /favicon.ico /favicon.png /favicon.svg
+    }
+    handle @siteLoginPage {
+        reverse_proxy 127.0.0.1:5679 {
+            header_up -Authorization
+            header_up -X-Drama-Jimeng-Private-Proxy
+            header_up -X-Drama-Authenticated-User
+        }
+    }
+    @siteSessions expression `'{$DRAMA_SITE_SESSIONS:false}' == 'true'`
+    handle @siteSessions {
+        forward_auth 127.0.0.1:5679 {
+            uri /api/v1/site-session/check
+            header_up -Authorization
+            header_up -X-Drama-Authenticated-User
+            header_up X-Drama-Jimeng-Private-Proxy {env.JIMENG_PRIVATE_PROXY_SECRET}
+            copy_headers X-Drama-Authenticated-User
+        }
+        reverse_proxy 127.0.0.1:5679 {
+            header_up -Authorization
+            header_up X-Drama-Jimeng-Private-Proxy {env.JIMENG_PRIVATE_PROXY_SECRET}
+            header_up X-Drama-Authenticated-User {header.X-Drama-Authenticated-User}
+            flush_interval -1
+        }
+    }
+    handle_errors 401 {
+        @siteLoginFailure path /api/v1/site-session/login
+        handle @siteLoginFailure {
+            header -WWW-Authenticate
+            header Cache-Control no-store
+            respond "Unauthorized" 401
+        }
+        handle {
+            respond "Unauthorized" 401
+        }
+    }
+    # End site session handlers.
+    handle {
+        import /etc/caddy/access.caddy
+        reverse_proxy 127.0.0.1:5679 {
+            header_up X-Drama-Jimeng-Private-Proxy {env.JIMENG_PRIVATE_PROXY_SECRET}
+            header_up X-Drama-Authenticated-User {http.auth.user.id}
+            flush_interval -1
+        }
     }
 }

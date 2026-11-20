@@ -5,6 +5,8 @@ export interface ImageProviderAdapter {
   /** 厂商标识 */
   provider: string
 
+  supportsReferenceImageUrls?(config: AIConfig, model: string, url?: string): boolean
+
   /**
    * 构建图片生成请求
    * @param config AI 配置 { baseUrl, apiKey, model }
@@ -48,11 +50,13 @@ export interface ImageProviderAdapter {
 export interface VideoProviderAdapter {
   provider: string
 
-  buildGenerateRequest(config: AIConfig, record: VideoGenerationRecord): ProviderRequest
+  buildGenerateRequest(config: AIConfig, record: VideoGenerationRecord): ProviderRequest | Promise<ProviderRequest>
 
   parseGenerateResponse(result: any): VideoGenResponse
 
   buildPollRequest(config: AIConfig, taskId: string): ProviderRequest
+
+  buildDownloadRequest?(config: AIConfig, taskId: string): ProviderRequest
 
   parsePollResponse(result: any): VideoPollResponse
 

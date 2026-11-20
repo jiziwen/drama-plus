@@ -1,12 +1,4 @@
-/**
- * 火山引擎 Seedance 2.0 视频生成 Adapter
- * 端点: /api/v3/contents/generations/tasks (注意 /api/v3 前缀)
- * 响应: { id: "task-xxx" } -> 轮询获取状态
- *
- * 仅支持 Doubao Seedance 2.0+ 系列模型，生成模式只保留多模态参考:
- * - reference   多模态参考（≤9 reference_image + ≤3 reference_video + ≤3 reference_audio + 可选文本）
- *   有参考音频时至少包含 1 个参考图片或视频
- */
+/** 火山方舟 Seedance 首帧与多模态参考生成。 */
 import type {
   VideoProviderAdapter,
   ProviderRequest,
@@ -17,13 +9,9 @@ import type {
 } from './types'
 import { joinProviderUrl } from './url'
 
-/** 仅支持 Seedance 2.0+ 系列（前缀匹配，兼容未来 2.0.x 变体） */
-const SEEDANCE2_MODEL_PREFIX = 'doubao-seedance-2-0'
-const AGENT_PLAN_MODELS = new Set(['doubao-seedance-2.0', 'doubao-seedance-2.0-fast', 'doubao-seedance-2.0-mini'])
-const DEFAULT_MODEL = 'doubao-seedance-2-0-mini-260615'
+import { seedanceModelLimits } from '../seedance-models.js'
 
-/** 多模态参考素材上限：图片 9、视频 3、音频 3 */
-const REF_LIMITS = { images: 9, videos: 3, audios: 3 } as const
+const DEFAULT_MODEL = 'doubao-seedance-2-0-mini-260615'
 
 function parseUrlArray(raw?: string | null): string[] {
   if (!raw) return []
@@ -40,27 +28,33 @@ export class VolcEngineVideoAdapter implements VideoProviderAdapter {
 
   buildGenerateRequest(config: AIConfig, record: VideoGenerationRecord): ProviderRequest {
     const model = record.model || config.model || DEFAULT_MODEL
-    if (!model.startsWith(SEEDANCE2_MODEL_PREFIX) && !AGENT_PLAN_MODELS.has(model)) {
-      throw new Error(`仅支持 Seedance 2.0 系列模型（${SEEDANCE2_MODEL_PREFIX}-*），当前: ${model}`)
-    }
+    const limits = seedanceModelLimits(model)
+    if (!limits) throw new Error(`仅支持 Seedance 2.0 和 2.5 系列模型，当前: ${model}`)
 
     const prompt = (record.prompt || '').trim()
     const refImages = parseUrlArray(record.referenceImageUrls)
     const refVideos = parseUrlArray(record.referenceVideoUrls)
     const refAudios = parseUrlArray(record.referenceAudioUrls)
+    const firstFrame = record.firstFrameUrl?.trim()
+    const lastFrame = record.lastFrameUrl?.trim()
+    const hasReferences = refImages.length || refVideos.length || refAudios.length
 
-    if (refImages.length > REF_LIMITS.images || refVideos.length > REF_LIMITS.videos || refAudios.length > REF_LIMITS.audios) {
-      throw new Error(`参考素材超限：图片≤${REF_LIMITS.images}、视频≤${REF_LIMITS.videos}、音频≤${REF_LIMITS.audios}`)
+    if (lastFrame && !firstFrame) throw new Error('请同时提供首帧和尾帧')
+    if (firstFrame && hasReferences) throw new Error('首帧模式与多模态参考模式不可同时使用')
+    if (refImages.length > limits.images || refVideos.length > limits.videos || refAudios.length > limits.audios) {
+      throw new Error(`参考素材超限：图片≤${limits.images}、视频≤${limits.videos}、音频≤${limits.audios}`)
     }
-    if (refAudios.length > 0 && refImages.length + refVideos.length === 0) {
+    if (limits.version === '2.0' && refAudios.length > 0 && refImages.length + refVideos.length === 0) {
       throw new Error('参考音频需要至少 1 个参考图片或视频')
     }
-    if (!prompt && !refImages.length && !refVideos.length && !refAudios.length) {
+    if (!prompt && !firstFrame && !hasReferences) {
       throw new Error('多模态参考模式需要至少一个参考素材或 prompt')
     }
 
     const content: any[] = []
     if (prompt) content.push({ type: 'text', text: prompt })
+    if (firstFrame) content.push({ type: 'image_url', image_url: { url: firstFrame }, role: 'first_frame' })
+    if (lastFrame) content.push({ type: 'image_url', image_url: { url: lastFrame }, role: 'last_frame' })
     for (const url of refImages) {
       content.push({ type: 'image_url', image_url: { url }, role: 'reference_image' })
     }
@@ -71,17 +65,26 @@ export class VolcEngineVideoAdapter implements VideoProviderAdapter {
       content.push({ type: 'audio_url', audio_url: { url }, role: 'reference_audio' })
     }
 
+    const resolution = record.resolution?.toLowerCase() || '720p'
+    if (limits.version === '2.5' && !limits.resolutions.includes(resolution)) {
+      throw new Error(`所选模型支持 ${limits.resolutions.join('、')}，请调整分辨率`)
+    }
     const body: any = {
       model,
       content,
       generate_audio: record.generateAudio !== 0 && record.generateAudio !== false,
-      ratio: record.aspectRatio || 'adaptive',
-      duration: this.normalizeDuration(record.duration),
-      // Seedance 2.0 仅 480p/720p 两档，1080p 收敛到 720p
-      resolution: record.resolution === '480p' ? '480p' : '720p',
+      ratio: firstFrame && limits.version === '2.5' ? 'adaptive' : record.aspectRatio || 'adaptive',
+      duration: record.duration === -1 && limits.version === '2.5' ? -1 : this.normalizeDuration(record.duration, limits.maxDuration),
+      resolution: limits.resolutions.includes(resolution) ? resolution : '720p',
       watermark: false,
     }
 
+    if (limits.version === '2.5') {
+      if (hasReferences) body.omni_reference_task_type = 'reference'
+      if (Buffer.byteLength(JSON.stringify(body)) > 64 * 1024 * 1024) {
+        throw new Error('参考素材编码后的请求超过火山方舟 64 MB 上限，请减少素材大小或使用公网素材地址')
+      }
+    }
     return {
       url: joinProviderUrl(config.baseUrl, '/api/v3', '/contents/generations/tasks'),
       method: 'POST',
@@ -139,10 +142,9 @@ export class VolcEngineVideoAdapter implements VideoProviderAdapter {
     return result.video_url || result.content?.video_url || result.data?.video_url || null
   }
 
-  private normalizeDuration(duration?: number | null): number {
+  private normalizeDuration(duration: number | undefined | null, maxDuration: number): number {
     const parsed = Math.round(Number(duration || 5))
     if (!Number.isFinite(parsed)) return 5
-    // Seedance 2.0 支持 4-15 秒
-    return Math.min(15, Math.max(4, parsed))
+    return Math.min(maxDuration, Math.max(4, parsed))
   }
 }

@@ -5,13 +5,18 @@
  * episodeId/dramaId 由工具从 RequestContext 读取
  */
 import { Agent } from '@mastra/core/agent'
+import { eq } from 'drizzle-orm'
+import { db, schema } from '../db/index.js'
 import { recordedFetch as fetch, bindApiCallFetch } from '../services/api-call-log.js'
 import { CHINESE_PROMPT_RULE } from '../services/prompt-language.js'
 import type { RequestContext } from '@mastra/core/request-context'
 import { createGoogleGenerativeAI } from '@ai-sdk/google'
 import { createOpenAI } from '@ai-sdk/openai'
-import { adaptOfficialOpenAIFetch, selectAgentOpenAIModel } from './openai-model.js'
+import { Agent as HttpAgent, EnvHttpProxyAgent } from 'undici'
+import { adaptAicostTextFetch, adaptOfficialOpenAIFetch, isAicostHaiku55, selectAgentOpenAIModel } from './openai-model.js'
 import { getTextConfig, getTextProviderBaseUrl, getConfigById } from '../services/ai.js'
+import { resolveScriptVideoOutputLimit } from '../services/script-video-output-limit.js'
+import { SCRIPT_VIDEO_TEXT_TIMEOUT_MS } from '../services/script-video-text-timeout.js'
 import { logTaskProgress } from '../utils/task-logger.js'
 import { scriptTools } from './tools/script-tools.js'
 import { extractTools } from './tools/extract-tools.js'
@@ -20,6 +25,7 @@ import { imagePromptTools } from './tools/image-prompt-tools.js'
 import { loadAgentSkills, skillWorkspaces } from './skills.js'
 import { loadAgentPromptFile, loadBasePromptFile } from './prompts.js'
 import { getScriptRevision } from './context.js'
+import { retryBeforeTlsHandshake } from './tls-retry.js'
 
 // Default prompts (used when workspace/prompts/<type>.md 文件缺失时兜底)
 export const DEFAULT_PROMPTS: Record<string, { name: string; instructions: string }> = {
@@ -189,7 +195,7 @@ function openaiThinkingOffPatch(baseURL: string): Record<string, any> {
   }
 }
 
-function createThinkingOffFetch(providerName: string, baseURL: string): typeof fetch | undefined {
+function createThinkingOffFetch(providerName: string, baseURL: string, base: typeof fetch): typeof fetch | undefined {
   if (!thinkingOffEnabled || isOfficialTextHost(baseURL)) return undefined
   const openaiPatch = openaiThinkingOffPatch(baseURL)
 
@@ -217,7 +223,7 @@ function createThinkingOffFetch(providerName: string, baseURL: string): typeof f
         }
       }
     } catch { /* 解析失败则原样透传 */ }
-    return fetch(input, init)
+    return base(input, init)
   }
 }
 
@@ -290,13 +296,28 @@ function createMaxTokensFetch(providerName: string, inner?: typeof fetch): typeo
   }
 }
 
-async function getModel(fileModel: string | undefined, modelOverride?: string, textConfigId?: number) {
+// The native fetch dispatcher otherwise times out at five minutes while the
+// writer is still waiting. Retain Node's startup proxy setting for these calls.
+const scriptVideoHttpTimeouts = {
+  headersTimeout: SCRIPT_VIDEO_TEXT_TIMEOUT_MS,
+  bodyTimeout: SCRIPT_VIDEO_TEXT_TIMEOUT_MS,
+}
+const scriptVideoDispatcher = process.env.NODE_USE_ENV_PROXY === '1' || process.execArgv.includes('--use-env-proxy')
+  ? new EnvHttpProxyAgent(scriptVideoHttpTimeouts)
+  : new HttpAgent(scriptVideoHttpTimeouts)
+const fetchScriptVideoText: typeof fetch = (input, init) => {
+  const options = { ...init, dispatcher: scriptVideoDispatcher }
+  return fetch(input, options)
+}
+
+async function getModel(fileModel: string | undefined, modelOverride?: string, textConfigId?: number, retryTls = false, standardParameters = false) {
   // 请求可指定文本配置（含其 provider/baseUrl/apiKey），否则回退到当前启用配置
   const textConfig = (textConfigId ? await getConfigById(textConfigId) : null) || await getTextConfig()
   const modelName = modelOverride || fileModel || textConfig.model
   const providerName = textConfig.provider.toLowerCase()
   const resolvedBaseURL = getTextProviderBaseUrl(textConfig)
-  const temperature = textConfig.temperature ?? null
+  const aicostHaiku55 = providerName !== 'gemini' && isAicostHaiku55(resolvedBaseURL, modelName)
+  const temperature = aicostHaiku55 ? null : textConfig.temperature ?? null
   const endpointKey = `${providerName}|${resolvedBaseURL}|${modelName}|t=${temperature ?? 'default'}`
   if (endpointKey !== lastLoggedTextEndpointKey) {
     lastLoggedTextEndpointKey = endpointKey
@@ -309,29 +330,61 @@ async function getModel(fileModel: string | undefined, modelOverride?: string, t
   }
 
   // 叠加请求补丁：thinking-off（非官方端点）+ 配置温度 + 输出上限（非官方 OpenAI）
-  const thinkingOffFetch = createThinkingOffFetch(providerName, resolvedBaseURL)
+  // The new workflow uses the standard provider schema. Several gateways reject
+  // speculative thinking/enable_thinking/reasoning_effort combinations before
+  // running the model; existing agents retain their configured legacy behavior.
+  const loggedFetch = standardParameters ? fetchScriptVideoText : fetch
+  const baseFetch = aicostHaiku55 ? adaptAicostTextFetch(loggedFetch, resolvedBaseURL) : loggedFetch
+  const thinkingOffFetch = standardParameters
+    ? baseFetch
+    : createThinkingOffFetch(providerName, resolvedBaseURL, baseFetch) ?? baseFetch
   const tempFetch = temperature !== null
     ? createTemperatureFetch(providerName, temperature, thinkingOffFetch)
     : thinkingOffFetch
-  const fetchImpl = isOfficialOpenAIHost(resolvedBaseURL)
+  // The script-to-video writer gives the SDK the selected model's output
+  // capability, so the SDK chooses the correct parameter for its API dialect.
+  const fetchImpl = standardParameters || isOfficialOpenAIHost(resolvedBaseURL)
     ? tempFetch
     : createMaxTokensFetch(providerName, tempFetch)
+  const maxOutputTokens = standardParameters
+    ? await resolveScriptVideoOutputLimit({ provider: providerName, baseURL: resolvedBaseURL, model: modelName, apiKey: textConfig.apiKey })
+    : undefined
+  const transport = retryTls ? retryBeforeTlsHandshake(fetchImpl) : fetchImpl
 
   if (providerName === 'gemini') {
     const googleProvider = createGoogleGenerativeAI({
       apiKey: textConfig.apiKey,
       baseURL: resolvedBaseURL,
-      fetch: bindApiCallFetch({ provider: providerName, model: modelName, category: 'text' }, isOfficialOpenAIHost(resolvedBaseURL) ? adaptOfficialOpenAIFetch(fetchImpl || fetch) : fetchImpl || fetch),
+      fetch: bindApiCallFetch({ provider: providerName, model: modelName, category: 'text' }, isOfficialOpenAIHost(resolvedBaseURL) ? adaptOfficialOpenAIFetch(transport) : transport),
     })
-    return googleProvider(modelName)
+    return { model: googleProvider(modelName), maxOutputTokens }
   }
 
   const provider = createOpenAI({
     baseURL: resolvedBaseURL,
     apiKey: textConfig.apiKey,
-    fetch: bindApiCallFetch({ provider: providerName, model: modelName, category: 'text' }, isOfficialOpenAIHost(resolvedBaseURL) ? adaptOfficialOpenAIFetch(fetchImpl || fetch) : fetchImpl || fetch),
+    fetch: bindApiCallFetch({ provider: providerName, model: modelName, category: 'text' }, isOfficialOpenAIHost(resolvedBaseURL) ? adaptOfficialOpenAIFetch(transport) : transport),
   } as any)
-  return selectAgentOpenAIModel(provider, modelName, resolvedBaseURL)
+  return { model: selectAgentOpenAIModel(provider, modelName, resolvedBaseURL), maxOutputTokens, aicostHaiku55 }
+}
+
+/** Resolve the actual configuration and model before choosing its output budget. */
+export async function resolveScriptVideoTextModel(modelOverride?: string, textConfigId?: number, retryTls = true) {
+  if (textConfigId !== undefined) {
+    if (!Number.isSafeInteger(textConfigId) || textConfigId < 1) throw new Error('文字模型配置无效')
+    const row = db.select().from(schema.aiServiceConfigs).where(eq(schema.aiServiceConfigs.id, textConfigId)).get()
+    if (!row || !row.isActive || row.serviceType !== 'text' || !(await getConfigById(textConfigId))) {
+      throw new Error('所选文字模型配置不可用，请重新选择')
+    }
+    let models: string[] = []
+    try { const parsed = JSON.parse(row.model || '[]'); models = Array.isArray(parsed) ? parsed : [parsed] } catch { models = row.model ? [row.model] : [] }
+    if (modelOverride && !models.includes(modelOverride)) throw new Error('所选文字模型不属于该配置')
+  }
+  return getModel(undefined, modelOverride, textConfigId, retryTls, true)
+}
+
+export async function resolveAgentTextModel(modelOverride?: string, textConfigId?: number, retryTls = true) {
+  return (await resolveScriptVideoTextModel(modelOverride, textConfigId, retryTls)).model
 }
 
 const AGENT_TOOLS: Record<string, Record<string, any>> = {
@@ -369,7 +422,7 @@ function buildModel(type: string) {
     const promptFile = await loadBasePromptFile(type)
     const modelOverride = requestContext?.get('modelOverride' as never) as string | undefined
     const textConfigId = requestContext?.get('textConfigId' as never) as number | undefined
-    return getModel(promptFile?.model || undefined, modelOverride, textConfigId)
+    return (await getModel(promptFile?.model || undefined, modelOverride, textConfigId)).model
   }
 }
 

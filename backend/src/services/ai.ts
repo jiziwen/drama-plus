@@ -34,12 +34,20 @@ export function parseConfigTemperature(settingsRaw: string | null | undefined): 
 export const officialProviders: Record<ServiceType, readonly string[]> = {
   text: ['openai', 'gemini', 'volcengine'],
   image: ['openai', 'gemini', 'volcengine', 'comfyui'],
-  video: ['volcengine', 'minimax', 'aliyun', 'comfyui'],
+  video: ['volcengine', 'minimax', 'aliyun', 'comfyui', 'aicost', 'jimeng', 'libtv'],
 }
 
 export function isOfficialProvider(serviceType?: string | null, provider?: string | null): boolean {
   const providers = officialProviders[serviceType as ServiceType]
   return !!providers && providers.includes((provider || '').toLowerCase())
+}
+
+/** A saved video service without models cannot act as the default generator. */
+function hasVideoModel(model: string | null): boolean {
+  try {
+    const models: unknown = JSON.parse(model || '[]')
+    return Array.isArray(models) && typeof models[0] === 'string' && !!models[0].trim()
+  } catch { return false }
 }
 
 export function getTextProviderBaseUrl(config: AIConfig) {
@@ -69,6 +77,7 @@ export async function getActiveConfig(serviceType: ServiceType): Promise<AIConfi
     .where(eq(schema.aiServiceConfigs.serviceType, serviceType))
   )
     .filter(r => r.isActive && isOfficialProvider(serviceType, r.provider))
+    .filter(r => serviceType !== 'video' || (!['jimeng', 'libtv'].includes(r.provider || '') && hasVideoModel(r.model)))
     .sort((a, b) => (b.priority || 0) - (a.priority || 0)) // 高优先级优先
 
   const active = rows[0]
@@ -114,6 +123,7 @@ export async function getActiveConfigId(serviceType: ServiceType): Promise<numbe
     .where(eq(schema.aiServiceConfigs.serviceType, serviceType))
   )
     .filter(r => r.isActive && isOfficialProvider(serviceType, r.provider))
+    .filter(r => serviceType !== 'video' || (!['jimeng', 'libtv'].includes(r.provider || '') && hasVideoModel(r.model)))
     .sort((a, b) => (b.priority || 0) - (a.priority || 0))
   return rows[0]?.id ?? null
 }

@@ -1,0 +1,1 @@
+export const SCRIPT_VIDEO_TEXT_TIMEOUT_MS = 10 * 60_000

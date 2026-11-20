@@ -1,16 +1,5 @@
 # 使用 BuildKit 内置语法解析器，避免构建前额外拉取 docker/dockerfile 镜像。
 
-# ===== 前端构建：Nuxt generate 产出静态站点 =====
-FROM node:22-bookworm-slim AS frontend-build
-WORKDIR /build/frontend
-COPY frontend/package.json frontend/package-lock.json ./
-# lockfile 的 resolved 可能指向带鉴权的私有 registry（开发者本机 .npmrc），镜像内会 401。
-# 构建期删除 resolved 字段（integrity 校验不受影响），让 npm 统一走公共 registry
-RUN node -e "const fs=require('fs');const l=JSON.parse(fs.readFileSync('package-lock.json'));for(const p of Object.values(l.packages||{}))delete p.resolved;fs.writeFileSync('package-lock.json',JSON.stringify(l,null,2))" \
-  && npm ci --no-audit --no-fund --registry=https://registry.npmjs.org
-COPY frontend/ ./
-RUN npm run generate
-
 # ===== 后端构建：安装依赖（含原生模块编译） =====
 FROM node:22-bookworm AS backend-build
 WORKDIR /build/backend
@@ -24,6 +13,21 @@ RUN node -e "const fs=require('fs');const l=JSON.parse(fs.readFileSync('package-
   && npm ci --omit=dev --no-audit --no-fund --registry=https://registry.npmjs.org
 COPY backend/ ./
 # 后端通过生产依赖 tsx 运行；完全沿用锁文件，不在构建时额外解析/补装依赖。
+
+# ===== 前端构建：Nuxt generate 产出静态站点 =====
+FROM node:22-bookworm-slim AS frontend-build
+WORKDIR /build/frontend
+COPY frontend/package.json frontend/package-lock.json ./
+# lockfile 的 resolved 可能指向带鉴权的私有 registry（开发者本机 .npmrc），镜像内会 401。
+# 构建期删除 resolved 字段（integrity 校验不受影响），让 npm 统一走公共 registry
+RUN node -e "const fs=require('fs');const l=JSON.parse(fs.readFileSync('package-lock.json'));for(const p of Object.values(l.packages||{}))delete p.resolved;fs.writeFileSync('package-lock.json',JSON.stringify(l,null,2))" \
+  && npm ci --no-audit --no-fund --registry=https://registry.npmjs.org
+COPY frontend/ ./
+# 剧本转视频页面导入后端的共享类型、模型能力和分镜校验代码。
+COPY --from=backend-build /build/backend/src /build/backend/src
+COPY --from=backend-build /build/backend/node_modules /build/backend/node_modules
+COPY --from=backend-build /build/backend/workspace/skills/script-to-video/scripts /build/backend/workspace/skills/script-to-video/scripts
+RUN npm run generate
 
 # ===== 运行时 =====
 FROM node:22-bookworm-slim
@@ -50,6 +54,7 @@ COPY --from=backend-build /build/backend/package.json ./backend/package.json
 COPY --from=backend-build /build/backend/tsconfig.json ./backend/tsconfig.json
 # workspace 模板（skills/prompts），entrypoint copy-once 到数据卷后可在线编辑
 COPY backend/workspace ./workspace-template
+RUN ln -s /app/workspace-template ./backend/workspace
 COPY --from=frontend-build /build/frontend/.output/public ./frontend-dist
 COPY docker/entrypoint.sh ./entrypoint.sh
 # Windows 检出可能使用 CRLF，先转换换行，确保 Linux 能识别 shebang。

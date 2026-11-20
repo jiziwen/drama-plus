@@ -17,7 +17,7 @@ import tarfile
 root, destination = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
 paths = subprocess.check_output([
     'git', '-C', str(root), 'ls-files', '-z', '--',
-    'Dockerfile', '.dockerignore', 'backend', 'frontend', 'docker/entrypoint.sh',
+    'Dockerfile', '.dockerignore', 'backend', 'frontend', 'docker',
 ]).decode().split('\0')
 paths += [
     'deploy/tencent-private/compose.yaml', 'deploy/tencent-private/compose.proxy.yaml',

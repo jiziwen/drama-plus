@@ -16,6 +16,8 @@ services:
         HUOBAO_VERSION: ${HUOBAO_VERSION:-dev}
     ports:
       - "5679:5679"
+    environment:
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
     volumes:
       - huobao-data:/app/data
     restart: unless-stopped

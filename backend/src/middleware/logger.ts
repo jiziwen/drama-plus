@@ -32,7 +32,9 @@ export const requestLogger: MiddlewareHandler = async (c, next) => {
   // 打印请求
   const time = formatTime()
   let bodyInfo = ''
-  if (['POST', 'PUT', 'PATCH'].includes(method)) {
+  const privateBody = path.startsWith('/api/v1/settings/feedback') || path.startsWith('/api/v1/libtv/auth/phone/') ||
+    path.startsWith('/api/v1/site-session/')
+  if (['POST', 'PUT', 'PATCH'].includes(method) && !privateBody) {
     try {
       const clone = c.req.raw.clone()
       const text = await clone.text()

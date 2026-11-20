@@ -3,7 +3,44 @@
  * 自 MySQL 迁移：varchar(x)→text（SQLite 不校验长度）、int→integer、
  * boolean→integer boolean mode、时间戳仍为 text 存 ISO 字符串，表/列名不变。
  */
-import { sqliteTable, text, integer, primaryKey } from 'drizzle-orm/sqlite-core'
+import { blob, sqliteTable, text, integer, primaryKey } from 'drizzle-orm/sqlite-core'
+
+export const feedbackStatuses = ['open', 'in_progress', 'resolved'] as const
+
+export const feedback = sqliteTable('feedback', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  title: text('title').notNull(),
+  description: text('description').notNull(),
+  contact: text('contact').notNull(),
+  pagePath: text('page_path').notNull(),
+  submittedBy: text('submitted_by').notNull(),
+  status: text('status', { enum: feedbackStatuses }).notNull().default('open'),
+  operatorNote: text('operator_note').notNull().default(''),
+  revision: integer('revision').notNull().default(0),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+})
+
+export const feedbackScreenshots = sqliteTable('feedback_screenshots', {
+  feedbackId: integer('feedback_id').notNull().references(() => feedback.id, { onDelete: 'cascade' }),
+  position: integer('position').notNull(),
+  mimeType: text('mime_type').notNull(),
+  content: blob('content', { mode: 'buffer' }).notNull(),
+}, table => [primaryKey({ columns: [table.feedbackId, table.position] })])
+
+export const releaseNotes = sqliteTable('release_notes', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  requestId: text('request_id').notNull().unique(),
+  title: text('title').notNull(),
+  changes: text('changes', { mode: 'json' }).$type<string[]>().notNull(),
+  publishedAt: text('published_at').notNull(),
+})
+
+export const siteSessions = sqliteTable('site_sessions', {
+  sessionHash: text('session_hash').primaryKey().notNull(),
+  username: text('username').notNull(),
+  expiresAt: integer('expires_at').notNull(),
+})
 
 export const apiCallLogs = sqliteTable('api_call_logs', {
   id: integer('id').primaryKey({ autoIncrement: true }),

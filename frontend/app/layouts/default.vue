@@ -2,15 +2,21 @@
  <div class="shell soft-shell">
   <header class="soft-header">
    <NuxtLink to="/" class="soft-brand"><span><Clapperboard :size="22"/></span><div>小李短剧<small>little things. big stories.</small></div></NuxtLink>
-   <nav class="soft-navigation" aria-label="工作空间导航"><NuxtLink to="/" :class="{selected:route.path==='/'&&route.query.view!=='library'}"><LayoutGrid :size="15"/>创作台</NuxtLink><NuxtLink to="/?view=library" :class="{selected:route.query.view==='library'||route.path.startsWith('/drama/')}"><FolderKanban :size="15"/>项目书架</NuxtLink><NuxtLink to="/assets" :class="{selected:route.path==='/assets'}"><Images :size="15"/>资产画廊</NuxtLink><NuxtLink to="/settings" :class="{selected:route.path==='/settings'}"><Settings :size="15"/>工作室</NuxtLink></nav>
-   <div class="soft-header-actions"><NuxtLink class="btn interface-version-switch" :to="interfaceTarget('cinematic')" title="切换为新版">新版 <ArrowUpRight :size="13"/></NuxtLink><button class="global-settings-trigger soft-icon" :aria-label="t('layout.nav.settings')" @click="openSettings()"><SlidersHorizontal :size="18"/></button><ThemeToggle /></div>
+   <nav class="soft-navigation" aria-label="工作空间导航">
+    <NuxtLink to="/" :class="{selected:route.path==='/'&&route.query.view!=='library'}"><LayoutGrid :size="15"/>创作台</NuxtLink>
+    <NuxtLink to="/?view=library" :class="{selected:route.query.view==='library'||route.path.startsWith('/drama/')}"><FolderKanban :size="15"/>项目书架</NuxtLink>
+    <NuxtLink to="/assets" :class="{selected:route.path==='/assets'}"><Images :size="15"/>资产画廊</NuxtLink>
+    <NuxtLink to="/script-to-video" :class="{ selected: route.path.includes('script-to-video') }" title="剧本转视频"><Film :size="15"/>剧本转视频</NuxtLink>
+    <NuxtLink to="/settings" :class="{selected:route.path==='/settings'}"><Settings :size="15"/>工作室</NuxtLink>
+   </nav>
+   <div class="soft-header-actions"><NuxtLink class="btn interface-version-switch" :to="interfaceTarget('cinematic')" title="切换为新版">新版 <ArrowUpRight :size="13"/></NuxtLink><button class="global-settings-trigger soft-icon" :aria-label="t('layout.nav.settings')" @click="openSettings()"><SlidersHorizontal :size="18"/></button><ThemeToggle /><SiteSessionMenu /></div>
   </header>
   <div v-if="missingConfigLabels.length" class="config-banner"><TriangleAlert :size="14"/><span>{{t('layout.banner.missing',{types:missingConfigLabels.join(t('common.listJoin'))})}}</span><button class="config-banner-link" @click="openSettings()">{{t('layout.banner.goSettings')}}</button></div>
   <main class="content"><slot/></main>
  </div>
 </template>
 <script setup>
-import {Clapperboard,LayoutGrid,FolderKanban,Images,Settings,SlidersHorizontal,TriangleAlert,ArrowUpRight} from 'lucide-vue-next'
+import {Clapperboard,LayoutGrid,FolderKanban,Images,Film,Settings,SlidersHorizontal,TriangleAlert,ArrowUpRight} from 'lucide-vue-next'
 import {useI18n} from 'vue-i18n'
 import {aiConfigAPI} from '~/composables/useApi'
 const {t}=useI18n(),route=useRoute()

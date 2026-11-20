@@ -23,3 +23,31 @@ export function adaptOfficialOpenAIFetch(base: typeof fetch): typeof fetch {
     return base(input, init)
   }
 }
+
+export function isAicostHost(baseURL: string) {
+  const host = URL.parse(baseURL)?.hostname
+  return host === 'aicost.me' || host === 'www.aicost.me'
+}
+
+export function isHaiku55(model: unknown) {
+  return typeof model === 'string' && /^(?:anthropic[./])?claude-haiku-5[.-]5$/i.test(model)
+}
+
+export function isAicostHaiku55(baseURL: string, model: string) {
+  return isAicostHost(baseURL) && isHaiku55(model)
+}
+
+/** Use the model defaults for AICost's Haiku 5.5, even if the SDK supplies a temperature. */
+export function adaptAicostTextFetch(base: typeof fetch, baseURL: string): typeof fetch {
+  if (!isAicostHost(baseURL)) return base
+
+  return async (input, init) => {
+    if (typeof init?.body !== 'string') return base(input, init)
+    const body = JSON.parse(init.body)
+    if (!isHaiku55(body?.model)) return base(input, init)
+    delete body.temperature
+    delete body.top_p
+    delete body.top_k
+    return base(input, { ...init, body: JSON.stringify(body) })
+  }
+}

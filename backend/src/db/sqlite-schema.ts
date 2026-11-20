@@ -8,6 +8,25 @@ import type Database from 'better-sqlite3'
 import { requestFingerprint, parseLoggedJson } from '../utils/api-call-request.js'
 
 export const sqliteSchemaStatements = [
+  `CREATE TABLE IF NOT EXISTS feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, description TEXT NOT NULL,
+    contact TEXT NOT NULL, page_path TEXT NOT NULL, submitted_by TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open', operator_note TEXT NOT NULL DEFAULT '',
+    revision INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS feedback_screenshots (
+    feedback_id INTEGER NOT NULL REFERENCES feedback(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL, mime_type TEXT NOT NULL, content BLOB NOT NULL,
+    PRIMARY KEY (feedback_id, position)
+  )`,
+  `CREATE TABLE IF NOT EXISTS release_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, request_id TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL, changes TEXT NOT NULL, published_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS site_sessions (
+    session_hash TEXT PRIMARY KEY NOT NULL, username TEXT NOT NULL, expires_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_site_sessions_expires ON site_sessions(expires_at)`,
   `CREATE TABLE IF NOT EXISTS api_call_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT, provider TEXT NOT NULL, category TEXT NOT NULL,
     model TEXT, task_id INTEGER, drama_id INTEGER, method TEXT NOT NULL, url TEXT NOT NULL,

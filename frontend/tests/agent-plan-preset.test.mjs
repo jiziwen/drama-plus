@@ -8,7 +8,7 @@ const source = readFileSync(new URL('../app/components/SettingsContent.vue', imp
 test('Agent Plan preset fills a distinct endpoint and aliases while retaining the video provider', () => {
   const presets = source.slice(source.indexOf('const providerPresets = {'), source.indexOf('function byType(t)'))
   const functions = source.slice(source.indexOf('function presetsByType('), source.indexOf('async function loadCfgs('))
-  const context = { cfgForm: {}, cfgTestResult: { value: { status: 404 } }, comfyConfigError: { value: '' } }
+  const context = { cfgForm: {}, cfgTestResult: { value: { status: 404 } }, comfyConfigError: { value: '' }, libtvVideoModels: [] }
   runInNewContext(`${presets}\n${functions}\nthis.presets = presetsByType('video'); applyProviderPreset('video', 'agentPlan')`, context)
   assert.equal(new Set(context.presets.map(p => p.key)).size, context.presets.length)
   assert.equal(context.cfgForm.provider, 'volcengine')
@@ -19,4 +19,6 @@ test('Agent Plan preset fills a distinct endpoint and aliases while retaining th
   runInNewContext("applyProviderPreset('video', 'volcengine')", context)
   assert.equal(context.cfgForm.base_url, 'https://ark.cn-beijing.volces.com')
   assert.equal(context.cfgForm.models[0], 'doubao-seedance-2-0-mini-260615')
+  assert.ok(context.cfgForm.models.includes('doubao-seedance-2-5-260628'))
+  assert.ok(context.cfgForm.models.includes('doubao-seedance-2-5-flash-261115'))
 })

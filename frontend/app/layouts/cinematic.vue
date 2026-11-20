@@ -11,13 +11,16 @@
         <NuxtLink :to="interfaceLink('/')" :class="{ selected: route.path === '/' && route.query.view !== 'library' }"><span>01</span>创作空间</NuxtLink>
         <NuxtLink :to="interfaceLink('/?view=library')" :class="{ selected: route.query.view === 'library' || route.path.startsWith('/drama/') }"><span>02</span>故事档案</NuxtLink>
         <NuxtLink :to="interfaceLink('/assets')" :class="{ selected: route.path === '/assets' }"><span>03</span>资产画廊</NuxtLink>
-        <NuxtLink :to="interfaceLink('/settings')" :class="{ selected: route.path === '/settings' }"><span>04</span>工作室</NuxtLink>
+        <NuxtLink :to="interfaceLink('/script-to-video')" :class="{ selected: route.path.includes('script-to-video') }" title="剧本转视频"><span>04</span>剧本转视频</NuxtLink>
+        <NuxtLink :to="interfaceLink('/settings')" :class="{ selected: route.path === '/settings' }"><span>05</span>工作室</NuxtLink>
       </nav>
       <div class="cine-header-actions">
+        <ReleaseNotesBell />
         <span class="cine-preview-badge" title="星光导演界面">导演模式<i /></span>
         <button class="global-settings-trigger cine-icon" aria-label="打开设置" @click="openSettings()"><SlidersHorizontal :size="17" /></button>
         <ThemeToggle />
         <NuxtLink :to="interfaceTarget('classic')" class="cine-original" title="切换为旧版">旧版<ArrowUpRight :size="13" /></NuxtLink>
+        <SiteSessionMenu />
       </div>
     </header>
     <div v-if="missing.length" class="cine-config-notice" role="status"><TriangleAlert :size="13" /><span>{{ missing.join('、') }}模型尚未启用</span><button @click="openSettings('ai')">配置生成服务 <ArrowUpRight :size="12" /></button></div>

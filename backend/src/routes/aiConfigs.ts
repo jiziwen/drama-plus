@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { eq } from 'drizzle-orm'
+import { and, eq, isNull, ne } from 'drizzle-orm'
 import { db, getInsertId, schema } from '../db/index.js'
 import { success, notFound, created, badRequest, now } from '../utils/response.js'
 import { toSnakeCase } from '../utils/transform.js'
@@ -7,9 +7,20 @@ import { joinProviderUrl } from '../services/adapters/url.js'
 import { isOfficialProvider, parseConfigTemperature } from '../services/ai.js'
 import { redactUrl, logTaskError, logTaskProgress, logTaskSuccess } from '../utils/task-logger.js'
 import { checkComfyWorkflow, parseComfySettings, validateComfySettings } from '../services/comfyui.js'
-import { recordedFetch as fetch } from '../services/api-call-log.js'
+import { recordedFetch as fetch, withApiCallContext } from '../services/api-call-log.js'
+import { jimengVideoModels } from '../services/jimeng-video.js'
+import { denyJimengPrivateAccess, publicJimengAccount, requireJimengPrivateAccess } from './jimeng.js'
+import { disconnectJimengAccount, JimengCliError } from '../services/jimeng-cli.js'
+import { checkLibTVConnection, disconnectLibTVAccount, LibTVCliError } from '../services/libtv-cli.js'
+import { libtvVideoModels } from '../services/libtv-video-models.js'
+import { hasLoopbackAccess, hasPrivateGatewayAccess } from '../utils/private-access.js'
+import { trustedSiteLoginScope } from './site-session.js'
 
 const app = new Hono()
+const libtvPrivateAccess = (c: Parameters<typeof hasLoopbackAccess>[0]) => hasLoopbackAccess(c) || hasPrivateGatewayAccess(c)
+const denyLibTVAccess = (c: Parameters<typeof hasLoopbackAccess>[0]) => c.json({ code: 403, message: '请通过私有站点设置 LibTV 官方 CLI 服务' }, 403)
+const isLibTVModelList = (models: unknown) =>
+  Array.isArray(models) && models.length > 0 && models.every(model => libtvVideoModels.includes(model))
 
 /** 归一化 temperature 入参：null=未设置；合法值 0~2；非法抛错 */
 function normalizeTemperature(v: any): number | null {
@@ -64,7 +75,7 @@ function buildProbe(serviceType: string, provider: string, baseUrl: string, mode
     }
   }
 
-  if (p === 'openai') {
+  if (p === 'openai' || p === 'aicost') {
     return {
       method: 'GET',
       url: joinProviderUrl(baseUrl, '/v1', '/models'),
@@ -151,6 +162,16 @@ app.post('/', async (c) => {
   if (!isOfficialProvider(body.service_type, body.provider)) {
     return badRequest(c, '不支持的 service_type/provider')
   }
+  const jimeng = String(body.provider).toLowerCase() === 'jimeng'
+  const libtv = String(body.provider).toLowerCase() === 'libtv'
+  if (jimeng) {
+    try { requireJimengPrivateAccess(c) } catch { return denyJimengPrivateAccess(c) }
+    if (!isJimengModelList(body.model)) return badRequest(c, '请选择已支持的即梦 Seedance 模型')
+  }
+  if (libtv) {
+    if (!libtvPrivateAccess(c)) return denyLibTVAccess(c)
+    if (!isLibTVModelList(body.model)) return badRequest(c, '请选择 LibTV 支持的 Seedance 2.5 模型')
+  }
 
   let temperature: number | null = null
   let comfyui
@@ -167,10 +188,10 @@ app.post('/', async (c) => {
 
   const res = await db.insert(schema.aiServiceConfigs).values({
     serviceType: body.service_type,
-    provider: body.provider,
+    provider: jimeng ? 'jimeng' : libtv ? 'libtv' : body.provider,
     name: body.name || `${body.provider}-${body.service_type}`,
-    baseUrl: body.base_url || '',
-    apiKey: body.api_key || '',
+    baseUrl: jimeng || libtv ? '' : body.base_url || '',
+    apiKey: jimeng || libtv ? '' : body.api_key || '',
     model: JSON.stringify(body.model || []),
     priority: body.priority || 0,
     isActive: true,
@@ -188,6 +209,23 @@ app.post('/', async (c) => {
 // POST /ai-configs/test
 app.post('/test', async (c) => {
   const body = await c.req.json()
+  if (body.service_type === 'video' && String(body.provider).toLowerCase() === 'libtv') {
+    if (!libtvPrivateAccess(c)) return denyLibTVAccess(c)
+    const result = { method: 'CLI', url: '', response_preview: '' }
+    try {
+      await checkLibTVConnection()
+      return success(c, { ...result, ok: true, reachable: true, message: 'LibTV 官方 CLI 已登录，画布可访问' })
+    } catch (error) {
+      return success(c, { ...result, ok: false, reachable: false,
+        message: error instanceof LibTVCliError ? error.message : 'LibTV 官方 CLI 连接检查失败' })
+    }
+  }
+  if (body.service_type === 'video' && String(body.provider).toLowerCase() === 'jimeng') {
+    try { requireJimengPrivateAccess(c) } catch { return denyJimengPrivateAccess(c) }
+    const account = await publicJimengAccount()
+    return success(c, { ok: account.authenticated, reachable: account.available, method: 'CLI', url: '',
+      message: account.authenticated ? '已连接即梦账号' : account.message || '请先授权即梦账号', response_preview: '' })
+  }
   if (!body.service_type || !body.provider || !body.base_url) {
     return badRequest(c, '需要 service_type、provider 与 base_url')
   }
@@ -216,14 +254,16 @@ app.post('/test', async (c) => {
   })
 
   try {
-    const resp = await fetch(probe.url, {
-      method: probe.method,
-      headers: probe.headers,
-      body: probe.body ? JSON.stringify(probe.body) : undefined,
-    })
+    const resp = await withApiCallContext({ provider: body.provider.toLowerCase(), category: body.service_type, model }, () =>
+      fetch(probe.url, {
+        method: probe.method,
+        headers: probe.headers,
+        body: probe.body ? JSON.stringify(probe.body) : undefined,
+      }),
+    )
     const text = await resp.text()
     const reachable = [200, 204, 400, 401, 403].includes(resp.status)
-    const isVideoListProbe = body.provider.toLowerCase() === 'volcengine' && body.service_type === 'video'
+    const isVideoListProbe = ['volcengine', 'aicost'].includes(body.provider.toLowerCase()) && body.service_type === 'video'
     const payload = {
       ok: resp.ok,
       reachable,
@@ -303,6 +343,26 @@ app.put('/:id', async (c) => {
   if ('base_url' in body) updates.baseUrl = body.base_url
   if ('api_key' in body) updates.apiKey = body.api_key
   if ('model' in body) updates.model = JSON.stringify(body.model)
+  const jimeng = String(provider).toLowerCase() === 'jimeng'
+  if (jimeng || existing.provider === 'jimeng') {
+    try { requireJimengPrivateAccess(c) } catch { return denyJimengPrivateAccess(c) }
+  }
+  if (jimeng) {
+    const models = 'model' in body ? body.model : JSON.parse(existing.model || '[]')
+    if (!isJimengModelList(models)) return badRequest(c, '请选择已支持的即梦 Seedance 模型')
+    updates.provider = 'jimeng'
+    updates.baseUrl = ''
+    updates.apiKey = ''
+  }
+  const libtv = String(provider).toLowerCase() === 'libtv'
+  if ((libtv || existing.provider === 'libtv') && !libtvPrivateAccess(c)) return denyLibTVAccess(c)
+  if (libtv) {
+    const models = 'model' in body ? body.model : JSON.parse(existing.model || '[]')
+    if (!isLibTVModelList(models)) return badRequest(c, '请选择 LibTV 支持的 Seedance 2.5 模型')
+    updates.provider = 'libtv'
+    updates.baseUrl = ''
+    updates.apiKey = ''
+  }
   if ('priority' in body) updates.priority = body.priority
   if ('is_active' in body) updates.isActive = body.is_active
   if ('temperature' in body) {
@@ -333,10 +393,40 @@ app.put('/:id', async (c) => {
   return success(c)
 })
 
+function isJimengModelList(models: unknown) {
+  return Array.isArray(models) && models.length > 0 && models.every(model => jimengVideoModels.includes(model))
+}
+
 // DELETE /ai-configs/:id
 app.delete('/:id', async (c) => {
   const id = Number(c.req.param('id'))
-  await db.delete(schema.aiServiceConfigs).where(eq(schema.aiServiceConfigs.id, id))
+  const configs = schema.aiServiceConfigs
+  const existing = db.select({ provider: configs.provider, serviceType: configs.serviceType }).from(configs).where(eq(configs.id, id)).get()
+  if (!existing) return success(c)
+  const { provider, serviceType } = existing
+  if (provider === 'jimeng') {
+    try { requireJimengPrivateAccess(c) } catch { return denyJimengPrivateAccess(c) }
+  }
+  if (provider === 'libtv' && !hasLoopbackAccess(c) && !trustedSiteLoginScope(c)) return denyLibTVAccess(c)
+  if (serviceType === 'video' && (provider === 'jimeng' || provider === 'libtv')) {
+    const other = db.select({ id: configs.id }).from(configs).where(and(
+      eq(configs.provider, provider), eq(configs.serviceType, serviceType), ne(configs.id, id),
+    )).get()
+    if (!other) {
+      const fetchSite = c.req.header('Sec-Fetch-Site')
+      if (fetchSite && fetchSite !== 'same-origin') return c.json({ code: 403, message: '请在站内删除视频服务' }, 403)
+      try {
+        await (provider === 'libtv' ? disconnectLibTVAccount() : disconnectJimengAccount())
+      } catch (error) {
+        if (!(error instanceof JimengCliError || error instanceof LibTVCliError)) throw error
+        const status = error.reason === 'account_busy' ? 409 : 502
+        return c.json({ code: status, message: error.message }, status)
+      }
+    }
+  }
+  db.delete(configs).where(and(eq(configs.id, id), eq(configs.serviceType, serviceType),
+    provider === null ? isNull(configs.provider) : eq(configs.provider, provider),
+  )).run()
   return success(c)
 })
 

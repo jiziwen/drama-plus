@@ -216,6 +216,34 @@ sudo docker compose logs --tail=50 gateway
 
 **首次使用：** 点击首页“配置生成服务”或“工作室”，配置自己的文本、图片、视频模型服务与API密钥，再创建第一个故事。本次没有复制Mac上的密钥，也没有发起付费生成。网站访问密码和模型API密钥是两种不同用途的凭据。
 
+### 给模型使用公网素材地址
+
+在服务器 `/opt/drama-plus/.env` 中设置 `PUBLIC_BASE_URL=https://你的公网域名`，并用新版 Compose 配置重建应用容器。支持 URL 的模型会收到单个参考素材的限时签名链接。应用和原有 `/static` 地址仍通过网站访问密码保护。
+
+已部署的 Caddy 需要同步仓库 `deploy/tencent-public/Caddyfile` 中的 `@referenceMedia` 和两个 `handle` 块。保留当前站点地址、TLS 设置和 `access.caddy`，校验配置后重启网关。
+
+### 启用个人即梦积分
+
+在应用的 `/opt/drama-plus/.env` 设置 `JIMENG_PRIVATE_ORIGIN=https://你的自用域名`。用 `openssl rand -hex 32` 生成代理密钥，将同一个值写入应用和 `/opt/drama-plus-public/.env` 的 `JIMENG_PRIVATE_PROXY_SECRET`，并将两份文件权限设为 `600`。同步应用和网关的 Compose 配置，并按仓库 Caddyfile 更新现有站点的两个 `handle` 块，保留实际域名、TLS 和访问密码。`start-private.sh` 检测到即梦域名后会构建内含官方 Linux CLI 的应用镜像。
+
+重建两个容器后，在自用站打开「设置 → AI 服务 → 视频 → 新增 → 即梦积分 · 官方 CLI」，连接个人即梦账号并在官网确认授权。容器的 `jimeng-data` 卷保存钥匙串和任务状态，更新容器时需保留该卷。授权完成后在「剧本转视频」选择即梦模型，每次生成前会显示官方积分报价。
+
+### 在线反馈管理
+
+成员可以在「设置 → 问题反馈」提交反馈。由 `RELEASE_NOTES_ADMIN_USER` 指定的站点管理员打开该页即可查看和处理。需要再授权一个人处理反馈时，将其 Caddy 登录用户名写入应用 `/opt/drama-plus/.env` 的 `FEEDBACK_ADMIN_USER`。
+
+反馈管理复用 HTTPS 私有网关身份校验。应用 Compose 传入上述环境变量，Caddy `reverse_proxy` 通过 `X-Drama-Authenticated-User` 转发已验证的用户名。反馈记录与站点 SQLite 数据库一同备份。
+
+### 启用站内登录、退出和切换账号
+
+应用与网关已配置同一个私有代理密钥，且 `JIMENG_PRIVATE_ORIGIN` 等于实际 HTTPS 站点地址时，可启用站内登录。更新应用镜像与网关的 Caddyfile、Compose 配置，在 `/opt/drama-plus-public/.env` 加入 `DRAMA_SITE_SESSIONS=true`，校验后重建网关。保留实际域名和 `access.caddy` 里的现有用户及密码摘要。
+
+启用后首次访问会进入站内登录页。登录成功后，顶栏账号菜单显示当前用户名，提供「切换账号」和「退出登录」。调用私有 API 的客户端可通过 `POST /api/v1/site-session/login` 提交原站点 Basic 凭据，再用响应中的 Cookie 访问其他接口。认证请求与密码应始终经 HTTPS 传输。
+
+### 发布版本更新公告
+
+将发布账号的用户名写入应用 `/opt/drama-plus/.env` 的 `RELEASE_NOTES_ADMIN_USER`，同步应用 Compose 后重建应用。用该账号登录，打开「设置 → 发布更新」，填写标题和更新内容，每行写一项改动，点击「发布更新」。公告保存在站点 SQLite 数据库，所有已登录用户可从导演模式顶栏的铃铛查看。
+
 ## 可选 通过SSH隧道访问
 
 应用仅绑定服务器的 `127.0.0.1:5679`。需要先为自己的电脑配置正常SSH登录，再在Mac终端运行：
@@ -357,3 +385,15 @@ Caddy会为域名申请证书，不需要搬迁SQLite和媒体文件。这里关
 ## 16 OpenAI连接失败与Key管理
 
 本次后续排查确认：云主机与短剧容器直连`api.openai.com`均超时，本地成功不代表服务器出口可达。首次从管理页面提交Key时，开发者工具可看到应用层内容，实际网络由HTTPS加密；当前配置接口仍会返回完整Key，尚未具备产品级密钥管理和用户权限隔离。完整证据、复查命令和限制见[OpenAI云端接入排查](openai-cloud-connection-debug.md)。
+
+## LibTV 官方 CLI
+
+从 [LibTV 官方 CLI 1.2.0 文档和安装包](https://liblibai-web-static.liblib.cloud/cli/1.2.0/libtv-cli-skill.zip) 获取安装说明。私有容器部署时，选与服务器架构一致的 Linux 版，把可执行文件放到应用数据目录的 `libtv/libtv`。Compose 默认使用容器内 `/app/data/libtv/libtv`，把登录状态保存在 `/app/data/libtv/state`。本地运行时，应用默认查找 `~/.libtv/libtv`，也可以使用 `LIBTV_CLI_BIN` 指定绝对路径。
+
+本地浏览器和应用服务在同一台机器上时，从「设置 → AI 服务 → 视频 → LibTV」点击「连接 LibTV 账号」。LibTV 官网回跳本机 CLI 后，应用会为该账号准备专用个人画布，再保存视频服务。需要使用已有画布时，可以用 `LIBTV_PROJECT_ID` 指定其 UUID。
+
+公网部署时，已登录站点的用户可以打开「设置 → AI 服务 → 视频 → LibTV → 连接 LibTV 账号」，填写已绑定 LibTV 账号的大陆手机号，点击「发送验证码」，再填入短信验证码完成授权。授权成功后应用会准备个人画布。所有用户的 LibTV 视频任务都使用站点当前连接的 LibTV 账号。
+
+如 LibTV 要求人机验证，按官方安装包的 `commands/login.md` 完成验证。需要在终端登录时，使用运行应用的系统用户和同一个 `LIBTV_CONFIG_DIR`。登录后回到设置刷新账号，点击「准备画布」。也可以在服务端通过 `LIBTV_PROJECT_ID` 指定已有画布。
+
+`libtv model search 'Seedance 2.5' --type video` 可查模型，`libtv project <画布 UUID>` 可验登录和画布权限，两条命令都不提交生成。视频生成由登录该 LibTV CLI 的账号结算，生成任务会复用既有的任务列表和成片回填。

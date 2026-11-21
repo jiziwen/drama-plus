@@ -21,8 +21,7 @@ function viewedEpisode() {
   const installed: string[] = []
   const page = runInNewContext(outputText + '\n;({monitorAIJob,storyboardProgressText,storyboardActionFor})', {
     aiProgress: {value: progress}, requestController: new AbortController(), waitScriptVideoJob,
-    scriptVideoRequest: async (path: string) => path,
-    installProject: async (path: string) => installed.push(path),
+    refreshProject: async (pid: string, eid: string) => installed.push('/projects/' + pid + '/episodes/' + eid),
   })
   return {
     watch: (initial: ScriptVideoClientJob) => page.monitorAIJob('七天', '第3集', initial),
@@ -101,7 +100,7 @@ test('已生成全部片段仍显示整集校验，仅完成后读取并安装�
   assert.match(view.label(), /正在校验整集.*7 段/)
   assert.deepEqual(view.installed, [])
   assert.deepEqual((await watching).result.timing, {segments: 7, seconds: 183})
-  assert.deepEqual(view.installed, ['/projects/七天'])
+  assert.deepEqual(view.installed, ['/projects/七天/episodes/第3集'])
   assert.equal(view.label(), '')
 })
 

@@ -1,5 +1,5 @@
 export type ScriptVideoStage = 'materials' | 'outline' | 'production'
-export type ScriptVideoEditorTab = 'shots' | 'prompt' | 'revise' | 'continuity' | 'preview'
+export type ScriptVideoEditorTab = 'shots' | 'prompt' | 'revise' | 'continuity' | 'preview' | 'versions'
 
 type ScrollOffset = { top: number; left: number }
 export type ScriptVideoViewPosition = {
@@ -14,7 +14,7 @@ export type ScriptVideoViewPosition = {
 
 const key = 'script-video-view-position'
 const stages = ['materials', 'outline', 'production'] as const
-const tabs = ['shots', 'prompt', 'revise', 'continuity', 'preview'] as const
+const tabs = ['shots', 'prompt', 'revise', 'continuity', 'preview', 'versions'] as const
 
 export function readScriptVideoViewPosition(): ScriptVideoViewPosition | undefined {
   try {

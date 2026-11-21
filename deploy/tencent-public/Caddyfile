@@ -4,6 +4,7 @@
 }
 
 https://162.14.83.236 {
+    encode zstd gzip
     tls {
         issuer acme {
             dir https://acme-v02.api.letsencrypt.org/directory

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { buildCardPrompt, exportMarkdown, rebindCardAssets, type PreviewProduction } from '../app/utils/scriptVideoPreview'
+import { buildCardPrompt, exportMarkdown, rebindCardAssets, scriptVideoClipFilename, type PreviewProduction } from '../app/utils/scriptVideoPreview'
 import { portableDeliveryCard } from '../app/utils/scriptVideoPreviewExport'
 import { buildScriptVideoDelivery, type ScriptVideoContinuation } from '../../backend/src/services/script-video-delivery'
 import { validatePreviewCards } from '../app/utils/scriptVideoPreviewValidation'
@@ -42,6 +42,12 @@ test('单段导出沿用整集原编号与累计时间', () => {
   const markdown = exportMarkdown([cards[1]], seedAssets, { production, episodeCards: cards })
   assert.ok(markdown.includes('## 视频编号02｜00:30–01:00｜'))
   assert.ok(!markdown.includes('## 视频编号01｜'))
+})
+
+test('单段视频下载使用中文集数和原片段编号', () => {
+  assert.equal(scriptVideoClipFilename(1, 1), '第一集-01.mp4')
+  assert.equal(scriptVideoClipFilename(12, 8), '第十二集-08.mp4')
+  assert.equal(scriptVideoClipFilename(105, 13), '第一百零五集-13.mp4')
 })
 
 test('分镜交付只给连续片段追加尾帧，保留原配图编号并使用同一提示词', () => {

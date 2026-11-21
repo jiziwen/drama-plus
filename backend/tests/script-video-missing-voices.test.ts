@@ -20,9 +20,10 @@ function makeCard(dialogue: string) {
   }
 }
 
-test('默认关闭模型生成音色，对话和别名 OS 要求实际出声造型有音频', () => {
+test('默认允许模型生成音色，显式关闭后要求实际出声造型有音频', () => {
   const card = makeCard('宁宁（OS）：“别急；@阿川还没动。”；@小禾：“把门关上。”；宁宁：“我知道了。”；音效：木门撞击。')
-  const referenceOnly = assets.map(asset => asset.id === 'he' ? { ...asset, voiceMode: 'reference' as const } : asset)
+  assert.deepEqual(getScriptVideoMissingVoices(card, assets, options), [])
+  const referenceOnly = assets.map(asset => ['court', 'he'].includes(asset.id) ? { ...asset, voiceMode: 'reference' as const } : asset)
   assert.deepEqual(getScriptVideoMissingVoices(card, referenceOnly, options), ['阿宁_礼服', '小禾'])
   assert.deepEqual(buildScriptVideoDelivery(card, referenceOnly, options).missingVoices, ['阿宁_礼服', '小禾'])
 
@@ -73,7 +74,7 @@ test('闭合引号后紧接同一行的发声角色要校验声音并在成片�
     prompt: `镜头 01（0–4秒）\n画面与动作：@魏忠国 和 @顾凌天_龙袍 站在殿中。\n对白／音效：${dialogue}`,
   }
   assert.deepEqual(getScriptVideoMissingVoices(card, roles.map(role =>
-    role.id === 'wei' ? { ...role, voiceAudio: undefined } : role)), ['魏忠国'])
+    role.id === 'wei' ? { ...role, voiceAudio: undefined, voiceMode: 'reference' as const } : role)), ['魏忠国'])
   assert.deepEqual(getScriptVideoMissingVoices(card, roles.slice(1)), ['魏忠国'])
 
   const jimeng = buildScriptVideoDelivery(card, roles, { provider: 'jimeng', model: 'jimeng-seedance-2.5' })

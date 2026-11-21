@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { randomUUID } from 'node:crypto'
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, statSync, utimesSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
+import Database from 'better-sqlite3'
 import { tmpdir } from 'node:os'
 import { OUTLINE_DURATION_POLICY, ScriptVideoStore, ScriptVideoStoreError } from '../src/services/script-video-store'
 import { getScriptVideoStylePreset } from '../src/services/script-video-style'
@@ -13,7 +14,8 @@ const STYLE_TWO = { id: 'custom' as const, name: '暖色质感', prefix: '暖色
 
 async function fixture(run: (store: ScriptVideoStore, directory: string) => Promise<void>) {
   const dir = mkdtempSync(join(tmpdir(), 'script-video-store-'))
-  try { await run(new ScriptVideoStore(dir), dir) } finally { rmSync(dir, { recursive: true, force: true }) }
+  const store = new ScriptVideoStore(dir)
+  try { await run(store, dir) } finally { await store.close(); rmSync(dir, { recursive: true, force: true }) }
 }
 
 test('persists isolated projects and episodes across store instances', async () => fixture(async (store, dir) => {
@@ -239,7 +241,7 @@ test('更新角色声音设置只让实际声音来源变动的未出片分镜�
   modeChange.assets[1].voiceMode = 'reference'
   const savedMode = await store.update(project.id, modeChange, saved.revision)
   assert.deepEqual((await store.get(project.id)).assets, modeChange.assets)
-  const modeCards = savedMode.episodes[0].cards
+  const modeCards = (await store.episode(project.id, episode.id)).episode.cards
   assert.equal(modeCards[3].version, cards[3].version + 1)
   assert.equal(modeCards[3].status, 'draft')
   for (const index of [0, 1, 2, 4, 5]) {
@@ -251,10 +253,18 @@ test('更新角色声音设置只让实际声音来源变动的未出片分镜�
   assert.equal(modeCards[5].videoUrl, '/static/videos/task-522.mp4')
   assert.deepEqual(savedMode.episodes[0].tasks, saved.episodes[0].tasks)
 
-  const implicit = structuredClone(savedMode)
-  delete implicit.assets[1].voiceMode
-  const savedImplicit = await store.update(project.id, implicit, savedMode.revision)
-  assert.deepEqual(savedImplicit.episodes[0].cards, modeCards)
+  // Restoring the default via a small collaboration write updates only the
+  // affected unfinished speaker, keeping completed clips and silent cards.
+  const savedImplicit = await store.applyChanges(project.id, { clientId: 'voice-editor', sequence: 1,
+    changes: [{ target: 'asset', id: other.id, unset: ['voiceMode'] }], loadedEpisodeIds: [episode.id] })
+  assert.equal(savedImplicit.project.assets[1].voiceMode, undefined)
+  assert.deepEqual(savedImplicit.episodes[0].cards, modeCards.map((card: any) =>
+    card.id === 'unrelated' ? { ...card, version: card.version + 1 } : card))
+
+  const savedWithAudio = await store.applyChanges(project.id, { clientId: 'voice-editor', sequence: 2,
+    changes: [{ target: 'asset', id: lead.id, fields: { voiceMode: 'reference' } }], loadedEpisodeIds: [episode.id] })
+  assert.equal(savedWithAudio.project.assets[0].voiceMode, 'reference')
+  assert.deepEqual(savedWithAudio.episodes, savedImplicit.episodes)
 }))
 
 test('保存旧风格提示词时只清除前缀标题和多余尾部空行，保留预设原文和手改正文', async () => fixture(async store => {
@@ -282,14 +292,17 @@ test('读取旧存档时规范当前提示词而不改磁盘及历史', async ()
   const project = await store.create('旧项目', style)
   project.episodes[0].cards = [{id:'c',prompt:'正文',shots:[],assetIds:[],status:'draft',version:1}]
   const saved = await store.update(project.id, project, project.revision)
-  const filename = join(directory, project.id + '.json')
-  const record = JSON.parse(readFileSync(filename, 'utf8'))
+  const legacy = join(directory, 'legacy')
+  mkdirSync(legacy)
+  const filename = join(legacy, project.id + '.json')
+  const record = { project: saved, jobs: [] }
   const oldPrompt = style.prefix + '\n←承上：保留正文'
   record.project.episodes[0].cards[0].prompt = oldPrompt
   record.project.episodes[0].generationsHistory = [{cards:[{prompt:oldPrompt}]}]
   writeFileSync(filename, JSON.stringify(record))
   const before = readFileSync(filename, 'utf8')
-  for (const retrieved of [await store.get(saved.id), (await store.list())[0]]) {
+  const migrated = new ScriptVideoStore(legacy)
+  for (const retrieved of [await migrated.get(saved.id), (await migrated.list())[0]]) {
     assert.ok(!retrieved.episodes[0].cards[0].prompt.startsWith('冷色调'))
     assert.ok(retrieved.episodes[0].cards[0].prompt.endsWith('←承上：保留正文'))
     assert.equal(retrieved.episodes[0].generationsHistory[0].cards[0].prompt, oldPrompt)
@@ -468,6 +481,7 @@ test('AI and paid video jobs reject stale writes and prevent duplicate submissio
     let job = await store.getJob(project.id, jobId)
     for (let i = 0; i < 100 && !['completed', 'failed'].includes(job.status); i++) { await new Promise(resolve => setTimeout(resolve, 10)); job = await store.getJob(project.id, jobId) }
     assert.equal(job.code, 'STALE')
+    assert.equal((job.result as any).cards[0].title, '过期内容')
     assert.equal((await store.get(project.id)).episodes[0].cards[0].id, 'card-1')
     assert.equal((await store.get(project.id)).episodes[0].cards[0].summary, '生成期间编辑的分镜')
     changed = await store.get(project.id)
@@ -906,8 +920,10 @@ test('style snapshots persist, validate strictly and preserve existing settings 
 
 test('legacy prompts get asset markers and closed-mouth OS cues without rewriting the speech or history', async () => fixture(async (store, directory) => {
   const project = await store.create('引用旧稿')
-  const recordFile = join(directory, project.id + '.json')
-  const record = JSON.parse(readFileSync(recordFile, 'utf8'))
+  const legacy = join(directory, 'legacy')
+  mkdirSync(legacy)
+  const recordFile = join(legacy, project.id + '.json')
+  const record = { project, jobs: [] }
   record.project.assets = [
     {id:'base',name:'顾凌天',kind:'character',image:'/static/base.png'},
     {id:'robe',name:'顾凌天_龙袍',kind:'character',image:'/static/robe.png'},
@@ -918,7 +934,7 @@ test('legacy prompts get asset markers and closed-mouth OS cues without rewritin
     promptVersions:[{prompt:raw, assetIds:['robe']}] }]
   writeFileSync(recordFile, JSON.stringify(record))
   const disk = readFileSync(recordFile,'utf8')
-  const card = (await store.get(project.id)).episodes[0].cards[0]
+  const card = (await new ScriptVideoStore(legacy).get(project.id)).episodes[0].cards[0]
   assert.equal(card.prompt,'镜头侧拍@顾凌天_龙袍。@毒酒碗落地。\n对白／音效：@顾凌天_龙袍（内心 OS，角色闭口，嘴唇不动，不对口型）：“顾凌天。”')
   assert.deepEqual(card.assetIds,['robe','bowl'])
   assert.equal(card.status,'ready')
@@ -1004,6 +1020,7 @@ test('confirmed video rejections repair stale unknown failures on status and ret
 test('only a new manual production card can submit a free-form prompt without formal validation', async () => fixture(async (store, directory) => {
   const { createScriptVideoRoutes } = await import('../src/routes/script-video')
   const { ScriptVideoAIError } = await import('../src/services/script-video-types')
+  const { getScriptVideoStylePreset, scriptVideoPromptStylePrefix } = await import('../src/services/script-video-style')
   const project = await store.create('手动片段')
   const episode = project.episodes[0]
   const card = { id: 'formal', duration: 5, shots: [], assetIds: [], prompt: '薄雾掠过城门。' }
@@ -1018,6 +1035,7 @@ test('only a new manual production card can submit a free-form prompt without fo
     { ...baseline.episodes[0].cards[0], manuallyAdded: true },
     { ...card, id: 'manual', manuallyAdded: true, promptNeedsSync: true },
     { ...card, id: 'empty', manuallyAdded: true, prompt: ' ' },
+    { ...card, id: 'style-only', manuallyAdded: true, prompt: scriptVideoPromptStylePrefix(getScriptVideoStylePreset('cool')!) },
   ]
   const saved = await store.update(project.id, baseline, baseline.revision)
   assert.equal(saved.episodes[0].cards[0].manuallyAdded, undefined)
@@ -1048,19 +1066,20 @@ test('only a new manual production card can submit a free-form prompt without fo
   })
   assert.equal((await (await submit('formal')).json() as any).errorCode, 'FORMAL_REQUIRED')
   assert.equal((await (await submit('empty')).json() as any).errorCode, 'PROMPT_REQUIRED')
+  assert.equal((await (await submit('style-only')).json() as any).errorCode, 'PROMPT_REQUIRED')
   assert.equal((await submit('manual')).status, 201)
   assert.equal(formalChecks, 1)
   assert.deepEqual(submitted, ['manual'])
 }))
 
-test('video submission blocks missing voices by default and allows model voices for opted-in roles', async () => fixture(async store => {
+test('video submission defaults to model voices and requires audio for opted-out roles', async () => fixture(async store => {
   const { createScriptVideoRoutes } = await import('../src/routes/script-video')
   let project = await store.create('对白与心声音频')
   const episodeId = project.episodeId
   const dialogue = '@阿宁：“我来了。”；@小禾（OS）：“她总算来了。”；音效：风吹树叶。'
   project.assets = [
-    { id: 'a', name: '阿宁', kind: 'character', image: '/static/uploads/a.png' },
-    { id: 'b', name: '小禾', kind: 'character', image: '/static/uploads/b.png', voiceMode: 'model' },
+    { id: 'a', name: '阿宁', kind: 'character', image: '/static/uploads/a.png', voiceMode: 'reference' },
+    { id: 'b', name: '小禾', kind: 'character', image: '/static/uploads/b.png' },
     { id: 'c', name: '阿川', kind: 'character', image: '/static/uploads/c.png' },
   ]
   const episode = project.episodes[0]
@@ -1196,7 +1215,7 @@ test('in-flight renders ignore other model selections and only their own audio c
   const legacyTask = await submit('independent')
   await store.mutate(project.id, ({ project, jobs }) => {
     const job = jobs.find(item => item.taskId === legacyTask)!
-    assert.equal(job.videoDigestVersion, 6)
+    assert.equal(job.videoDigestVersion, 7)
     // Captured from the previous release for this exact legacy fixture.
     job.baseDigest = '6f050eae23c54670cc11d634a05d6095509d45a8ca0913f4a359b7732ab55ab8'
     job.videoDigestVersion = 4
@@ -1224,7 +1243,7 @@ test('video submission uses only the saved current predecessor for a matching ha
       { ...card, id: 'prior', shots: [{ ...shot, duration: 2.5 }, { ...shot, duration: 2.5 }],
         ending: '小旗半抬右手扶住门闩。下一段从本段尾帧继续。' },
       { ...card, id: 'next', opening: '同一镜头续接上一段尾帧，小旗半抬右手扶住门闩。' },
-      { ...card, id: 'cut', opening: '同场切镜，切到在院落等待的旁人。' },
+      { ...card, id: 'cut', scene: '书房（唯一空间）', opening: '切场，书房里旁人正在等待。' },
     ]
     return { result: null, documentChanged: true }
   })
@@ -1239,7 +1258,9 @@ test('video submission uses only the saved current predecessor for a matching ha
       : { taskId, status: 'processing', stage: 'polling' },
     startScriptVideoGeneration: async ({ card, duration, continuationSource }: any) => {
       submitted.push({ cardId: card.id, source: continuationSource, ...(duration === undefined ? {} : { duration }) })
-      return { taskId: 30 + submitted.length, status: 'processing', ...(continuationSource && { continuation }) }
+      return { taskId: 30 + submitted.length, status: 'processing', ...(continuationSource && {
+        continuation: { ...continuation, previousTaskId: continuationSource.previousTaskId },
+      }) }
     },
   } as any)
   const base = `http://localhost/projects/${project.id}`
@@ -1257,7 +1278,7 @@ test('video submission uses only the saved current predecessor for a matching ha
 
   complete.add(31)
   const accepted = await submit('next')
-  assert.equal(accepted.status, 201)
+  assert.equal(accepted.status, 201, await accepted.clone().text())
   assert.deepEqual((await accepted.json() as any).data.continuation, continuation)
   assert.deepEqual(submitted.at(-1)?.source, { previousCardId: 'prior', previousTaskId: 31, videoUrl: '/static/videos/task-31.mp4',
     shotStartSeconds: 5, shotEndSeconds: 9 })
@@ -1271,100 +1292,188 @@ test('video submission uses only the saved current predecessor for a matching ha
   assert.equal(saved.cards[1].videoUrl, '/static/videos/task-33.mp4')
   assert.deepEqual(saved.tasks.find((task: any) => task.cardId === 'next').continuation, continuation)
 
+  const otherTab = randomUUID()
+  store.queue.reserve(project.id, project.episodeId, otherTab, 'quote-predecessor', ['prior'])
+  assert.equal((await (await submit('next')).json() as any).errorCode, 'CONTINUATION_PENDING')
+  store.queue.release(project.id, project.episodeId, otherTab, 'quote-predecessor')
+
+  assert.equal((await submit('prior', 8)).status, 201)
+  assert.equal((await (await submit('next')).json() as any).errorCode, 'CONTINUATION_PENDING')
+  complete.add(34)
+  assert.equal((await submit('next')).status, 201)
+  assert.deepEqual(submitted.at(-1)?.source, { previousCardId: 'prior', previousTaskId: 34, videoUrl: '/static/videos/task-34.mp4',
+    shotStartSeconds: 4, shotEndSeconds: 8 })
+
+  // The official choice can return to an older render while a dependent job runs.
   await store.mutate(project.id, ({ project }) => {
-    project.episodes[0].cards[0].version++
+    project.episodes[0].cards[0].videoUrl = '/static/videos/task-31.mp4'
+    return { result: null, documentChanged: true }
+  })
+  complete.add(35)
+  await app.request(`${base}/video/35`)
+  const restored = (await store.get(project.id)).episodes[0]
+  assert.equal(restored.cards[1].videoUrl, '/static/videos/task-33.mp4')
+  assert.equal(restored.tasks.find((task: any) => task.taskId === 35).staleResult, true)
+  assert.equal((await submit('next')).status, 201)
+  assert.deepEqual(submitted.at(-1)?.source, { previousCardId: 'prior', previousTaskId: 31, videoUrl: '/static/videos/task-31.mp4',
+    shotStartSeconds: 5, shotEndSeconds: 9 })
+  complete.add(36)
+  await app.request(`${base}/video/36`)
+
+  await store.mutate(project.id, ({ project }) => {
+    Object.assign(project.episodes[0].cards[0], { version: 2, status: 'draft', videoUrl: undefined })
     return { result: null, documentChanged: true }
   })
   assert.equal((await (await submit('next')).json() as any).errorCode, 'CONTINUATION_REQUIRED')
-  assert.equal(submitted.length, 3)
+  assert.equal(submitted.length, 6)
 }))
 
-test('episode leases allow parallel work on different episodes and reject stale and foreign writers', async (t) => fixture(async (store, directory) => {
-  const previousDb = process.env.SQLITE_PATH, previousData = process.env.HUOBAO_DATA_DIR
-  process.env.SQLITE_PATH = join(directory, 'test.sqlite3')
-  process.env.HUOBAO_DATA_DIR = directory
+test('presence allows concurrent editors and expiration never blocks field saves; legacy whole PUT still needs its revision', async t => fixture(async store => {
+  const { createScriptVideoRoutes } = await import('../src/routes/script-video')
+  let project = await store.create('协作项目', STYLE)
+  const first = project.episodeId, second = 'episode-2'
+  project.episodes.push({ ...project.episodes[0], id: second, number: 2, cards: [], script: 'other episode' })
+  project.episodes[0].cards.push({ id: 'c', prompt: '镜头', assetIds: [], shots: [{ id: 's', camera: '固定', duration: 2 }] })
+  project = await store.update(project.id, project, project.revision)
+  const app = createScriptVideoRoutes(store)
+  const request = (url: string, method = 'GET', session?: string, body?: unknown) => app.request(url, {
+    method, headers: { 'Content-Type': 'application/json', ...(session && { 'X-Script-Video-Session': session }) },
+    ...(body !== undefined && { body: JSON.stringify(body) }),
+  })
+  const base = '/projects/' + project.id
+  const a = randomUUID(), b = randomUUID()
+  const lock = (session: string) => request(base + '/episodes/' + first + '/lock', 'POST', session)
+  let now = Date.now()
+  t.mock.method(Date, 'now', () => now)
+  assert.deepEqual((await Promise.all([lock(a), lock(b)])).map(r => r.status), [200, 200])
+  assert.deepEqual((await (await request(base + '/episode-locks', 'GET', a)).json() as any).data, { [first]: { expiresAt: now + 30_000 } })
+  now += 31_000
+  assert.deepEqual((await (await request(base + '/episode-locks', 'GET', b)).json() as any).data, {})
+  const directory = (await (await request('/projects?view=summary')).json() as any).data
+  assert.deepEqual(Object.keys(directory[0]).sort(), ['id', 'revision', 'title'])
+  const summary = (await (await request(base + '?view=summary')).json() as any).data
+  assert.deepEqual(summary.episodes.map((ep: any) => ep.cardCount), [1, 0])
+  for (const ep of summary.episodes) assert.ok(!('script' in ep) && !('cards' in ep))
+  const patch = (clientId: string, sequence: number, changes: any[], loadedEpisodeIds?: string[]) =>
+    request(base + '/changes', 'PATCH', clientId, { clientId, sequence, changes, loadedEpisodeIds })
+  const set = (id: string, fields: Record<string, unknown>) => ({ target: 'episode', id, fields })
+  const [one, two] = await Promise.all([patch(a, 1, [set(first, { script: '甲脚本' })]), patch(b, 1, [set(first, { title: '乙标题' })])])
+  assert.equal(one.status, 200)
+  assert.equal(two.status, 200)
+  const changed = await patch(a, 2, [set(first, { script: '新脚本' }), { target: 'card', episodeId: first, id: 'c', fields: { prompt: '新分镜' } }], [first, second])
+  const ack = (await changed.json() as any).data
+  assert.equal(ack.sequence, 2)
+  assert.deepEqual(ack.episodes.map((ep: any) => ep.id), [first, second])
+  assert.equal(ack.episodes[0].title, '乙标题')
+  assert.ok(ack.episodes[0].cards[0].prompt.endsWith('新分镜'))
+  const duplicate = await patch(a, 1, [set(first, { script: '过时重放' })])
+  assert.equal((await duplicate.json() as any).data.revision, ack.revision)
+  const get = async (id: string) => (await (await request(base + '/episodes/' + id)).json() as any).data
+  assert.equal((await get(first)).episode.script, '新脚本')
+  assert.equal((await get(second)).episode.script, 'other episode')
+  assert.equal((await get(second)).episodeRevision, 1)
+  const shotEdit = await patch(b, 2, [{ target: 'shot', episodeId: first, cardId: 'c', id: 's', fields: { camera: '缓慢跟拍', duration: 4 } }])
+  const changedCard = (await shotEdit.json() as any).data.episodes[0].cards[0]
+  assert.equal(changedCard.shots[0].camera, '缓慢跟拍')
+  assert.equal(changedCard.duration, 4)
+  assert.equal((await request(base, 'PUT', a, { project, expectedRevision: project.revision })).status, 409)
+  assert.equal((await request(base + '/changes', 'PATCH', a, { expectedUser: 'another-user', clientId: a, sequence: 3, changes: [] })).status, 403)
+  assert.equal((await patch(a, 3, [{ target: 'card', episodeId: first, id: 'c', fields: { videoUrl: 'forged' } }])).status, 400)
+}))
+
+test('episode restore returns only the latest review, latest text run and live text job', async () => fixture(async store => {
+  const project = await store.create('任务恢复')
+  await store.mutateEpisode(project.id, project.episodeId, ({ jobs }) => {
+    const time = new Date().toISOString()
+    for (const [id, action, status] of [
+      ['old', 'storyboard', 'failed'], ['review', 'review', 'completed'], ['active', 'outline', 'running'],
+      ['new', 'revisions', 'failed'], ['video', 'video', 'running'],
+    ] as const) jobs.push({      id, action, status, projectId: project.id, episodeId: project.episodeId,
+      createdAt: time, updatedAt: time, result: { id }, resumeKey: 'private'    })
+    return { result: null }
+  })
+  const jobs = await store.listJobs(project.id, project.episodeId, true)
+  assert.deepEqual(jobs.map(job => [job.id, job.result]), [['review', { id: 'review' }], ['active', undefined], ['new', undefined]])
+  assert.ok(jobs.every(job => !('resumeKey' in job)))
+}))
+
+test('pending server reservations protect deletion and allow normal edits until release', async () => fixture(async store => {
+  let project = await store.create('等待生成')
+  const episodeId = project.episodeId, session = randomUUID(), requestId = randomUUID()
+  project.episodes[0].cards = [{ id: 'c', prompt: '输入', assetIds: [], shots: [] }]
+  project = await store.update(project.id, project, project.revision)
+  store.queue.reserve(project.id, episodeId, session, requestId, ['c'])
+  const clientId = randomUUID()
+  const edited = await store.applyChanges(project.id, {    clientId, sequence: 1, changes: [
+      { target: 'card', episodeId, id: 'c', fields: { title: '等待时仍可编辑' } },
+    ]  })
+  const current = await store.get(project.id)
+  current.episodes[0].cards = []
+  const running = (error: unknown) => error instanceof ScriptVideoStoreError && error.code === 'VIDEO_RUNNING'
+  await assert.rejects(store.update(project.id, current, edited.revision), running)
+  await assert.rejects(store.applyChanges(project.id, {    clientId, sequence: 2, changes: [
+      { target: 'card', episodeId, id: 'c', remove: true },
+    ]  }), running)
+  await assert.rejects(store.applyChanges(project.id, {    clientId, sequence: 2, changes: [
+      { target: 'episode', id: episodeId, remove: true },
+    ]  }), running)
+  await assert.rejects(store.delete(project.id), running)
+  store.queue.release(project.id, episodeId, session, requestId)
+  assert.equal((await store.applyChanges(project.id, {    clientId, sequence: 2, changes: [
+      { target: 'card', episodeId, id: 'c', remove: true },
+    ]  })).episodes[0].cards.length, 0)
+}))
+
+test('single-episode writes and directory edits never decode an unloaded episode', async () => fixture(async (store, directory) => {
+  const project = await store.create('拆分存储')
+  const own = project.episodeId
+  project.episodes.push({ ...project.episodes[0], id: 'unloaded', number: 2, script: '只读校验' })
+  await store.update(project.id, project, project.revision)
+  const db = new Database(join(directory, 'workspace.sqlite3'))
   try {
-    const { createScriptVideoRoutes } = await import('../src/routes/script-video')
-    let project = await store.create('协作项目', STYLE)
-    const a = randomUUID(), b = randomUUID()
-    const base = `/projects/${project.id}`
-    const first = project.episodeId, second = 'episode-2'
-    const app = createScriptVideoRoutes(store)
-    const request = (path: string, method: string, session?: string, body?: unknown) => app.request(`http://localhost${base}${path}`, {
-      method,
-      headers: { 'content-type': 'application/json', ...(session ? { 'X-Script-Video-Session': session } : {}) },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    })
-    const lock = (episodeId: string, session: string, renew = false) =>
-      request(`/episodes/${episodeId}/lock`, 'POST', session, renew ? { renew: true } : undefined)
-    const save = (next: typeof project, session?: string) =>
-      request('', 'PUT', session, { project: next, expectedRevision: next.revision })
-    const errorCode = async (response: Response, expected: string) => {
-      assert.equal(response.status, 423)
-      assert.equal((await response.json() as any).errorCode, expected)
-    }
+    // A JSON parse of this unrelated row would fail immediately.
+    db.prepare('UPDATE episodes SET document=? WHERE project_id=? AND id=?').run('undecodable', project.id, 'unloaded')
+    const clientId = randomUUID()
+    assert.equal((await store.episode(project.id, own)).episode.id, own)
+    assert.equal((await store.summary(project.id)).episodes.length, 2)
+    const saved = await store.applyChanges(project.id, {      clientId, sequence: 1, changes: [
+        { target: 'episode', id: own, fields: { title: '独立改动' } },
+        { target: 'episode', id: 'new', value: { id: 'new', script: '第三集' } },
+        { target: 'episode', order: ['unloaded', 'new', own] },
+      ]    })
+    assert.deepEqual(saved.project.episodes.map(ep => ep.id), ['unloaded', 'new', own])
+    assert.deepEqual(saved.episodes.map(ep => ep.title), ['独立改动', '未命名分集'])
+    assert.deepEqual(db.prepare('SELECT document, revision FROM episodes WHERE project_id=? AND id=?').get(project.id, 'unloaded'),
+      { document: 'undecodable', revision: 1 })
+  } finally { db.close() }
+}))
 
-    project.episodes.push({ ...project.episodes[0], id: second, number: 2 })
-    assert.equal((await save(project, a)).status, 200)
-    project = await store.get(project.id)
-    const initialRevision = project.revision
-    let now = Date.now()
-    t.mock.method(Date, 'now', () => now)
-    const acquisitions = await Promise.all([lock(first, a), lock(first, b)])
-    assert.deepEqual(acquisitions.map(response => response.status).sort(), [200, 423])
-    const owner = acquisitions[0].ok ? a : b
-    const other = owner === a ? b : a
-    const visible = await (await request('/episode-locks', 'GET', other)).json() as any
-    assert.deepEqual(visible.data, { [first]: { expiresAt: now + 30_000 } })
-    assert.deepEqual((await (await request('/episode-locks', 'GET', owner)).json() as any).data, {})
-    assert.equal((await lock(second, other)).status, 200)
-    assert.equal((await store.get(project.id)).revision, initialRevision)
-
-    const foreign = structuredClone(project)
-    foreign.episodes[0].script = '不应覆盖'
-    await errorCode(await save(foreign, other), 'EPISODE_LOCKED')
-    await errorCode(await save(foreign), 'EPISODE_LOCKED')
-    await errorCode(await save({ ...project, episodes: [project.episodes[1]], episodeId: second }, other), 'EPISODE_LOCKED')
-    await errorCode(await request(`/episodes/${first}/outline`, 'POST', other, {}), 'EPISODE_LOCKED')
-    await errorCode(await request(`/episodes/${first}/cards/card-1/video`, 'POST', other, {
-      expectedCardVersion: 1, configId: 1, model: 'm', aspectRatio: '16:9', resolution: '720P',
-    }), 'EPISODE_LOCKED')
-    await errorCode(await save({ ...project, settings: { ...project.settings, stylePreset: STYLE_TWO } }, owner), 'EPISODE_LOCKED')
-    await errorCode(await request('', 'DELETE', other), 'EPISODE_LOCKED')
-    assert.equal((await request(`/episodes/${first}/lock`, 'DELETE', other)).status, 200)
-    await errorCode(await lock(first, other), 'EPISODE_LOCKED')
-
-    project.episodes[0].script = '第一个客户端'
-    assert.equal((await save(project, owner)).status, 200)
-    project = await store.get(project.id)
-    project.episodes[1].script = '第二个客户端'
-    assert.equal((await save(project, other)).status, 200)
-    project = await store.get(project.id)
-    assert.deepEqual(project.episodes.map(episode => episode.script), ['第一个客户端', '第二个客户端'])
-
-    now += 15_000
-    const renewal = await lock(first, owner, true)
-    assert.equal(renewal.status, 200)
-    assert.deepEqual((await renewal.json() as any).data, { expiresAt: now + 30_000 })
-    now += 15_001
-    await errorCode(await lock(first, other), 'EPISODE_LOCKED')
-    await errorCode(await lock(second, other, true), 'EPISODE_LOCK_REQUIRED')
-    project.episodes[1].script = '掉线后提交的旧编辑'
-    await errorCode(await save(project, other), 'EPISODE_LOCK_REQUIRED')
-    const globalStyleUpdate = await store.get(project.id)
-    globalStyleUpdate.settings.stylePreset = STYLE_TWO
-    // A project-wide update can propagate to an idle episode without claiming it.
-    globalStyleUpdate.episodes[1].production = { stylePreset: STYLE_TWO }
-    assert.equal((await save(globalStyleUpdate, owner)).status, 200)
-    assert.equal((await request(`/episodes/${first}/lock`, 'DELETE', owner)).status, 200)
-    assert.equal((await lock(first, other)).status, 200)
-    assert.equal((await request('', 'DELETE', other)).status, 200)
-  } finally {
-    if (previousDb === undefined) delete process.env.SQLITE_PATH
-    else process.env.SQLITE_PATH = previousDb
-    if (previousData === undefined) delete process.env.HUOBAO_DATA_DIR
-    else process.env.HUOBAO_DATA_DIR = previousData
-  }
+test('shared edits propagate to unloaded episodes and offline references cannot revive a deleted asset', async () => fixture(async store => {
+  const project = await store.create('共享资产', STYLE)
+  const second = 'unloaded', cardId = 'cut'
+  project.assets = [{ id: 'prop', name: '玉玺', kind: 'prop', image: '/static/prop.png' }]
+  project.episodes.push({    ...project.episodes[0], id: second, cards: [{
+      id: cardId, prompt: '镜头：@玉玺。', assetIds: ['prop'], openingAssetIds: ['prop'],
+      shots: [{ id: 'shot', camera: '特写@玉玺', action: '@玉玺落下', visualAssetIds: ['prop'] }],
+      promptVersions: [{ prompt: '旧版本@玉玺' }],
+    }], production: { stylePreset: STYLE }  })
+  await store.update(project.id, project, project.revision)
+  const clientId = randomUUID()
+  const changed = await store.applyChanges(project.id, {    clientId, sequence: 1, changes: [
+      { target: 'asset', id: 'prop', fields: { name: '金印' } }, { target: 'project', fields: { 'settings.stylePreset': STYLE_TWO } },
+    ]  })
+  assert.equal(changed.episodes.length, 0)
+  const episode = (await store.episode(project.id, second)).episode
+  assert.equal(episode.production.stylePreset.name, STYLE_TWO.name)
+  assert.ok(episode.cards[0].prompt.includes('@金印'))
+  assert.equal(episode.cards[0].promptVersions[0].prompt, '旧版本@玉玺')
+  await store.applyChanges(project.id, { clientId, sequence: 2, changes: [{ target: 'asset', id: 'prop', remove: true }] })
+  const card = (await store.episode(project.id, second)).episode.cards[0]
+  assert.deepEqual([card.assetIds, card.openingAssetIds, card.shots[0].visualAssetIds], [[], [], []])
+  await assert.rejects(store.applyChanges(project.id, {    clientId, sequence: 3, changes: [
+      { target: 'card', id: cardId, episodeId: second, fields: { assetIds: ['prop'] } },
+    ]  }), (error: unknown) => error instanceof ScriptVideoStoreError && error.code === 'ASSET_REMOVED')
+  assert.deepEqual((await store.episode(project.id, second)).episode.cards[0].assetIds, [])
 }))
 
 test('character voice binding works while another episode is open without overwriting its edits', async () => fixture(async (store) => {
@@ -1395,9 +1504,8 @@ test('character voice binding works while another episode is open without overwr
   const upload = { field: 'voiceAudio', expected: null, value: audio }
   const legacySave = await store.get(project.id)
   legacySave.assets[0].voiceAudio = audio
-  await assert.rejects(store.update(project.id, legacySave, legacySave.revision, owner),
-    (error: unknown) => error instanceof ScriptVideoStoreError && error.code === 'EPISODE_LOCKED')
-  assert.equal((await bind(other, first, 'lead', upload)).status, 423)
+  await store.update(project.id, legacySave, legacySave.revision, owner)
+  assert.equal((await bind(other, first, 'lead', upload)).status, 200)
   const attached = await bind(owner, first, 'lead', upload)
   assert.equal(attached.status, 200)
   const after = await store.get(project.id)
@@ -1405,7 +1513,7 @@ test('character voice binding works while another episode is open without overwr
   assert.equal(after.episodes[1].script, otherDraft.episodes[1].script)
   assert.equal((await bind(owner, first, 'lead', upload)).status, 200)
   assert.equal((await store.get(project.id)).revision, after.revision)
-  assert.equal((await bind(other, second, 'lead', { ...upload, value: { ...audio, url: '/static/uploads/new.wav' } })).status, 409)
+  assert.equal((await bind(other, second, 'lead', { ...upload, value: { ...audio, url: '/static/uploads/new.wav' } })).status, 200)
   assert.equal((await bind(owner, first, 'palace', upload)).status, 400)
   assert.equal((await bind(owner, first, 'lead', { field: 'image', expected: null, value: 'elsewhere' })).status, 400)
 
@@ -1416,8 +1524,7 @@ test('character voice binding works while another episode is open without overwr
   })
   const remove = { field: 'voiceAudio', expected: audio, value: null }
   const busy = await bind(owner, first, 'lead', remove)
-  assert.equal(busy.status, 409)
-  assert.equal((await busy.json() as any).errorCode, 'VOICE_TEXT_JOB_ACTIVE')
+  assert.equal(busy.status, 200)
   await store.mutate(project.id, ({ jobs }) => {
     jobs[0].status = 'completed'
     return { result: null }
@@ -1427,8 +1534,7 @@ test('character voice binding works while another episode is open without overwr
   const restored = await store.get(project.id)
   assert.equal(restored.assets[0].voiceAudio, undefined)
   assert.equal(restored.assets[0].voiceMode, 'model')
-  await assert.rejects(store.update(project.id, { ...restored, assets: [] }, restored.revision, owner),
-    (error: unknown) => error instanceof ScriptVideoStoreError && error.code === 'EPISODE_LOCKED')
+  assert.deepEqual((await store.update(project.id, { ...restored, assets: [] }, restored.revision, owner)).assets, [])
 }))
 
 test('episode video polling batches active tasks without rewriting progress, and finalizes once', async () => fixture(async (store, directory) => {
@@ -1464,30 +1570,33 @@ test('episode video polling batches active tasks without rewriting progress, and
     assert.equal(response.status, 200)
     return (await response.json() as any).data
   }
-  const filename = join(directory, `${project.id}.json`)
-  const markUnchanged = () => utimesSync(filename, 1, 1)
-  markUnchanged()
+  const observer = new Database(join(directory, 'workspace.sqlite3'), { readonly: true })
+  const diskVersion = () => observer.pragma('data_version', { simple: true })
+  let marked = diskVersion()
   const revision = (await store.get(project.id)).revision
   assert.deepEqual((await getData(endpoint)).tasks.map((task: any) => task.taskId), [101, 102])
   assert.deepEqual(queried, [101, 102])
   assert.deepEqual((await getData(`${base}/jobs?episodeId=${first}`)).map((job: any) => job.taskId), [101, 102])
   assert.equal((await getData(`${base}/video/101`)).status, 'processing')
-  assert.equal(statSync(filename).mtimeMs, 1000)
+  assert.equal(diskVersion(), marked)
 
   videoStates.set(101, { status: 'completed', stage: 'completed', videoUrl: '/static/videos/video.mp4' })
   videoStates.set(102, { status: 'failed', stage: 'failed', code: 'VIDEO_FAILED', error: '视频生成失败' })
-  await Promise.all([getData(endpoint), getData(endpoint)])
+  const [activity] = await Promise.all([getData(base + '/episodes/' + first + '/activity'), getData(endpoint)])
+  assert.deepEqual(activity.activeCardIds, [])
+  assert.deepEqual(activity.tasks.map((task: any) => task.status), ['completed', 'failed'])
   const settled = await store.get(project.id)
   assert.equal(settled.revision, revision + 1)
   assert.deepEqual(settled.episodes[0].tasks.map((task: any) => task.status), ['completed', 'failed'])
   assert.equal(settled.episodes[0].tasks[0].videoUrl, '/static/videos/video.mp4')
   assert.equal(settled.episodes[0].tasks[1].code, 'VIDEO_FAILED')
   assert.deepEqual(settled.episodes[1].tasks.map((task: any) => task.status), ['processing', 'processing'])
-  markUnchanged()
+  marked = diskVersion()
   assert.deepEqual(await getData(endpoint), { tasks: [] })
   assert.equal((await getData(`${base}/video/101`)).status, 'completed')
-  assert.equal(statSync(filename).mtimeMs, 1000)
+  assert.equal(diskVersion(), marked)
 
+  observer.close()
   videoStates.set(103, { status: 'completed', stage: 'completed', videoUrl: '/static/videos/offline.mp4' })
   const reopened = await getData(base)
   assert.deepEqual(reopened.episodes[1].tasks.map((task: any) => task.status), ['completed', 'processing'])

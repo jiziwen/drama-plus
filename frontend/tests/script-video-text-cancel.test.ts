@@ -98,7 +98,7 @@ test('重新进入分集可取消后台运行的单段修改', async () => {
   await restored
   assert.equal(signal.aborted, true)
   assert.equal(currentTextRun.value, undefined)
-  assert.deepEqual(requests, ['GET /projects/project/jobs?episodeId=episode', 'POST /projects/project/jobs/job/cancel'])
+  assert.deepEqual(requests, ['GET /projects/project/jobs?episodeId=episode&view=restore', 'POST /projects/project/jobs/job/cancel'])
   assert.deepEqual(errors, [])
 })
 

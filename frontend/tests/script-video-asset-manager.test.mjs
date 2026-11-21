@@ -14,7 +14,7 @@ function section(startMarker, endMarker) {
 }
 const controller = ts.transpileModule([
   section('const assetManageSearch =', 'const validation ='),
-  section('const assetKinds =', 'const assetFilter ='),
+  section('const assetKinds =', 'const kindLabel ='),
   section('function editAsset(', 'function requireSharedProjectEdit('),
 ].join('\n'), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
@@ -125,4 +125,40 @@ test('从引用打开编辑时清空旧搜索并切到目标分类，保证目�
   assert.equal(app.assetManageSearch.value, '')
   assert.equal(app.assetManageKind.value, 'all')
   assert.equal(app.managedAssets.value.length, 5)
+})
+
+test('从提示词上传时，即使切换片段，图片也只关联发起上传的片段', async () => {
+  const first = { id: 'first', assetIds: ['existing'], prompt: '拍摄城门。', version: 2 }
+  const second = { id: 'second', assetIds: [], prompt: '人物走入画面。', version: 1 }
+  const episode = { id: 'episode', cards: [first, second] }
+  const project = { id: 'project', assets: [], episodes: [episode] }
+  const currentEpisode = ref(episode)
+  const selectedCard = ref(first)
+  let finishUpload
+  const pending = new Promise(resolve => { finishUpload = resolve })
+  const saved = []
+  const uploadController = ts.transpileModule([
+    section('function updateCard(', 'function openBindingDialog('),
+    section('function uniqueName(', 'async function importAssetFiles('),
+  ].join('\n'), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+  }).outputText
+  const upload = runInNewContext(uploadController + '\nuploadPromptImage', {
+    ref, alive: true, currentEpisode, selectedCard, currentProject: ref(project), projects: ref([project]),
+    stage: ref('production'), requireSharedProjectEdit: () => true,
+    uploadAPI: { image: () => pending }, previewId: () => 'new-image',
+    saveProjectNow: async id => saved.push(id),
+    toast: { success() {}, error: assert.fail },
+  })
+
+  const result = upload({ name: '自定义城门.png', type: 'image/png', size: 100 })
+  selectedCard.value = second
+  finishUpload({ url: '/static/uploads/custom.png' })
+  await result
+
+  assert.equal(project.assets[0].name, '自定义城门')
+  assert.deepEqual(Array.from(episode.cards[0].assetIds), ['existing', 'new-image'])
+  assert.equal(episode.cards[0].prompt, first.prompt)
+  assert.deepEqual(episode.cards[1].assetIds, [])
+  assert.deepEqual(saved, [project.id])
 })

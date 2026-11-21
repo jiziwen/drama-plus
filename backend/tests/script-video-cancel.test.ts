@@ -152,11 +152,13 @@ test('canceling one job preserves other runs and ignores a late result while gua
   assert.equal(repeat.status, 409)
   assert.equal(((await repeat.json()) as { errorCode: string }).errorCode, 'SUBMISSION_UNKNOWN')
   assert.equal(launches, 3)
-  await submitted(await trial.submit(trial.main, 'first', randomUUID(), true))
+  const retried = await submitted(await trial.submit(trial.main, 'first', randomUUID(), true))
   assert.equal((await trial.store.getJob(trial.projectId, one.jobId)).code, 'SUBMISSION_UNKNOWN_ACKNOWLEDGED')
-  assert.deepEqual(await cancelResult(await trial.cancel(trial.main, {})), { canceled: 2, upstreamUnconfirmed: 2 })
+  assert.equal((await trial.cancel(trial.main, {})).status, 400)
+  const selected = { jobIds: [two.jobId, retried.jobId] }
+  assert.deepEqual(await cancelResult(await trial.cancel(trial.main, selected)), { canceled: 2, upstreamUnconfirmed: 2 })
   assert.equal((await trial.store.getJob(trial.projectId, foreign.jobId)).status, 'running')
-  assert.deepEqual(await cancelResult(await trial.cancel(trial.main, {})), { canceled: 0, upstreamUnconfirmed: 0 })
+  assert.deepEqual(await cancelResult(await trial.cancel(trial.main, selected)), { canceled: 0, upstreamUnconfirmed: 0 })
 })
 
 test('canceling the real enqueue reservation prevents the provider HTTP request', { timeout: 5_000 }, async t => {

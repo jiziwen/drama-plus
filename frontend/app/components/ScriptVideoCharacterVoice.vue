@@ -31,7 +31,7 @@
       <label class="sv-voice-model">
         <input
           type="checkbox"
-          :checked="asset.voiceMode === 'model'"
+          :checked="asset.voiceMode !== 'reference'"
           :disabled="disabled || uploading"
           @change="setModelVoice"
         />
@@ -56,10 +56,8 @@ const emit = defineEmits<{ upload: [file: File]; remove: []; 'model-voice': [ena
 const fileInput = ref<HTMLInputElement>()
 function setModelVoice(event: Event) {
   const input = event.currentTarget as HTMLInputElement
-  const enabled = input.checked
-  input.checked = props.asset.voiceMode === 'model'
   if (!props.disabled && !props.uploading && props.asset.kind === 'character') {
-    emit('model-voice', enabled)
+    emit('model-voice', input.checked)
   }
 }
 function selectFile(event: Event) {

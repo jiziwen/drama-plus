@@ -98,6 +98,33 @@ export function scriptVideoPromptStylePrefix(preset: ScriptVideoStylePreset): st
   return firstLine.trim() === preset.name.trim() ? text.slice(firstLine.length).trim() : text
 }
 
+/** Locate a known style section without changing any of the authored prompt. */
+export function splitScriptVideoPromptStyle(
+  prompt: string,
+  preset?: ScriptVideoStylePreset,
+  grade?: (prefix: string) => string,
+) {
+  const candidates = [preset, ...SCRIPT_VIDEO_STYLE_PRESETS].flatMap(style => {
+    if (!style) return []
+    const instructions = scriptVideoPromptStylePrefix(style)
+    return [style.prefix.trim(), instructions, grade?.(instructions)?.trim()].flatMap(prefix => {
+      if (!prefix) return []
+      const lf = prefix.replace(/\r\n|\r/gu, '\n')
+      return [...new Set([prefix, lf, lf.replaceAll('\n', '\r\n')])].map(text => ({ name: style.name, text }))
+    })
+  }).sort((a, b) => b.text.length - a.text.length)
+  const style = candidates.find(({ text }) => prompt.startsWith(text) &&
+    (prompt.length === text.length || /^[^\S\r\n]*[\r\n]/u.test(prompt.slice(text.length))))
+  if (!style) return { body: prompt, prefix: '', style: undefined }
+  const rest = prompt.slice(style.text.length)
+  const separator = /^(?:[^\S\r\n]*(?:\r\n|[\r\n]))+/u.exec(rest)?.[0] || ''
+  return { body: rest.slice(separator.length), prefix: style.text + separator, style }
+}
+
+export function hasScriptVideoPromptBody(prompt?: string, preset?: ScriptVideoStylePreset) {
+  return !!prompt && !!splitScriptVideoPromptStyle(prompt, preset).body.trim()
+}
+
 export function styleVisualSpecs(
   preset: ScriptVideoStylePreset,
   delivery?: { aspectRatio?: string; resolution?: string; videoModel?: string },

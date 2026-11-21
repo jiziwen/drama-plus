@@ -7,7 +7,8 @@ import { and, eq, isNull } from 'drizzle-orm'
 import { db, schema } from '../db/index.js'
 import { getAbsolutePath } from '../utils/storage.js'
 import { STORAGE_ROOT } from '../utils/paths.js'
-import { generateVideo, quoteVideo, validateVideoSubmissionRequest, VIDEO_REQUEST_NOT_SENT_MESSAGE, type VideoSubmissionControl } from './generation.js'
+import { scheduleRetiredUploadCleanup } from './script-video-media-retention.js'
+import { generateVideo, validateVideoSubmissionRequest, VIDEO_REQUEST_NOT_SENT_MESSAGE, type VideoSubmissionControl } from './generation.js'
 import { publicMediaBaseUrl } from './public-media.js'
 import { ffmpeg } from '../utils/ffmpeg.js'
 import { isPreTlsConnectionReset } from '../utils/network-error.js'
@@ -19,15 +20,16 @@ import { buildScriptVideoDelivery, getScriptVideoMissingVoices, scriptVideoDeliv
 import { safeTaskError } from './video-download.js'
 import { aicostVideoSubmissionRejection } from './adapters/aicost-video.js'
 import { aliyunWanVideoPrompt } from './adapters/aliyun-wan-video.js'
-import type { ScriptVideoStylePreset } from './script-video-style.js'
-import { JimengQuoteRequiredError } from './jimeng-video.js'
+import { hasScriptVideoPromptBody, splitScriptVideoPromptStyle, type ScriptVideoStylePreset } from './script-video-style.js'
+import { sceneGradedStyle } from './script-video-lighting-delivery.js'
+import { JimengCliError } from './jimeng-cli.js'
 import { jimengVideoModel } from './jimeng-video-models.js'
 import { LIBTV_VIDEO_RATIOS, libtvVideoModel } from './libtv-video-models.js'
 
 type Asset = ScriptVideoDeliveryAsset
 export type ScriptVideoContinuationSource = {
   previousCardId: string
-  previousTaskId: number
+  previousTaskId?: number
   videoUrl: string
   shotStartSeconds?: number
   shotEndSeconds?: number
@@ -47,8 +49,7 @@ export interface ScriptVideoGenerationInput {
   stylePreset?: ScriptVideoStylePreset
   continuationSource?: ScriptVideoContinuationSource
   lightingRanges?: readonly ScriptVideoLightingRange[]
-  jimengQuoteId?: string
-  jimengScope?: string
+  allowJimeng?: boolean
   allowLibTV?: boolean
 }
 
@@ -148,7 +149,8 @@ async function prepareOpeningFrame(
   const supportsFirstFrame = ['volcengine', 'minimax', 'aliyun'].includes(provider) ||
     provider === 'aicost' && isAicostMiniMaxH3Model(model)
   return {
-    previousCardId: source.previousCardId, previousTaskId: source.previousTaskId, imageUrl,
+    previousCardId: source.previousCardId, previousVideoUrl: source.videoUrl,
+    ...(source.previousTaskId && { previousTaskId: source.previousTaskId }), imageUrl,
     mode: supportsFirstFrame && !hasReferences ? 'first-frame' : 'reference',
   }
 }
@@ -231,10 +233,17 @@ function deliveryReferences(delivery: CardDelivery) {
 function formatScriptVideoPrompt(
   prompt: string, options: Pick<ScriptVideoDeliveryOptions, 'provider' | 'model'>,
   images: PromptReference[], audios: PromptReference[], firstFrameUrl?: string,
+  stylePreset?: ScriptVideoStylePreset, lightingRanges: readonly ScriptVideoLightingRange[] = [],
 ) {
   const { imageTag, audioTag } = scriptVideoDeliveryTags(options)
+  const text = options.provider === 'aliyun' ? aliyunWanVideoPrompt(prompt) : prompt
+  const { style, prefix } = splitScriptVideoPromptStyle(text, stylePreset, value => {
+    const graded = sceneGradedStyle(value, lightingRanges)
+    return options.provider === 'aliyun' ? aliyunWanVideoPrompt(graded) : graded
+  })
   return {
-    prompt: options.provider === 'aliyun' ? aliyunWanVideoPrompt(prompt) : prompt,
+    prompt: text,
+    ...(style && { style: { ...style, bodyStart: prefix.length } }),
     images: images.map((image, i) => ({ ...image, index: i + 1, tag: imageTag(i + 1) })),
     audios: audios.map((audio, i) => ({ ...audio, index: i + 1, tag: audioTag(i + 1) })),
     ...(firstFrameUrl && { firstFrame: promptReference(firstFrameUrl, tailFrameName) }),
@@ -264,11 +273,11 @@ export async function previewScriptVideoPrompt(input: PromptPreviewInput) {
   const { card, assets, selection, cast, stylePreset, continuationSource, lightingRanges } = input
   const missingVoices = getScriptVideoMissingVoices(card, assets, { cast, stylePreset })
   if (selection && !input.waitingForReference && !missingVoices.length) {
-    const { params, config, references } = await prepareSubmission({ ...input, ...selection })
+    const { params, config, references, lightingRanges: ranges } = await prepareSubmission({ ...input, ...selection })
     await validateVideoSubmissionRequest(config, params)
     const images = params.referenceImageUrls.map((url, i) => promptReference(url, references.images[i].name))
     const audios = params.referenceAudioUrls.map((url, i) => promptReference(url, references.audios[i].name))
-    return { ...formatScriptVideoPrompt(params.prompt, config, images, audios, params.firstFrameUrl),
+    return { ...formatScriptVideoPrompt(params.prompt, config, images, audios, params.firstFrameUrl, stylePreset, ranges),
       missingVoices, source: 'preview' as const }
   }
   // Missing inputs still allow the available prompt and media to be examined.
@@ -279,7 +288,7 @@ export async function previewScriptVideoPrompt(input: PromptPreviewInput) {
   const { delivery } = await prepareCardDelivery(card, assets, options, continuationSource)
   const { images, audios } = deliveryReferences(delivery)
   const firstFrame = delivery.openingFrame?.mode === 'first-frame' ? delivery.openingFrame.imageUrl : undefined
-  return { ...formatScriptVideoPrompt(delivery.prompt, options, images, audios, firstFrame),
+  return { ...formatScriptVideoPrompt(delivery.prompt, options, images, audios, firstFrame, stylePreset, delivery.lightingRanges),
     missingVoices: delivery.missingVoices, source: 'preview' as const }
 }
 
@@ -287,6 +296,7 @@ export async function previewScriptVideoPrompt(input: PromptPreviewInput) {
 export function getScriptVideoSubmissionPrompt(
   taskId: number, assets: Asset[], names?: ScriptVideoReferenceNames,
   continuation?: ScriptVideoContinuation, lightingRanges: readonly ScriptVideoLightingRange[] = [],
+  stylePreset?: ScriptVideoStylePreset,
 ) {
   const task = db.select({ prompt: schema.sysTask.prompt, params: schema.sysTask.params,
     provider: schema.sysTask.provider, model: schema.sysTask.model })
@@ -309,7 +319,7 @@ export function getScriptVideoSubmissionPrompt(
     assets.filter(asset => asset.voiceAudio?.url === url).map(asset => asset.name).join('、') || `参考音频 ${index + 1}`))
   const firstFrame = typeof params.firstFrameUrl === 'string' ? params.firstFrameUrl : undefined
   return { ...formatScriptVideoPrompt(task.prompt, { provider: task.provider ?? undefined, model: task.model ?? undefined },
-    images, audios, firstFrame), missingVoices: [], source: 'submitted' as const }
+    images, audios, firstFrame, stylePreset, lightingRanges), missingVoices: [], source: 'submitted' as const }
 }
 
 async function prepareSubmission(input: ScriptVideoGenerationInput) {
@@ -317,7 +327,7 @@ async function prepareSubmission(input: ScriptVideoGenerationInput) {
   if (!input.projectId || !input.episodeId || !card?.id || !Array.isArray(assets)) throw new Error('项目、分集或分镜无效')
   if (!Number.isSafeInteger(configId) || configId <= 0 || typeof model !== 'string' || !model.trim()) throw new Error('请先选择已启用的视频服务与模型')
   if (card.manuallyAdded) {
-    if (!card.prompt?.trim()) throw new Error('请先输入本段视频提示词')
+    if (!hasScriptVideoPromptBody(card.prompt, input.stylePreset)) throw new Error('请先输入本段视频提示词')
     if (!Array.isArray(card.shots) || card.shots.some(shot => !shot || typeof shot !== 'object')) throw new Error('分镜数据无效')
     if (!Number.isFinite(card.duration) || card.duration <= 0 || card.duration > 30) throw new Error('片段时长须大于 0 秒且不超过 30 秒')
   } else {
@@ -361,6 +371,7 @@ async function prepareSubmission(input: ScriptVideoGenerationInput) {
   if (capabilities.maxAudioReferences !== null && delivery.voices.length > capabilities.maxAudioReferences) throw new Error(`所选模型最多支持 ${capabilities.maxAudioReferences} 段参考音频`)
   if (capabilities.maxTotalReferences !== null && imageCount + delivery.voices.length > capabilities.maxTotalReferences) throw new Error(`所选模型最多支持 ${capabilities.maxTotalReferences} 项图片与音频参考素材`)
   const urls = await Promise.all(delivery.images.map(asset => checkedReference(asset, config.provider, config.model, size)))
+  const sourceUploadUrls = delivery.images.flatMap((asset, i) => asset.image !== urls[i] ? [asset.image] : [])
   if (tailReference) urls.push(tailReference)
   for (const image of delivery.lightingImages) {
     urls.push(await checkedReference({ image, name: '同场影调参考' }, config.provider, config.model, size))
@@ -384,15 +395,11 @@ async function prepareSubmission(input: ScriptVideoGenerationInput) {
   const params = {
     configId, model: config.model, prompt, duration, aspectRatio, resolution: size,
     referenceMode: firstFrameUrl ? 'first_frame' : 'reference', firstFrameUrl, referenceImageUrls: urls, referenceAudioUrls,
-    ...(usesJimeng && { jimengQuoteId: input.jimengQuoteId, jimengScope: input.jimengScope }),
+    ...(sourceUploadUrls.length && { sourceUploadUrls }),
+    ...(usesJimeng && { allowJimeng: input.allowJimeng }),
     ...(libtv && { allowLibTV: input.allowLibTV }),
   } satisfies Parameters<typeof generateVideo>[0]
   return { params, config, continuation, lightingRanges: delivery.lightingRanges, references: deliveryReferences(delivery) }
-}
-
-export async function quoteScriptVideoGeneration(input: ScriptVideoGenerationInput) {
-  const { params } = await prepareSubmission(input)
-  return quoteVideo(params)
 }
 
 /** Route owns the persistent, versioned reservation before invoking this paid operation.
@@ -408,7 +415,7 @@ export async function startScriptVideoGeneration(input: ScriptVideoGenerationInp
   let taskId: number
   try { taskId = await generateVideo(prepared.params, control) }
   catch (error) {
-    if (error instanceof JimengQuoteRequiredError) throw new ScriptVideoGenerationValidationError(error.message)
+    if (error instanceof JimengCliError) throw new ScriptVideoGenerationValidationError(error.message)
     throw error
   }
   return { taskId, status: 'processing' as const, continuation: prepared.continuation,
@@ -426,11 +433,11 @@ export interface ScriptVideoGenerationStatus {
   code?: 'SUBMISSION_UNKNOWN' | 'DELIVERY_FAILED' | 'VIDEO_FAILED'
 }
 
-function readSubmittedFinalShotRange(prompt: string | null, finalShotNumber?: number): TailShotRange | undefined {
-  if (!prompt || !finalShotNumber || !Number.isSafeInteger(finalShotNumber) || finalShotNumber < 1) return
+function readSubmittedFinalShotRange(prompt: string | null, finalShotNumber?: number | 'last'): TailShotRange | undefined {
+  if (!prompt || finalShotNumber === undefined || finalShotNumber !== 'last' && (!Number.isSafeInteger(finalShotNumber) || finalShotNumber < 1)) return
   const lastHeading = prompt.match(/^镜头[ \t]*\d+[^\r\n]*$/gmu)?.at(-1)
   const heading = lastHeading?.match(/^镜头[ \t]*(\d+)[ \t]*[（(][ \t]*(\d+(?:\.\d+)?)[ \t]*[–—-][ \t]*(\d+(?:\.\d+)?)[ \t]*秒[ \t]*[）)][ \t]*$/u)
-  if (!heading || Number(heading[1]) !== finalShotNumber) return
+  if (!heading || finalShotNumber !== 'last' && Number(heading[1]) !== finalShotNumber) return
   const shotStartSeconds = Number(heading[2]), shotEndSeconds = Number(heading[3])
   if (shotStartSeconds >= 0 && shotStartSeconds < shotEndSeconds && shotEndSeconds <= 30) {
     return { shotStartSeconds, shotEndSeconds }
@@ -459,13 +466,14 @@ function reconcileAicostVideoRejection(task: typeof schema.sysTask.$inferSelect)
     db.update(schema.sysTask).set({ errorCode: code, errorMsg: safeTaskError(error), updatedAt: new Date().toISOString() })
       .where(and(eq(schema.sysTask.id, task.id), eq(schema.sysTask.status, 'failed'),
         eq(schema.sysTask.errorCode, 'submission_unknown'), isNull(schema.sysTask.taskId), isNull(schema.sysTask.resultUrl))).run()
+    scheduleRetiredUploadCleanup()
   }
   return error
 }
 
 /** Route must resolve taskId from the server-owned project/episode/card reservation. */
 export async function getScriptVideoGeneration(taskId: number, options: {
-  reconcileRejection?: boolean; finalShotNumber?: number
+  reconcileRejection?: boolean; finalShotNumber?: number | 'last'
 } = {}): Promise<ScriptVideoGenerationStatus> {
   if (!Number.isSafeInteger(taskId) || taskId <= 0) throw new Error('视频任务标识无效')
   const [task] = await db.select().from(schema.sysTask).where(and(

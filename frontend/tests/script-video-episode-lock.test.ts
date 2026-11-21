@@ -22,7 +22,6 @@ const locked = () => Response.json({ message: '制作中', errorCode: 'EPISODE_L
 function mount(
   t: TestContext,
   fetcher: (url: string, init?: RequestInit) => Response | Promise<Response>,
-  options: Parameters<typeof useScriptVideoEpisodeLock>[0],
   browserFeatures: Record<string, unknown> = {},
 ) {
   const browser = Object.assign(new EventTarget(), { crypto: globalThis.crypto }, browserFeatures)
@@ -35,7 +34,7 @@ function mount(
   let lock!: ReturnType<typeof useScriptVideoEpisodeLock>
   const app = renderer.createApp({
     setup() {
-      lock = useScriptVideoEpisodeLock(options)
+      lock = useScriptVideoEpisodeLock()
       return () => null
     },
   })
@@ -51,38 +50,28 @@ function mount(
   return lock
 }
 
-test('denied entry keeps the existing lease and a rejected renewal ends that ownership', async (t) => {
-  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 100_000 })
-  const lost: string[] = []
-  const requests: { path: string; method?: string; body?: BodyInit | null; session: string | null }[] = []
-  const lock = mount(t, (path, init) => {
-    requests.push({
-      path, method: init?.method, body: init?.body,
-      session: new Headers(init?.headers).get('X-Script-Video-Session'),
-    })
-    if (path.endsWith('/second/lock') || init?.body) return locked()
-    return ok({ expiresAt: Date.now() + 30_000 })
-  }, { onLost: (lease) => { lost.push(lease.episodeId) } })
-
-  await lock.enter('project', 'first')
-  await assert.rejects(lock.enter('project', 'second'), { status: 423, code: 'EPISODE_LOCKED' })
-  assert.equal(lock.owns('project', 'first'), true)
-  assert.equal(requests.some(request => request.method === 'DELETE'), false)
-  assert.match(requests[0]!.session!, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
-  assert.equal(requests[1]!.session, requests[0]!.session)
-
-  t.mock.timers.tick(8_000)
-  await new Promise<void>((resolve) => { setImmediate(resolve) })
-  assert.equal(requests.at(-1)?.body, '{"renew":true}')
-  assert.equal(lock.active.value, null)
-  assert.deepEqual(lost, ['first'])
+test('编辑不等待在线提示，续报失败后仍能切集和继续编辑', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: 100_000 })
+  const calls: string[] = []
+  const presence = mount(t, (url, init) => {
+    calls.push(init?.method + ' ' + url)
+    return locked()
+  })
+  presence.enter('project', 'first')
+  assert.equal(presence.owns('project', 'first'), true)
+  await new Promise<void>(resolve => setImmediate(resolve))
+  t.mock.timers.tick(31_000)
+  await new Promise<void>(resolve => setImmediate(resolve))
+  assert.equal(presence.owns('project', 'first'), true)
+  presence.enter('project', 'second')
+  assert.equal(presence.owns('project', 'second'), true)
+  await new Promise<void>(resolve => setImmediate(resolve))
+  assert.ok(calls.some(call => call.includes('DELETE') && call.endsWith('/first/lock')))
 })
 
 test('a late roster response from the previous project cannot replace current occupations', async (t) => {
   const resolve = new Map<string, (response: Response) => void>()
-  const lock = mount(t, (url) => new Promise(done => resolve.set(url.split('/').at(-2)!, done)), {
-    onLost: () => {},
-  })
+  const lock = mount(t, (url) => new Promise(done => resolve.set(url.split('/').at(-2)!, done)))
   lock.watchProject('first')
   lock.watchProject('second')
   const ready = lock.refresh()
@@ -94,88 +83,44 @@ test('a late roster response from the previous project cannot replace current oc
   assert.deepEqual(lock.occupied.value, { 'working-episode': { expiresAt: 130_000 } })
 })
 
-test('pagehide leaves a dirty draft protected and releases clean ownership on a later exit', async (t) => {
-  let clean = false
-  const releases: RequestInit[] = []
-  const lock = mount(t, (_path, init) => {
-    if (init?.method === 'DELETE') releases.push(init)
+test('暂停和恢复页面只更新在线提示，始终保留分集选择', async t => {
+  const methods: Array<string | undefined> = []
+  const lock = mount(t, (_url, init) => {
+    methods.push(init?.method)
     return ok({ expiresAt: Date.now() + 30_000 })
-  }, { onLost: () => {}, canReleaseOnPageHide: () => clean })
-
-  await lock.enter('project', 'episode')
-  window.dispatchEvent(new Event('pagehide'))
-  await new Promise<void>((done) => { setImmediate(done) })
-  assert.equal(releases.length, 0)
-
-  window.dispatchEvent(new Event('pageshow'))
-  await new Promise<void>((done) => { setImmediate(done) })
-  assert.equal(lock.owns('project', 'episode'), true)
-  clean = true
-  window.dispatchEvent(new Event('pagehide'))
-  await new Promise<void>((done) => { setImmediate(done) })
-  assert.equal(releases.length, 1)
-  assert.equal(releases[0]?.keepalive, true)
-})
-
-test('reloadable clean ownership survives document exit, while explicit leave sends DELETE', async (t) => {
-  const releases: RequestInit[] = []
-  const lock = mount(t, (_path, init) => {
-    if (init?.method === 'DELETE') releases.push(init)
-    return ok({ expiresAt: Date.now() + 30_000 })
-  }, { onLost: () => {}, canReleaseOnPageHide: () => true }, {
-    BroadcastChannel,
-    sessionStorage: { getItem: () => null, setItem: () => {} },
   })
-
-  await lock.enter('project', 'episode')
+  lock.enter('project', 'episode')
+  await new Promise<void>(resolve => setImmediate(resolve))
   window.dispatchEvent(new Event('pagehide'))
-  await new Promise<void>(done => { setImmediate(done) })
-  assert.equal(releases.length, 0)
-
+  await new Promise<void>(resolve => setImmediate(resolve))
+  assert.equal(lock.owns('project', 'episode'), true)
   window.dispatchEvent(new Event('pageshow'))
-  await lock.leave()
-  assert.equal(releases.length, 1)
-  assert.equal(releases[0]?.keepalive, false)
+  await new Promise<void>(resolve => setImmediate(resolve))
+  assert.deepEqual(methods, ['POST', 'DELETE', 'POST'])
+  lock.leave()
+  assert.equal(lock.owns('project', 'episode'), false)
 })
 
-test('hidden tabs stop fetching the roster while their active episode lease still renews', async (t) => {
-  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: 100_000 })
-  let rosterRequests = 0
-  let renewals = 0
+test('后台暂停在线提示请求，切回前台恢复状态', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout','setInterval','Date'], now: 100_000 })
+  let roster = 0, beats = 0
   const lock = mount(t, (url, init) => {
-    if (url.endsWith('/episode-locks')) {
-      rosterRequests++
-      return ok({})
-    }
-    if (init?.body) renewals++
-    return ok({ expiresAt: Date.now() + 30_000 })
-  }, { onLost: () => {} })
+    if (url.endsWith('/episode-locks')) { roster++; return ok({}) }
+    if (init?.method === 'POST') beats++
+    return ok({})
+  })
+  const settle = () => new Promise<void>(resolve => setImmediate(resolve))
   lock.watchProject('project')
-  await lock.refresh()
-  assert.equal(rosterRequests, 1)
-  t.mock.timers.tick(4_000)
-  assert.equal(rosterRequests, 1)
-  t.mock.timers.tick(6_000)
-  await lock.refresh()
-  assert.equal(rosterRequests, 2)
-
-  await lock.enter('project', 'episode')
-  await lock.refresh()
-  assert.equal(rosterRequests, 3)
+  lock.enter('project', 'episode')
+  await settle()
   Object.assign(document, { hidden: true })
   document.dispatchEvent(new Event('visibilitychange'))
-  t.mock.timers.tick(12_000)
-  await new Promise<void>((resolve) => { setImmediate(resolve) })
-  await lock.refresh()
-  assert.equal(rosterRequests, 3)
-  assert.equal(renewals, 1)
-  assert.equal(lock.owns('project', 'episode'), true)
-
+  t.mock.timers.tick(60_000)
+  await settle()
+  assert.deepEqual([roster, beats], [1, 1])
+  assert.equal(lock.owns('project','episode'), true)
   Object.assign(document, { hidden: false })
   document.dispatchEvent(new Event('visibilitychange'))
-  await lock.refresh()
-  window.dispatchEvent(new Event('focus'))
-  await lock.refresh()
-  assert.equal(rosterRequests, 4)
-  assert.equal(renewals, 1)
+  await settle()
+  assert.deepEqual([roster, beats], [2, 2])
 })

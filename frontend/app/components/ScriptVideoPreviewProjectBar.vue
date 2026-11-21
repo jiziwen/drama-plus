@@ -57,10 +57,10 @@ const episodeProgressColors: Record<ScriptVideoEpisodeProgress, string> = {
   '已完成': 'tag-success',
 };
 const episodeOptions = computed(() => props.episodes.map(episode => {
-  const disabled = occupiedEpisodes.value.has(episode.id);
+  const occupied = occupiedEpisodes.value.has(episode.id);
   const caption = [
     `第${episode.number}集`,
-    disabled ? '占用中' : '',
+    occupied ? '其他页面编辑中' : '',
     episode.title,
   ].filter(Boolean).join(' · ');
   return {
@@ -68,7 +68,7 @@ const episodeOptions = computed(() => props.episodes.map(episode => {
     label: episode.progress ? episode.progress + ' · ' + caption : caption,
     caption,
     progress: episode.progress,
-    disabled,
+    disabled: false,
   };
 }));
 const episodeSelectionLabel = computed(() => {
@@ -110,7 +110,7 @@ function confirmProjectDeletion() {
   emit('deleteProject', project.id);
 }
 function requestEpisode(requested: string | number) {
-  if (typeof requested !== 'string' || !requested || props.selectingEpisode || occupiedEpisodes.value.has(requested)) return;
+  if (typeof requested !== 'string' || !requested || props.selectingEpisode) return;
   emit('episode', requested);
 }
 

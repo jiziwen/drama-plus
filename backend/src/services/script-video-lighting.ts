@@ -1,11 +1,12 @@
 import type { ScriptVideoLightingRange } from './script-video-delivery.js'
 import { buildScriptVideoLightingPlan, type ScriptVideoLightingSceneRange } from './script-video-lighting-plan.js'
 import type { ScriptVideoJob, ScriptVideoProject } from './script-video-store.js'
+import { officialScriptVideoUrl, type ScriptVideoVersion } from './script-video-versions.js'
 import { compareVideoLightingFrames, extractVideoLightingFrame } from '../utils/video-lighting-frame.js'
 
 type LightingSource = {
   cardId: string
-  taskId: number
+  taskId?: number
   videoUrl: string
   start: number
   end: number
@@ -18,14 +19,43 @@ type PlannedRange = {
   previous?: LightingSource
   sampleStart: number
   sampleEnd: number
-  pendingPrevious?: boolean
+  pendingCardId?: string
 }
 export type RenderLightingRange = ScriptVideoLightingRange & {
   sceneKey: string
   source?: LightingSource
 }
 export type LightingCheck = { shot: number; start: number; end: number; reference: string }
-type AcceptedTask = { id: string; taskId: number; videoUrl: string; videoDuration?: number; lightingRanges?: RenderLightingRange[] }
+type SelectedRender = { taskId?: number; cardVersion?: number; videoUrl: string; videoDuration?: number }
+
+type VideoCard = { id: string; status?: string; videoUrl?: string; videoVersions?: readonly ScriptVideoVersion[]; version: number }
+
+export function isActiveScriptVideoRender(job: ScriptVideoJob, card: VideoCard) {
+  return job.action === 'video' && job.cardId === card.id && job.cardVersion === card.version &&
+    (job.status === 'queued' || job.status === 'running')
+}
+
+export function selectedScriptVideoRenders(episode: ScriptVideoProject['episodes'][number], jobs: readonly ScriptVideoJob[]) {
+  const ready = new Map<string, SelectedRender>()
+  for (const card of episode.cards as VideoCard[]) {
+    const videoUrl = officialScriptVideoUrl(card)
+    if (videoUrl) ready.set(card.id, { videoUrl,
+      videoDuration: card.videoVersions?.find(version => version.url === videoUrl)?.duration })
+  }
+  const completedJobs = new Map(jobs.filter(job => job.episodeId === episode.id && job.action === 'video' &&
+    job.status === 'completed' && job.taskId).map(job => [job.id, job]))
+  for (const task of episode.tasks || []) {
+    const job = completedJobs.get(task.id)
+    const selected = ready.get(task.cardId)
+    if (job && job.cardId === task.cardId && job.taskId === task.taskId && task.status === 'completed' &&
+        selected && selected.videoUrl === task.videoUrl) {
+      // The selected URL can be a deliberately promoted historical render.
+      ready.set(task.cardId, { taskId: task.taskId, videoUrl: task.videoUrl,
+        cardVersion: job.cardVersion, videoDuration: job.videoDuration ?? selected.videoDuration })
+    }
+  }
+  return ready
+}
 
 function shotEnd(card: { shots: { duration: number }[] }, index: number) {
   return card.shots.slice(0, index).reduce((sum, shot) => sum + shot.duration, 0)
@@ -33,28 +63,23 @@ function shotEnd(card: { shots: { duration: number }[] }, index: number) {
 
 /** Take a read-only snapshot of server-owned renders inside the project lock.
  * The selected ready URL also identifies an explicitly restored older result. */
-export function planScriptVideoLighting(project: ScriptVideoProject, episodeId: string, jobs: ScriptVideoJob[]) {
+export function planScriptVideoLighting(
+  project: ScriptVideoProject, episodeId: string, jobs: ScriptVideoJob[], queuedCards: ReadonlySet<string> = new Set(),
+) {
   const episode = project.episodes.find(item => item.id === episodeId)
   const result: Record<string, PlannedRange[]> = Object.create(null)
   if (!episode) return result
   const ranges = buildScriptVideoLightingPlan(episode.cards, episode.confirmedScript || episode.script, project.assets)
-  const completedJobs = new Map(jobs.filter(job => job.episodeId === episodeId && job.action === 'video' &&
-    job.status === 'completed' && !job.staleResult && job.taskId).map(job => [job.id, job]))
-  const selectedVideos = new Map(episode.cards.filter((card: any) => card.status === 'ready' && card.videoUrl)
-    .map((card: any) => [card.id, card.videoUrl]))
-  const ready = new Map<string, AcceptedTask>()
-  for (const task of episode.tasks || []) {
-    const job = completedJobs.get(task.id)
-    if (job && job.cardId === task.cardId && job.taskId === task.taskId && task.status === 'completed' &&
-        !task.staleResult && task.videoUrl && selectedVideos.get(task.cardId) === task.videoUrl) {
-      ready.set(task.cardId, { ...task, videoDuration: job.videoDuration })
-    }
+  const ready = selectedScriptVideoRenders(episode, jobs)
+  const cardsById = new Map<string, VideoCard>(episode.cards.map((card: VideoCard) => [card.id, card]))
+  const pending = new Set(queuedCards)
+  for (const job of jobs) {
+    if (job.episodeId !== episodeId || !job.cardId) continue
+    const card = cardsById.get(job.cardId)
+    if (card && isActiveScriptVideoRender(job, card)) pending.add(card.id)
   }
-  const baselines = new Map<string, LightingSource>()
-  const pending = new Set(jobs.filter(job => job.action === 'video' && job.episodeId === episodeId &&
-    (job.status === 'queued' || job.status === 'running')).map(job => job.cardId))
+  const sources = new Map<string, { source?: LightingSource; pendingCardId?: string }>()
   let boundary: { sceneKey: string; source: LightingSource } | undefined
-  let pendingScene: string | undefined
   for (const card of episode.cards) {
     const task = ready.get(card.id)
     const scenes = ranges[card.id] || []
@@ -64,15 +89,19 @@ export function planScriptVideoLighting(project: ScriptVideoProject, episodeId: 
         range: { startShot: scene.firstShot, endShot: scene.lastShot, sceneName: scene.sceneName,
           lighting: scene.lighting, ...(scene.transitionIn && { transitionIn: true }) },
         sceneKey: scene.sceneKey,
-        source: baselines.get(scene.sceneKey),
+        ...sources.get(scene.sceneKey),
         previous: scene.firstShot === 1 && boundary?.sceneKey === scene.sceneKey ? boundary.source : undefined,
-        pendingPrevious: scene.firstShot === 1 && pendingScene === scene.sceneKey && !baselines.has(scene.sceneKey),
         sampleStart: scene.stableStartSeconds,
         sampleEnd: Math.min(scene.stableEndSeconds, scene.stableStartSeconds + 2, shotEnd(card, sampleShot)),
       }
     })
     boundary = undefined
-    pendingScene = pending.has(card.id) && scenes.at(-1)?.lastShot === card.shots?.length ? scenes.at(-1)?.sceneKey : undefined
+    if (pending.has(card.id)) {
+      for (const scene of scenes) {
+        if (scene.stableEndSeconds > scene.stableStartSeconds) sources.set(scene.sceneKey, { pendingCardId: card.id })
+      }
+      continue
+    }
     if (!task) continue
     const durationScale = task.videoDuration === undefined ? 1 : task.videoDuration / shotEnd(card, card.shots.length)
     for (const scene of scenes) {
@@ -82,13 +111,7 @@ export function planScriptVideoLighting(project: ScriptVideoProject, episodeId: 
       const start = Math.max(scene.stableStartSeconds, end - 2.5 / durationScale, shotEnd(card, Math.max(0, last)))
       const source: LightingSource = { cardId: card.id, taskId: task.taskId, videoUrl: task.videoUrl,
         start: start * durationScale, end: end * durationScale, stableStart: scene.stableStartSeconds * durationScale }
-      // A render made with this feature records the original baseline. A legacy
-      // render starts from its own final stable shot, allowing adoption mid-scene.
-      const inherited = task.lightingRanges?.find(r => r.sceneKey === scene.sceneKey && r.imageUrl)?.source
-      const active = inherited && ready.get(inherited.cardId)
-      const validInherited = inherited && active && active.taskId === inherited.taskId && active.videoUrl === inherited.videoUrl
-      const baseline = validInherited ? inherited : task.lightingRanges ? baselines.get(scene.sceneKey) ?? source : source
-      baselines.set(scene.sceneKey, baseline)
+      sources.set(scene.sceneKey, { source })
       if (scene.lastShot === card.shots.length) boundary = { sceneKey: scene.sceneKey, source }
     }
   }

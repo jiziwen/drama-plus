@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import { runInNewContext } from 'node:vm'
 import { computed, reactive, ref } from 'vue'
 import ts from 'typescript'
-import { usesJimengVideo } from '../app/utils/jimengVideo.ts'
+import { officialScriptVideoUrl } from '../../backend/src/services/script-video-versions.ts'
 
 const source = readFileSync(new URL('../app/pages/preview/script-to-video.vue', import.meta.url), 'utf8')
 const start = source.indexOf('const taskActions =')
@@ -24,9 +24,9 @@ class ScriptVideoRequestError extends Error {
 const failed = (id, cardId, code, taskId) => ({ id, cardId, code, taskId, status: 'failed', error: '通道不可用' })
 
 function controller(initialTasks = [], {
-  onLookup, onSubmit, onFinalPrompt, clipboardWrite, onSave, missingVoices = () => [],
+  onLookup, onSubmit, onFinalPrompt, onContinuations, clipboardWrite, onSave, missingVoices = () => [],
   connections = [], lightingScenes = {}, cardIds = ['a', 'b'],
-  jimengApproval,
+  remoteActiveIds = [], queueTimer = setInterval,
 } = {}) {
   const calls = []
   const episode = {
@@ -40,9 +40,9 @@ function controller(initialTasks = [], {
   const dialog = ref(null)
   const toasts = []
   const copied = []
-  const value = runInNewContext(controllerSource + '\n;({ requestVideoGeneration, cancelVideoGeneration, confirmVideoRetry, pendingVideoRetry, videoTaskError, showFinalPrompt, copyPromptPreview, promptPreview, batchVideoVoiceWarning, videoVoiceWarningForCard, activeVideoRun })', {
-    ref, computed, reactive, dialog, ScriptVideoRequestError, alive: true, AbortController, AbortSignal, requestController: new AbortController(),
-    usesJimengVideo, jimengVideoConfirmation: ref({ approve: jimengApproval, cancel() {} }),
+  const value = runInNewContext(controllerSource + '\n;({ requestVideoGeneration, cancelVideoGeneration, confirmVideoRetry, pendingVideoRetry, videoTaskError, showFinalPrompt, copyPromptPreview, promptPreview, batchVideoVoiceWarning, videoVoiceWarningForCard, activeVideoRun, deliveryContinuations })', {
+    ref, computed, reactive, dialog, activeCardIds: ref(remoteActiveIds), requestActivityRefresh: () => {}, setInterval: queueTimer, clearInterval, ScriptVideoRequestError, alive: true, AbortController, AbortSignal, requestController: new AbortController(),
+    officialScriptVideoUrl,
     outputMode: ref('internal'), promptReturnFocus: null,
     episodeKey: ref('project/episode'), previewId: () => 'video-request-fixture',
     setTimeout: done => queueMicrotask(done), clearTimeout,
@@ -52,8 +52,9 @@ function controller(initialTasks = [], {
       [id, [{ sceneKey }]])),
     currentProject: ref(project), currentEpisode: ref(episode), projects: ref([project]), tasks: computed(() => episode.tasks),
     cards: computed(() => episode.cards), assets: computed(() => project.assets),
-    saveProjectNow: async () => { await onSave?.() }, installProject: async () => {},
-    navigator: { clipboard: { writeText: async text => {
+    saveProjectNow: async () => { await onSave?.() }, refreshProject: async () => {},
+    selectedProjectId: ref(project.id), selectedEpisodeId: ref(episode.id),
+    navigator: { onLine: true, clipboard: { writeText: async text => {
       await clipboardWrite?.(text)
       copied.push(text)
     } } },
@@ -63,18 +64,19 @@ function controller(initialTasks = [], {
     toast: { error: message => toasts.push(message), success: () => {}, info: message => toasts.push(message) },
     scriptVideoRequest: async (path, method = 'GET', body) => {
       calls.push({ path, method, body })
+      if (path.endsWith('/video-queue')) return {}
       if (method === 'GET' && path === '/projects/project') return project
       if (method === 'GET') {
         return onLookup?.(path, episode) || { status: 'completed', videoUrl: '/static/videos/task-21.mp4' }
       }
       if (path.endsWith('/final-prompt')) return onFinalPrompt?.(body) || finalDelivery()
+      if (path.endsWith('/continuations')) return onContinuations?.(body)
       if (path.endsWith('/video-cancel')) return { canceled: 1, upstreamUnconfirmed: 0 }
-      if (path.endsWith('/video/quote')) return { quote_id: 'script-video-quote', credits: 15, model: body.model }
       return onSubmit?.(path, body, episode) || { taskId: 21 }
     },
   })
-  return { ...value, dialog, calls, episode, toasts, copied, leaseActive,
-    get submissions() { return calls.filter(call => call.method === 'POST' && !/\/(?:final-prompt|quote|video-cancel)$/.test(call.path)) },
+  return { ...value, dialog, calls, episode, project, toasts, copied, leaseActive,
+    get submissions() { return calls.filter(call => call.method === 'POST' && /\/cards\/[^/]+\/video$/.test(call.path)) },
   }
 }
 
@@ -118,27 +120,18 @@ test('已确认失败直接重新提交，错误原因保持可见', async () =>
   assert.equal(app.submissions[0].body.confirmRetryAfterUnknown, undefined)
 })
 
-test('即梦逐段报价，用户拒绝时取消，确认后带同一报价提交', async () => {
-  let approved = false
-  const app = controller([], { jimengApproval: async (quote, _label, _replacing, duration) => {
-    assert.equal(app.submissions.length, 0)
-    assert.equal(quote.credits, 15)
-    assert.equal(duration, 18)
-    return approved
-  } })
+test('即梦直接提交生成，保留选定时长且不请求前端报价', async () => {
+  const app = controller()
   app.episode.modelProvider = 'jimeng'
   app.episode.modelName = 'jimeng-seedance-2.5'
   app.episode.videoDurations = { a: 18 }
   await app.requestVideoGeneration(['a'])
-  assert.equal(app.submissions.length, 0)
-  approved = true
-  await app.requestVideoGeneration(['a'])
-  const quotes = app.calls.filter(call => call.path.endsWith('/video/quote'))
-  assert.equal(quotes.length, 2)
+  assert.equal(app.dialog.value, null)
   assert.equal(app.submissions.length, 1)
-  assert.equal(quotes[1].path, `${app.submissions[0].path}/quote`)
-  assert.equal(quotes[1].body.duration, 18)
-  assert.deepEqual({ ...app.submissions[0].body }, { ...quotes[1].body, jimengQuoteId: 'script-video-quote' })
+  assert.equal(app.submissions[0].body.duration, 18)
+  assert.equal(app.submissions[0].body.model, 'jimeng-seedance-2.5')
+  assert.equal(app.submissions[0].body.jimengQuoteId, undefined)
+  assert.ok(!app.calls.some(call => call.path.endsWith('/quote')))
 })
 
 test('批量使用每段自己的出片时长，最终提示词预览复用当前设置', async () => {
@@ -163,15 +156,15 @@ test('切换到时长上限更低的模型时，超出范围的生成设置会�
   assert.equal(app.submissions[0].body.duration, 15)
 })
 
-test('即梦报价确认时失去分集占用，取消提交', async () => {
-  const app = controller([], { jimengApproval: async () => {
-    app.leaseActive.value = false
-    return true
+test('提交即梦前保存时已离开原分集，取消提交', async () => {
+  let saves = 0
+  const app = controller([], { onSave: async () => {
+    if (++saves === 2) app.leaseActive.value = false
   } })
   app.episode.modelProvider = 'jimeng'
   app.episode.modelName = 'jimeng-seedance-2.5'
   await app.requestVideoGeneration(['a'])
-  assert.ok(app.calls.some(call => call.path.endsWith('/video/quote')))
+  assert.equal(saves, 2)
   assert.equal(app.submissions.length, 0)
 })
 
@@ -229,8 +222,8 @@ test('已出片但保存失败时恢复任务号，不重新提交', async () =>
   const app = controller([failed('delivery', 'a', 'DELIVERY_FAILED', 17)], { missingVoices: () => ['阿离'] })
   await app.requestVideoGeneration(['a'])
   assert.equal(app.dialog.value, null)
-  assert.equal(app.submissions.length, 1)
-  assert.equal(app.submissions[0].path, '/projects/project/video/17/recover')
+  assert.equal(app.submissions.length, 0)
+  assert.equal(app.calls.filter(call => call.method === 'POST' && call.path === '/projects/project/video/17/recover').length, 1)
 })
 
 test('批量警告标明缺少音频的片段，单段生成独立检查', async () => {
@@ -305,6 +298,27 @@ test('单发连续镜头时，上段无成片只给提示，相同场景独立�
   assert.match(app.toasts[0], /第 2 段需要第 1 段的尾帧/)
   await app.requestVideoGeneration(['c'])
   assert.equal(app.submissions.length, 1)
+})
+
+test('连续镜头重试读取正片，导出重新查询尾帧和光线而非沿用任务快照', async () => {
+  const archived = '/static/videos/from-old.mp4'
+  const fresh = '/static/videos/current.jpg'
+  const app = controller([
+    { ...failed('retry', 'a', 'VIDEO_FAILED', 11), cardVersion: 1 },
+    { ...failed('next', 'b', 'VIDEO_FAILED', 12), cardVersion: 1, modelLabel: 'custom-model',
+      continuation: { previousTaskId: 3, imageUrl: '/static/videos/outdated.jpg' },
+      lightingRanges: [{ imageUrl: '/static/videos/old-light.jpg' }] },
+  ], {
+    connections: ['a/b'], lightingScenes: { b: 'hall' },
+    onContinuations: () => ({ continuations: { b: { previousTaskId: 9, imageUrl: fresh } }, lightingRanges: {} }),
+  })
+  Object.assign(app.episode.cards[0], { status: 'draft', videoUrl: archived, videoVersions: [{ url: archived }] })
+  await app.requestVideoGeneration(['b'])
+  assert.equal(app.submissions.length, 1)
+  const references = await app.deliveryContinuations(app.project, app.episode, [app.episode.cards[1]])
+  assert.deepEqual(Array.from(app.calls.find(call => call.path.endsWith('/continuations')).body.cardIds), ['b'])
+  assert.equal(references.continuations.b.imageUrl, fresh)
+  assert.equal(references.lightingRanges.b, undefined)
 })
 
 test('当前预览和任务记录都在弹框内按显示文字原样复制', async () => {
@@ -415,4 +429,46 @@ test('同场换机位的批量任务等待实际成片，另一场可先提交',
   finish({ status: 'completed', videoUrl: '/static/videos/task-21.mp4' })
   await batch
   assert.equal(app.submissions[2].path.split('/').at(-2), 'b')
+})
+
+test('第一段即梦直接提交时，仅续约后续分镜的排队提示', async () => {
+  let heartbeat
+  const entered = [Promise.withResolvers(), Promise.withResolvers()]
+  const responses = [Promise.withResolvers(), Promise.withResolvers()]
+  let index = 0
+  const app = controller([], {
+    queueTimer: fn => { heartbeat = fn },
+    onSubmit: () => {
+      const submitting = index++
+      entered[submitting].resolve()
+      return responses[submitting].promise
+    },
+  })
+  app.episode.modelProvider = 'jimeng'
+  app.episode.modelName = 'jimeng-seedance-2.5'
+  const submitted = app.requestVideoGeneration(['a', 'b'])
+  const latestReservation = () => app.calls.filter(call => call.method === 'POST' && call.path.endsWith('/video-queue')).at(-1)
+  await entered[0].promise
+  await heartbeat()
+  assert.deepEqual([...latestReservation().body.cardIds], ['b'])
+  assert.equal(app.submissions.length, 1)
+  responses[0].resolve({ taskId: 21 })
+  await entered[1].promise
+  const renewalCount = app.calls.filter(call => call.method === 'POST' && call.path.endsWith('/video-queue')).length
+  await heartbeat()
+  assert.equal(app.calls.filter(call => call.method === 'POST' && call.path.endsWith('/video-queue')).length, renewalCount)
+  responses[1].resolve({ taskId: 22 })
+  await submitted
+  assert.equal(app.submissions.length, 2)
+  assert.equal(app.calls.at(-1).method, 'DELETE')
+})
+
+test('其他页面占用按稳定分镜ID判断，本页版本变化后仍阻止重复生成', async () => {
+  const app = controller([], { remoteActiveIds: ['a'] })
+  app.episode.cards[0].version++
+  await app.requestVideoGeneration(['a'])
+  await app.requestVideoGeneration(['a', 'b'])
+  assert.equal(app.calls.length, 0)
+  await app.requestVideoGeneration(['b'])
+  assert.equal(app.submissions.length, 1)
 })

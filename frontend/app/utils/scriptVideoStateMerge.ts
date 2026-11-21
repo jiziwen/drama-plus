@@ -56,7 +56,7 @@ function serverField(context: Context, key: string) {
   return (
     (context === 'project' && key === 'revision') ||
     (context === 'episode' && key === 'tasks') ||
-    (context === 'card' && ['version', 'status', 'videoUrl'].includes(key))
+    (context === 'card' && ['version', 'status', 'videoUrl', 'videoVersions'].includes(key))
   )
 }
 function localField(context: Context, key: string) {

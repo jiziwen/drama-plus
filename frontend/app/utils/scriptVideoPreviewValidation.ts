@@ -92,7 +92,7 @@ export function inspectPreviewCardAssets(
       message: `${describeScriptVideoReferenceProblem(prompt, problem)}。`,
     });
   if (unbound.length)
-    warnings.push({ code: "UNBOUND_ASSET", message: `请在左侧项目资产中绑定 ${unbound.join("、")} 作为本段参考素材。` });
+    warnings.push({ code: "UNBOUND_ASSET", message: `请在「视频提示词」的 @ 菜单重新选取 ${unbound.join("、")}。` });
   const inferredMissing = materialUse.imageIds
     .filter(id => !visual.has(id) && byId.has(id) && !byId.get(id)?.image)
     .map(id => byId.get(id)!.name);

@@ -27,10 +27,11 @@ import { mkdir, mkdtemp, rename, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { STORAGE_ROOT } from '../utils/paths.js'
 import { downloadJimengVideo, inspectJimengVideo, JimengCliError, runJimengVideo, type JimengVideoRunInput } from './jimeng-cli.js'
-import { claimJimengVideoQuote, quoteJimengVideo, validateJimengVideo } from './jimeng-video.js'
+import { prepareJimengVideo, validateJimengVideo } from './jimeng-video.js'
 import { createLibTVVideoNode, inspectLibTVVideo, LibTVCliError, libtvProjectId, runLibTVVideo, validateLibTVVideo, withLibTVCanvas, type LibTVNode } from './libtv-cli.js'
 import { assertVideoCliNotDisconnecting } from './video-cli-tasks.js'
 import { cancelUpstreamVideo } from './video-upstream-cancel.js'
+import { scheduleRetiredUploadCleanup } from './script-video-media-retention.js'
 
 type TaskType = 'image' | 'video'
 
@@ -79,6 +80,8 @@ export interface GenerateVideoParams {
   referenceImageUrls?: string[]
   referenceVideoUrls?: string[]
   referenceAudioUrls?: string[]
+  /** Original uploads behind provider-specific submission copies. Local retention only. */
+  sourceUploadUrls?: string[]
   referenceFileUrl?: string
   referenceLinkUrl?: string
   generateAudio?: boolean
@@ -90,8 +93,7 @@ export interface GenerateVideoParams {
   watermark?: boolean
   configId?: number
   forceNew?: boolean
-  jimengQuoteId?: string
-  jimengScope?: string
+  allowJimeng?: boolean
   allowLibTV?: boolean
 }
 
@@ -159,7 +161,17 @@ export async function generateVideo(params: GenerateVideoParams, control?: Video
     }
     control?.signal.throwIfAborted()
     assertVideoCliNotDisconnecting(config.provider)
-    const jimeng = config.provider === 'jimeng' ? claimJimengVideoQuote(params, config) : undefined
+    let jimeng: JimengVideoRunInput | undefined
+    if (config.provider === 'jimeng') {
+      if (!params.allowJimeng) throw new JimengCliError('请通过私有站点的「剧本转视频」使用即梦积分')
+      try {
+        jimeng = await prepareJimengVideo(params, config, control?.signal)
+      } catch (error) {
+        control?.signal.throwIfAborted()
+        if (error instanceof JimengCliError) throw error
+        throw new JimengCliError(safeTaskError(error))
+      }
+    }
 
     const id = await createTask('video', config, {
       storyboardId: params.storyboardId,
@@ -179,18 +191,12 @@ export async function generateVideo(params: GenerateVideoParams, control?: Video
     logTaskPayload('VideoTask', 'enqueue params', {
       id,
       config: { provider: config.provider, model: config.model, baseUrl: config.baseUrl },
-      params: { ...params, jimengQuoteId: undefined },
+      params,
     })
     return id
   } finally {
     if (storyboardId) videoSubmissions.delete(storyboardId)
   }
-}
-
-export async function quoteVideo(params: GenerateVideoParams) {
-  const config = await resolveMediaConfig('video', params)
-  if (config.provider !== 'jimeng') throw new Error('请选择「即梦积分」视频模型以获取报价')
-  return quoteJimengVideo(params, config)
 }
 
 function videoTaskInputs(params: GenerateVideoParams, provider: string) {
@@ -199,6 +205,7 @@ function videoTaskInputs(params: GenerateVideoParams, provider: string) {
   return {
     referenceMode: referenceMode || 'reference',
     imageUrl, firstFrameUrl, lastFrameUrl, referenceImageUrls, referenceVideoUrls, referenceAudioUrls, referenceFileUrl,
+    ...(params.sourceUploadUrls?.length && { sourceUploadUrls: params.sourceUploadUrls }),
     referenceLinkUrl, generateAudio: generateAudio === false ? 0 : 1, duration, aspectRatio,
     resolution: normalizeStoredVideoResolution(resolution, provider), seed, promptExtend, watermark,
   }
@@ -329,8 +336,10 @@ async function processTask(id: number, config: AIConfig) {
     }
     if (config.provider === 'jimeng') {
       const input = params.jimeng as JimengVideoRunInput | undefined
-      if (!input) throw new Error('缺少已确认的即梦报价')
-      await db.update(schema.sysTask).set({ taskId: input.submitId, updatedAt: now() }).where(eq(schema.sysTask.id, id))
+      if (!input) throw new Error('缺少即梦视频草稿')
+      const stored = db.update(schema.sysTask).set({ taskId: input.submitId, updatedAt: now() })
+        .where(and(eq(schema.sysTask.id, id), eq(schema.sysTask.status, 'processing'))).run()
+      if (!stored.changes) return
       try {
         await runJimengVideo(input, () => beginSubmission())
       } catch (error) {
@@ -535,14 +544,17 @@ async function failTask(id: number, message: string, code?: string) {
   await db.update(schema.sysTask)
     .set({ status: 'failed', errorMsg: safeTaskError(message), ...(code ? { errorCode: code } : {}), updatedAt: now() })
     .where(and(eq(schema.sysTask.id, id), ne(schema.sysTask.status, 'canceled')))
+  scheduleRetiredUploadCleanup()
 }
 
 type SysTaskRecord = typeof schema.sysTask.$inferSelect
 
 export function cancelUnsubmittedVideoTask(id: number) {
-  return db.update(schema.sysTask).set({ status: 'canceled', stage: 'canceled', updatedAt: now() })
+  const canceled = db.update(schema.sysTask).set({ status: 'canceled', stage: 'canceled', updatedAt: now() })
     .where(and(eq(schema.sysTask.id, id), eq(schema.sysTask.type, 'video'),
       eq(schema.sysTask.status, 'processing'), eq(schema.sysTask.stage, 'preparing'))).run().changes > 0
+  if (canceled) scheduleRetiredUploadCleanup()
+  return canceled
 }
 
 export async function cancelDispatchedVideoTask(id: number) {
@@ -551,8 +563,10 @@ export async function cancelDispatchedVideoTask(id: number) {
       record.status !== 'processing' || !record.taskId || record.resultUrl) return false
   const config = await recoveryConfig(record).catch(() => null)
   if (!config || !await cancelUpstreamVideo(config, record.taskId)) return false
-  return db.update(schema.sysTask).set({ status: 'canceled', stage: 'canceled', errorCode: null, errorMsg: null, updatedAt: now() })
+  const canceled = db.update(schema.sysTask).set({ status: 'canceled', stage: 'canceled', errorCode: null, errorMsg: null, updatedAt: now() })
     .where(and(eq(schema.sysTask.id, id), ne(schema.sysTask.status, 'completed'))).run().changes > 0
+  if (canceled) scheduleRetiredUploadCleanup()
+  return canceled
 }
 
 async function pollTask(record: SysTaskRecord, config: AIConfig, taskId: string) {
@@ -754,6 +768,7 @@ async function handleImageComplete(record: SysTaskRecord, imageUrl: string, head
   logTaskSuccess('ImageTask', 'downloaded', { id: record.id, provider: record.provider, localPath })
 
   await writeBackImageAssets(record, localPath)
+  scheduleRetiredUploadCleanup()
 }
 
 async function handleImageCompleteBase64(record: SysTaskRecord, base64Data: string, mimeType: string) {
@@ -767,6 +782,7 @@ async function handleImageCompleteBase64(record: SysTaskRecord, base64Data: stri
   logTaskSuccess('ImageTask', 'saved-base64', { id: record.id, provider: record.provider, mimeType, localPath })
 
   await writeBackImageAssets(record, localPath)
+  scheduleRetiredUploadCleanup()
 }
 
 // 图片完成后回写业务表：分镜(按 frameType)、角色、场景、道具
@@ -818,6 +834,7 @@ async function saveCompletedVideo(record: SysTaskRecord, localPath: string, dura
     tx.update(schema.sysTask).set({ localPath, status: 'completed', stage: 'completed', errorCode: null,
       errorMsg: null, completedAt: now(), updatedAt: now() }).where(eq(schema.sysTask.id, record.id)).run()
   })
+  scheduleRetiredUploadCleanup()
 }
 
 async function recoveryConfig(record: SysTaskRecord): Promise<AIConfig> {

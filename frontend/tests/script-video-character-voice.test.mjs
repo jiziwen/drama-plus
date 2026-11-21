@@ -70,21 +70,23 @@ test('场景等其他种类不显示角色声音上传入口', () => {
   assert.equal(render({asset: {...character, kind: 'scene'}}).fileInput, undefined)
 })
 
-test('默认要求声音参考，可选择模型配音并撤销，已上传声音仍可试听', () => {
+test('默认允许模型配音，切换时立即保留勾选状态，已上传声音仍可试听', () => {
   const voiceAudio = {url: '/static/uploads/original.mp3', name: '守卫原声.mp3'}
   const standard = render({asset: {...character, voiceAudio}})
   const checkbox = standard.nodes.find(n => n.type === 'input' && n.props.type === 'checkbox')
-  assert.equal(checkbox.props.checked, false)
-  checkbox.props.onChange({currentTarget: {checked: true}})
-  assert.deepEqual(standard.events, [['model-voice', true]])
+  assert.equal(checkbox.props.checked, true)
+  const unchecked = {checked: false}
+  checkbox.props.onChange({currentTarget: unchecked})
+  assert.equal(unchecked.checked, false)
+  assert.deepEqual(standard.events, [['model-voice', false]])
 
-  const reference = render({asset: {...character, voiceAudio, voiceMode: 'model'}})
+  const reference = render({asset: {...character, voiceAudio, voiceMode: 'reference'}})
   const selected = reference.nodes.find(n => n.type === 'input' && n.props.type === 'checkbox')
-  assert.equal(selected.props.checked, true)
+  assert.equal(selected.props.checked, false)
   assert.equal(reference.audio.props.src, voiceAudio.url)
   assert.ok(reference.nodes.some(n => n.type === 'span' && n.children === '已上传的角色声音优先使用。关闭后，有对白或心声时需要参考音频。'))
-  selected.props.onChange({currentTarget: {checked: false}})
-  assert.deepEqual(reference.events, [['model-voice', false]])
+  selected.props.onChange({currentTarget: {checked: true}})
+  assert.deepEqual(reference.events, [['model-voice', true]])
 
   const disabled = render({asset: {...character, voiceMode: 'model'}, disabled: true})
   const disabledCheckbox = disabled.nodes.find(n => n.type === 'input' && n.props.type === 'checkbox')

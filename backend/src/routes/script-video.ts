@@ -1,6 +1,8 @@
+import { registerScriptVideoQueueRoutes } from './script-video-queue.js'
 import { Hono } from 'hono'
 import { randomUUID, createHash } from 'node:crypto'
 import { eq } from 'drizzle-orm'
+import { scriptVideoCharacterName, scriptVideoCharacterBase } from '../services/script-video-asset-identity.js'
 import { isAicostHost } from '../agents/openai-model.js'
 import { db, schema } from '../db/index.js'
 import { success, created } from '../utils/response.js'
@@ -19,10 +21,9 @@ import {
 import { cancelDispatchedVideoTask, cancelUnsubmittedVideoTask, recoverVideoTask } from '../services/generation.js'
 import { getActiveConfig, getConfigById, getTextProviderBaseUrl } from '../services/ai.js'
 import { requireJimengPrivateAccess } from './jimeng.js'
-import { hasLoopbackAccess, hasPrivateGatewayAccess } from '../utils/private-access.js'
+import { hasLoopbackAccess, hasPrivateGatewayAccess, trustedSiteUser } from '../utils/private-access.js'
 import {
   startScriptVideoGeneration,
-  quoteScriptVideoGeneration,
   getScriptVideoGeneration,
   getScriptVideoSubmissionPrompt,
   prepareScriptVideoArchiveImages,
@@ -37,7 +38,7 @@ import { getScriptVideoMissingVoices, getScriptVideoVoiceInputs } from '../servi
 import { isScriptVideoGenerationDuration } from '../services/script-video-capabilities.js'
 import { isSeedance25Model } from '../services/seedance-models.js'
 import { assertScriptVideoFormal, getScriptVideoContentWarnings, type ScriptVideoCard, type ScriptVideoInput } from '../services/script-video-types.js'
-import { SCRIPT_VIDEO_STYLE_PRESETS } from '../services/script-video-style.js'
+import { hasScriptVideoPromptBody, SCRIPT_VIDEO_STYLE_PRESETS } from '../services/script-video-style.js'
 import {
   generateScriptVideoOutline,
   generateScriptVideoCards,
@@ -45,11 +46,12 @@ import {
   reviseScriptVideoCard,
 } from '../services/script-video-ai.js'
 import { getScriptVideoContinuationScene } from '../services/script-video-scene-boundary.js'
-import { planScriptVideoLighting, prepareScriptVideoLighting, reviewScriptVideoLighting, type RenderLightingRange } from '../services/script-video-lighting.js'
+import { isActiveScriptVideoRender, planScriptVideoLighting, prepareScriptVideoLighting, reviewScriptVideoLighting, selectedScriptVideoRenders, type RenderLightingRange } from '../services/script-video-lighting.js'
 import { safeTaskError } from '../services/video-download.js'
 import { holdVideoCliSubmission } from '../services/video-cli-tasks.js'
 import { getScriptVideoMerge, mergeScriptVideoClips } from '../services/ffmpeg-merge.js'
 import { resolveStoredVideo } from '../utils/video-poster.js'
+import { listScriptVideoVersions, selectScriptVideoPlayback, type ScriptVideoVersion } from '../services/script-video-versions.js'
 
 type Action = 'outline' | 'storyboard' | 'revisions' | 'review'
 const SESSION_HEADER = 'X-Script-Video-Session'
@@ -87,6 +89,7 @@ function digest(
   action: Action | 'video',
   cardId?: string,
   video?: Pick<ScriptVideoJob, 'videoDigestVersion' | 'videoModel' | 'videoProvider'>,
+  legacyText = false,
 ) {
   const ep = episodeOf(project, episodeId)
   const perCard = action === 'revisions' || action === 'video'
@@ -101,9 +104,13 @@ function digest(
   // Downloading a result changes the display state, not the inputs to this submission.
   const digestVersion = video?.videoDigestVersion ?? 0
   const scopedVoices = digestVersion >= 3
+  // Versions 3, 5 and 6 treated an unset mode as reference-only.
+  const voiceAssets = scopedVoices && digestVersion < 7 && digestVersion !== 4 ? project.assets.map(asset =>
+    asset.kind === 'character' && asset.voiceMode === undefined ? { ...asset, voiceMode: 'reference' as const } : asset,
+  ) : project.assets
   const videoInput = (value: typeof card, predecessor = false) => {
     if (!value) return value
-    const { status: _status, videoUrl: _videoUrl, ...fields } = value
+    const { status: _status, videoUrl: _videoUrl, videoVersions: _videoVersions, ...fields } = value
     // A predecessor's voice-only revision does not change the tail frame that
     // was selected for this submission. Its actual shot fields still matter.
     if (scopedVoices && predecessor) delete fields.version
@@ -114,7 +121,7 @@ function digest(
     // picker change or an unrelated edit must not send this render to history.
     const stylePreset = ep.production?.stylePreset || project.settings?.stylePreset
     const cast = ep.production?.characters?.map(({ name }: { name: string }) => ({ name }))
-    const voiceInputs = getScriptVideoVoiceInputs(card, project.assets, {
+    const voiceInputs = getScriptVideoVoiceInputs(card, voiceAssets, {
       model: video?.videoModel, provider: video?.videoProvider, cast, stylePreset,
     })
     const assetIds = new Set([...scriptVideoReferencedAssetIds(card), ...voiceInputs.keys()])
@@ -135,10 +142,6 @@ function digest(
   let assets = project.assets
   if (scopedVoices) {
     const model = video?.videoModel ?? ep.modelName
-    // Version 4 jobs were submitted with fallback enabled for unset roles.
-    const voiceAssets = digestVersion === 4 ? project.assets.map(asset =>
-      asset.kind === 'character' && asset.voiceMode === undefined ? { ...asset, voiceMode: 'model' } : asset,
-    ) : project.assets
     const voiceInputs = getScriptVideoVoiceInputs(card, voiceAssets, {
       model, provider: model === ep.modelName ? ep.modelProvider : undefined,
       cast: ep.production?.characters, stylePreset: ep.production?.stylePreset || project.settings?.stylePreset,
@@ -151,6 +154,24 @@ function digest(
       return input ? { ...asset, voiceAudio: input } : asset
     })
   }
+  const textInput = action !== 'video' && !video && !legacyText
+  if (textInput) {
+    assets = assets.map(asset => ({       id: asset.id, name: asset.name, kind: asset.kind,
+      ...(asset.kind === 'character' && {         nameInScript: scriptVideoCharacterName(asset), base: scriptVideoCharacterBase(asset),
+        hasVoiceReference: !!asset.voiceAudio?.url       })     }))
+  }
+  const textCard = (card: any) => {
+    if (!card) return card
+    const { status, version, videoUrl, videoVersions, ...input } = card
+    return input
+  }
+  const selectedCards = perCard ? [previousCard, card] : ep.cards
+  const digestCards = action === 'video' ? [videoInput(previousCard, true), videoInput(card)]
+    : textInput ? selectedCards.map(textCard) : selectedCards.map((card: any) => {
+      if (!card) return card
+      const { videoVersions, ...fields } = card
+      return fields
+    })
   const input = {
     title: project.title,
     assets,
@@ -161,7 +182,7 @@ function digest(
     outlineDurationPolicy: ep.outlineDurationPolicy,
     characterAppearanceNotes: ep.characterAppearanceNotes,
     production: ep.production,
-    cards: action === 'video' ? [videoInput(previousCard, true), videoInput(card)] : perCard ? [previousCard, card] : ep.cards,
+    cards: digestCards,
     settings: project.settings,
     textConfigId: ep.textConfigId,
     textModel: ep.textModel,
@@ -176,7 +197,7 @@ function digest(
 /** Bind a checkpoint to the exact project snapshot and effective text options.
  * A change to any active text configuration invalidates reuse conservatively.
  * API keys only contribute through the final digest and are never stored. */
-function storyboardResumeKey(project: ScriptVideoProject, episodeId: string, body: any): string {
+function storyboardResumeKey(project: ScriptVideoProject, episodeId: string, body: any, legacyText = false): string {
   const ep = episodeOf(project, episodeId)
   const configs = db.select().from(schema.aiServiceConfigs)
     .where(eq(schema.aiServiceConfigs.serviceType, 'text')).all()
@@ -191,7 +212,7 @@ function storyboardResumeKey(project: ScriptVideoProject, episodeId: string, bod
   }
   return createHash('sha256').update(JSON.stringify({
     schema: 'script-video-storyboard-resume-v1',
-    projectDigest: digest(project, episodeId, 'storyboard'),
+    projectDigest: digest(project, episodeId, 'storyboard', undefined, undefined, legacyText),
     textOptions,
   })).digest('hex')
 }
@@ -299,6 +320,8 @@ export function createScriptVideoRoutes(
   dependencies: ScriptVideoDependencies = defaultDependencies,
 ) {
   const app = new Hono()
+  const queue = store.queue
+  registerScriptVideoQueueRoutes(app, store, queue)
   const videoSubmissions = new Map<string, { controller: AbortController; taskId?: number }>()
   const canceledVideoRequests = new Map<string, number>()
   const videoRequestKey = (project: string, episode: string, session: string | null, request: string) =>
@@ -306,36 +329,44 @@ export function createScriptVideoRoutes(
   const isVideoRequestId = (value: unknown): value is string => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,100}$/.test(value)
   const aiJobControllers = new Map<string, AbortController>()
 
+  function queuedReferenceCards(projectId: string, episodeId: string, session?: string | null, requestId?: string) {
+    return new Set(queue.list(projectId, episodeId).filter(row => row.session !== session || row.requestId !== requestId)
+      .map(row => row.cardId))
+  }
+
   async function continuationSource(
-    project: ScriptVideoProject, jobs: ScriptVideoJob[], episodeId: string, cardId: string, readOnly = false,
+    project: ScriptVideoProject, jobs: ScriptVideoJob[], episodeId: string, cardId: string,
+    queuedCards: ReadonlySet<string>, readOnly = false,
   ): Promise<ScriptVideoContinuationSource | 'pending' | 'missing' | undefined> {
     const episode = episodeOf(project, episodeId)
     const index = episode.cards.findIndex((card: { id: string }) => card.id === cardId)
     if (index < 1) return undefined
     const predecessor: ScriptVideoCard = episode.cards[index - 1]
     if (!getScriptVideoContinuationScene(predecessor, episode.cards[index], project.assets)) return undefined
-    const previous = jobs.filter(job => job.action === 'video' && job.episodeId === episodeId &&
-      job.cardId === predecessor.id && job.cardVersion === predecessor.version && job.status !== 'canceled' && !job.staleResult).at(-1)
-    if (!previous || previous.status === 'failed') return 'missing'
-    if (!previous.taskId) return previous.status === 'completed' ? 'missing' : 'pending'
-    const shots = Array.isArray(predecessor.shots) ? predecessor.shots : []
-    const state = await dependencies.getScriptVideoGeneration(previous.taskId, {
-      reconcileRejection: !readOnly, finalShotNumber: shots.length,
+    if (queuedCards.has(predecessor.id) || jobs.some(job => job.episodeId === episodeId && isActiveScriptVideoRender(job, predecessor))) return 'pending'
+    const previous = selectedScriptVideoRenders(episode, jobs).get(predecessor.id)
+    if (!previous) return 'missing'
+    const sameVersion = previous.cardVersion === undefined || previous.cardVersion === predecessor.version
+    const shots = sameVersion && Array.isArray(predecessor.shots) ? predecessor.shots : []
+    const state = previous.taskId && await dependencies.getScriptVideoGeneration(previous.taskId, {
+      reconcileRejection: !readOnly, finalShotNumber: sameVersion ? shots.length : 'last',
     }).catch(() => null)
-    if (state?.status === 'processing') return 'pending'
-    if (state?.status !== 'completed' || !state.videoUrl) return 'missing'
+    const submitted = state && state.status === 'completed' && state.videoUrl === previous.videoUrl ? state : undefined
+    if (!submitted && !await resolveStoredVideo(previous.videoUrl).catch(() => null)) return 'missing'
     const matchesDuration = (seconds: number, duration: number) => Number.isFinite(duration) && Math.abs(seconds - duration) <= 0.001
     const durations = shots.map(shot => shot?.duration)
     const shotEndSeconds = durations.reduce((total, duration) => total + duration, 0)
     const hasShotTiming = durations.length > 0 && durations.every(duration => Number.isFinite(duration) && duration > 0) &&
       matchesDuration(shotEndSeconds, predecessor.duration)
-    const previousDuration = previous.videoDuration ?? predecessor.duration
-    const durationScale = previousDuration / predecessor.duration
-    const submittedRange = state.finalShotRange
-    const shotRange = submittedRange && matchesDuration(submittedRange.shotEndSeconds, previousDuration) ? submittedRange
-      : hasShotTiming ? { shotStartSeconds: (shotEndSeconds - durations.at(-1)!) * durationScale, shotEndSeconds: previousDuration } : undefined
+    const previousDuration = previous.videoDuration ?? (sameVersion ? predecessor.duration : undefined)
+    const submittedRange = submitted?.finalShotRange
+    const shotRange = submittedRange && (previousDuration === undefined || matchesDuration(submittedRange.shotEndSeconds, previousDuration)) ? submittedRange
+      : hasShotTiming && previousDuration !== undefined ? {
+        shotStartSeconds: (shotEndSeconds - durations.at(-1)!) * previousDuration / predecessor.duration,
+        shotEndSeconds: previousDuration,
+      } : undefined
     return {
-      previousCardId: predecessor.id, previousTaskId: previous.taskId, videoUrl: state.videoUrl,
+      previousCardId: predecessor.id, ...(previous.taskId && { previousTaskId: previous.taskId }), videoUrl: previous.videoUrl,
       ...shotRange,
     }
   }
@@ -354,7 +385,7 @@ export function createScriptVideoRoutes(
       let recordChanged = false
       let documentChanged = false
       const currentJobs = new Map(record.jobs.map(job => [job.id, job]))
-      const completedCards: { card: any; videoUrl: string }[] = []
+      const completedCards: { card: any; version: ScriptVideoVersion }[] = []
       for (const { job, state } of terminal) {
         const current = currentJobs.get(job.id)
         if (!current || current.status !== job.status || current.updatedAt !== job.updatedAt || current.code !== job.code) continue
@@ -377,17 +408,27 @@ export function createScriptVideoRoutes(
         const card = episode?.cards?.find((item: any) => item.id === job.cardId)
         const task = episode?.tasks?.find((item: any) => item.id === job.id)
         if (state.status === 'completed' && state.videoUrl) {
+          const handoff = task?.continuation
+          const selected = episode && selectedScriptVideoRenders(episode, record.jobs)
+          const previous = handoff && selected?.get(handoff.previousCardId)
+          const sameTailSource = !handoff || !!previous && (handoff.previousVideoUrl
+            ? previous.videoUrl === handoff.previousVideoUrl : previous.taskId === handoff.previousTaskId)
           const sameLightingSources = (task?.lightingRanges || []).every(({ imageUrl, source }: RenderLightingRange) =>
-            !imageUrl || !source || episode.cards.some((c: any) => c.id === source.cardId && c.status === 'ready' && c.videoUrl === source.videoUrl))
-          if (card && card.version === job.cardVersion && sameLightingSources &&
+            !imageUrl || !source || selected?.get(source.cardId)?.videoUrl === source.videoUrl)
+          if (card && card.version === job.cardVersion && sameTailSource && sameLightingSources &&
               digest(record.project, job.episodeId, job.videoDigestVersion ? 'video' : 'revisions', job.cardId, job) === job.baseDigest) {
-            completedCards.push({ card, videoUrl: state.videoUrl })
+            completedCards.push({ card, version: {
+              url: state.videoUrl,
+              ...(task?.modelLabel && { modelLabel: task.modelLabel }),
+              ...(task?.duration && { duration: task.duration }),
+            } })
           } else {
             // A regenerated video can be stale while the same-version old render stays ready.
             current.staleResult = true
           }
         }
         if (task) {
+          if (current.taskId) task.taskId = current.taskId
           task.status = state.status
           task.videoUrl = state.videoUrl
           task.error = current.error
@@ -399,13 +440,16 @@ export function createScriptVideoRoutes(
         recordChanged = true
       }
       // Legacy video digests include the previous card's result URL.
-      for (const { card, videoUrl } of completedCards) {
-        card.videoUrl = videoUrl
+      for (const { card, version } of completedCards) {
+        const archive = listScriptVideoVersions(card)
+        if (!archive.some(item => item.url === version.url)) archive.push(version)
+        card.videoVersions = archive
+        card.videoUrl = version.url
         card.status = 'ready'
         documentChanged = true
       }
       return { result: null, recordChanged, documentChanged }
-    })
+    }, terminal.every(check => check.job.episodeId === terminal[0].job.episodeId) ? terminal[0].job.episodeId : undefined)
   }
 
   async function refreshPendingVideos(projectId: string, episodeId?: string) {
@@ -421,10 +465,36 @@ export function createScriptVideoRoutes(
     return checks.map(({ state }) => state)
   }
 
+  async function refreshVideoReferenceSources(
+    snapshot: Awaited<ReturnType<ScriptVideoStore['episodeSnapshot']>>, episodeId: string, cardId: string,
+  ) {
+    const { project, jobs } = snapshot
+    if (!jobs.some(job => job.action === 'video' && job.taskId && (job.status === 'queued' || job.status === 'running'))) return snapshot
+    const episode = episodeOf(project, episodeId)
+    const index = episode.cards.findIndex((card: ScriptVideoCard) => card.id === cardId)
+    if (index < 1) return snapshot
+    const predecessor: ScriptVideoCard = episode.cards[index - 1]
+    const activeSources = new Set((planScriptVideoLighting(project, episodeId, jobs)[cardId] || []).flatMap(range =>
+      range.pendingCardId ? [range.pendingCardId] : [],
+    ))
+    if (getScriptVideoContinuationScene(predecessor, episode.cards[index], project.assets)) activeSources.add(predecessor.id)
+    const activeCards = new Map<string, ScriptVideoCard>(episode.cards.filter((card: ScriptVideoCard) => activeSources.has(card.id))
+      .map((card: ScriptVideoCard) => [card.id, card]))
+    const checks = (await Promise.all(jobs.map(async (job): Promise<VideoCheck | null> => {
+      const card = job.cardId && activeCards.get(job.cardId)
+      if (job.episodeId !== episodeId || !job.taskId || !card || !isActiveScriptVideoRender(job, card)) return null
+      const state = await dependencies.getScriptVideoGeneration(job.taskId).catch(() => null)
+      return state && needsVideoReconciliation({ job, state }) ? { job, state } : null
+    }))).filter((item): item is VideoCheck => item !== null)
+    if (!checks.length) return snapshot
+    await reconcileVideoResults(project.id, checks)
+    return store.episodeSnapshot(project.id, episodeId)
+  }
+
   app.get('/style-presets', (c) => success(c, SCRIPT_VIDEO_STYLE_PRESETS))
   app.get('/projects', async (c) => {
     try {
-      return success(c, await store.list())
+      return success(c, c.req.query('view') === 'summary' ? await store.listSummaries() : await store.list())
     } catch (e) {
       return respondError(c, e)
     }
@@ -440,6 +510,7 @@ export function createScriptVideoRoutes(
   app.get('/projects/:id', async (c) => {
     try {
       const id = c.req.param('id')
+      if (c.req.query('view') === 'summary') return success(c, await store.summary(id))
       const project = await store.get(id)
       if (!project.episodes.some(episode => episode.tasks?.some((task: any) => task.status === 'processing' && task.taskId)))
         return success(c, project)
@@ -449,6 +520,31 @@ export function createScriptVideoRoutes(
     } catch (e) {
       return respondError(c, e)
     }
+  })
+  app.get('/projects/:id/episodes/:episodeId', async c => {
+    try {
+      c.header('Cache-Control', 'no-store')
+      return success(c, await store.episode(c.req.param('id'), c.req.param('episodeId')))
+    } catch (e) { return respondError(c, e) }
+  })
+  app.get('/projects/:id/episodes/:episodeId/activity', async c => {
+    try {
+      c.header('Cache-Control', 'no-store')
+      const id = c.req.param('id'), eid = c.req.param('episodeId')
+      await refreshPendingVideos(id, eid)
+      const activity = await store.activity(id, eid)
+      const queuedCardIds = queue.list(id, eid).map(item => item.cardId)
+      return success(c, { ...activity, queuedCardIds, activeCardIds: [...new Set([...activity.activeCardIds, ...queuedCardIds])] })
+    } catch (e) { return respondError(c, e) }
+  })
+  app.patch('/projects/:id/changes', async c => {
+    try {
+      const body = await c.req.json().catch(() => null)
+      const user = trustedSiteUser(c)
+      if (body?.expectedUser !== undefined && body.expectedUser !== user)
+        throw new ScriptVideoStoreError('当前账号已切换，请用原账号打开草稿', 403, 'DRAFT_ACCOUNT_CHANGED')
+      return success(c, await store.applyChanges(c.req.param('id'), body, user))
+    } catch (e) { return respondError(c, e) }
   })
   app.put('/projects/:id', async (c) => {
     try {
@@ -524,7 +620,7 @@ export function createScriptVideoRoutes(
   })
   app.get('/projects/:id/jobs', async (c) => {
     try {
-      return success(c, await store.listJobs(c.req.param('id'), c.req.query('episodeId')))
+      return success(c, await store.listJobs(c.req.param('id'), c.req.query('episodeId'), c.req.query('view') === 'restore'))
     } catch (e) {
       return respondError(c, e)
     }
@@ -561,18 +657,17 @@ export function createScriptVideoRoutes(
       }
       if (body.jobId !== undefined) {
         if (typeof body.jobId !== 'string' || !body.jobId) throw new ScriptVideoStoreError('无效的视频任务')
-        const submission = await store.mutate(id, ({ project, jobs }) => {
-          const episode = episodeOf(project, episodeId)
-          const job = jobs.find(item => item.id === body.jobId && item.projectId === id && item.episodeId === episodeId &&
-            item.cardId === body.cardId && item.action === 'video')
-          if (!job) throw new ScriptVideoStoreError('视频任务不属于本段', 404, 'NOT_FOUND')
-          const task = episode.tasks?.find((item: any) => item.id === job.id && item.taskId === job.taskId)
-          const result = job.taskId && getScriptVideoSubmissionPrompt(job.taskId, project.assets,
-            job.videoReferenceNames, task?.continuation, task?.lightingRanges)
-          if (!result) throw new ScriptVideoStoreError('该任务暂无可查看的提交提示词', 404, 'VIDEO_PROMPT_UNAVAILABLE')
-          return { result, recordChanged: false }
-        })
-        return success(c, submission)
+        const { project, jobs } = await store.episodeSnapshot(id, episodeId)
+        const episode = episodeOf(project, episodeId)
+        const job = jobs.find(item => item.id === body.jobId && item.projectId === id && item.episodeId === episodeId &&
+          item.cardId === body.cardId && item.action === 'video')
+        if (!job) throw new ScriptVideoStoreError('视频任务不属于本段', 404, 'NOT_FOUND')
+        const task = episode.tasks?.find((item: any) => item.id === job.id && item.taskId === job.taskId)
+        const result = job.taskId && getScriptVideoSubmissionPrompt(job.taskId, project.assets,
+          job.videoReferenceNames, task?.continuation, task?.lightingRanges,
+          episode.production?.stylePreset || project.settings?.stylePreset)
+        if (!result) throw new ScriptVideoStoreError('该任务暂无可查看的提交提示词', 404, 'VIDEO_PROMPT_UNAVAILABLE')
+        return success(c, result)
       }
       const hasSelection = body.configId != null || body.model != null
       if (!Number.isSafeInteger(body.cardVersion) || hasSelection &&
@@ -583,37 +678,35 @@ export function createScriptVideoRoutes(
       if (body.duration !== undefined && !isScriptVideoGenerationDuration(body.duration)) {
         throw new ScriptVideoStoreError('生成时长须为 1–30 的整数秒')
       }
-      const prepared = await store.mutate(id, async ({ project, jobs }) => {
-        const episode = episodeOf(project, episodeId)
-        const card = episode.cards.find((item: any) => item.id === body.cardId)
-        if (!card) throw new ScriptVideoStoreError('分镜不存在', 404, 'NOT_FOUND')
-        if (card.version !== body.cardVersion) throw new ScriptVideoStoreError('分镜已更新，请刷新后重试', 409, 'CONFLICT')
-        if (card.manuallyAdded) {
-          if (!card.prompt?.trim()) throw new ScriptVideoStoreError('请先输入本段视频提示词', 422, 'PROMPT_REQUIRED')
-        } else {
-          requireSynchronized([card])
-          if (!card.prompt?.trim() || !Array.isArray(card.shots) || !card.shots.length)
-            throw new ScriptVideoStoreError('请先生成本段提示词和分镜脚本', 422, 'STORYBOARD_REQUIRED')
+      const { project, jobs } = await store.episodeSnapshot(id, episodeId)
+      const episode = episodeOf(project, episodeId)
+      const card = episode.cards.find((item: any) => item.id === body.cardId)
+      if (!card) throw new ScriptVideoStoreError('分镜不存在', 404, 'NOT_FOUND')
+      if (card.version !== body.cardVersion) throw new ScriptVideoStoreError('分镜已更新，请刷新后重试', 409, 'CONFLICT')
+      const stylePreset = episode.production?.stylePreset || project.settings?.stylePreset
+      if (card.manuallyAdded) {
+        if (!hasScriptVideoPromptBody(card.prompt, stylePreset)) throw new ScriptVideoStoreError('请先输入本段视频提示词', 422, 'PROMPT_REQUIRED')
+      } else {
+        requireSynchronized([card])
+        if (!card.prompt?.trim() || !Array.isArray(card.shots) || !card.shots.length)
+          throw new ScriptVideoStoreError('请先生成本段提示词和分镜脚本', 422, 'STORYBOARD_REQUIRED')
+      }
+      const cast = episode.production?.characters
+      if (hasSelection) {
+        requireConfirmed(episode, 'revisions')
+        if (!card.manuallyAdded && !getScriptVideoMissingVoices(card, project.assets, { cast, stylePreset }).length) {
+          dependencies.assertScriptVideoFormal({             production: episode.production, script: episode.confirmedScript,
+            assets: project.assets, cards: [card], scope: 'card'           })
         }
-        const cast = episode.production?.characters
-        const stylePreset = episode.production?.stylePreset || project.settings?.stylePreset
-        if (hasSelection) {
-          requireConfirmed(episode, 'revisions')
-          if (!card.manuallyAdded && !getScriptVideoMissingVoices(card, project.assets, { cast, stylePreset }).length) {
-            dependencies.assertScriptVideoFormal({ production: episode.production, script: episode.confirmedScript,
-              assets: project.assets, cards: [card], scope: 'card' })
-          }
-        }
-        const lightingPlan = planScriptVideoLighting(project, episodeId, jobs)[card.id] || []
-        const source = await continuationSource(project, jobs, episodeId, card.id, true)
-        return { result: { card, assets: project.assets, cast, stylePreset, source, lightingPlan },
-          recordChanged: false }
-      })
-      const { source, lightingPlan, ...input } = prepared
+      }
+      const queued = queuedReferenceCards(id, episodeId)
+      const lightingPlan = planScriptVideoLighting(project, episodeId, jobs, queued)[card.id] || []
+      const source = await continuationSource(project, jobs, episodeId, card.id, queued, true)
+      const input = { card, assets: project.assets, cast, stylePreset }
       const continuationSourceForPreview = typeof source === 'string' ? undefined : source
       const pending = source === 'pending' ? '上一段成片仍在生成，出片后将自动补入尾帧。'
         : source === 'missing' ? '先生成上一段视频，系统会自动补入成片尾帧。'
-          : !source && lightingPlan.some(range => range.pendingPrevious) ? '同场上一段正在制作，出片后将自动补入光线参考图。' : undefined
+          : lightingPlan.some(range => range.pendingCardId) ? '同场上一段正在制作，出片后将自动补入光线参考图。' : undefined
       try {
         const lighting = await prepareScriptVideoLighting(lightingPlan)
         const result = await previewScriptVideoPrompt({ ...input, projectId: id, episodeId, waitingForReference: !!pending,
@@ -639,32 +732,25 @@ export function createScriptVideoRoutes(
         throw new ScriptVideoStoreError('视频模型配置或分镜无效')
       }
       const id = c.req.param('id'), episodeId = c.req.param('episodeId')
-      const { assets, options, inputs, lightingPlans } = await store.mutate(id, async ({ project, jobs }) => {
-        const episode = episodeOf(project, episodeId)
-        const lightingPlans = planScriptVideoLighting(project, episodeId, jobs)
-        const inputs = []
-        for (const card of episode.cards) {
-          if (!cardIds.includes(card.id)) continue
-          const source = await continuationSource(project, jobs, episodeId, card.id)
-          inputs.push({ card, source: source && typeof source !== 'string' ? source : undefined })
-        }
-        return {
-          result: {
-            inputs, assets: project.assets,
-            lightingPlans: Object.entries(lightingPlans).filter(([cardId]) => cardIds.includes(cardId)),
-            options: { configId, model, cast: episode.production?.characters,
-              stylePreset: episode.production?.stylePreset || project.settings?.stylePreset },
-          },
-          recordChanged: false,
-        }
-      })
+      const { project, jobs } = await store.episodeSnapshot(id, episodeId)
+      const episode = episodeOf(project, episodeId)
+      const queued = queuedReferenceCards(id, episodeId)
+      const lightingPlans = Object.entries(planScriptVideoLighting(project, episodeId, jobs, queued))
+        .filter(([cardId]) => cardIds.includes(cardId))
+      const inputs = await Promise.all(episode.cards.filter((card: ScriptVideoCard) => cardIds.includes(card.id))
+        .map(async (card: ScriptVideoCard) => {
+          const source = await continuationSource(project, jobs, episodeId, card.id, queued)
+          return { card, source: source && typeof source !== 'string' ? source : undefined }
+        }))
+      const options = {         configId, model, cast: episode.production?.characters,
+        stylePreset: episode.production?.stylePreset || project.settings?.stylePreset       }
       try {
         const lightingRanges = Object.create(null)
         for (const [cardId, plans] of lightingPlans) {
           const prepared = await prepareScriptVideoLighting(plans)
           lightingRanges[cardId] = prepared.ranges.map(({ source, sceneKey, ...range }) => range)
         }
-        return success(c, await prepareScriptVideoDeliveryReferences(inputs, assets, options, lightingRanges))
+        return success(c, await prepareScriptVideoDeliveryReferences(inputs, project.assets, options, lightingRanges))
       } catch (error) {
         throw new ScriptVideoStoreError(error instanceof Error ? error.message : '上一段尾帧准备失败', 422, 'CONTINUATION_FRAME')
       }
@@ -675,7 +761,7 @@ export function createScriptVideoRoutes(
 
   app.post('/projects/:id/episodes/:episodeId/validate', async (c) => {
     try {
-      const project = await store.get(c.req.param('id'))
+      const { project } = await store.episodeSnapshot(c.req.param('id'), c.req.param('episodeId'))
       const episode = episodeOf(project, c.req.param('episodeId'))
       requireConfirmed(episode, 'revisions')
       const body = await c.req.json()
@@ -772,9 +858,9 @@ export function createScriptVideoRoutes(
           throw new ScriptVideoStoreError(
             '待调整提示词不能为空且不能超过 50000 字符',
           )
-        const prepared = await store.mutate(id, (record) => {
+        const prepared = await store.mutateEpisode(id, episodeId, (record) => {
           const ep = episodeOf(record.project, episodeId)
-          store.requireEpisodeLease(id, episodeId, session)
+
           requireConfirmed(ep, action)
           const autoSelectCharacterBases = body.autoSelectCharacterBases ?? record.project.settings?.autoSelectCharacterBases
           if (autoSelectCharacterBases !== undefined && (!Array.isArray(autoSelectCharacterBases) || autoSelectCharacterBases.length >= 100 || autoSelectCharacterBases.some((name: unknown) => typeof name !== 'string' || !name.trim() || name.length > 100)))
@@ -794,9 +880,12 @@ export function createScriptVideoRoutes(
             )
           const base = digest(record.project, episodeId, action, body.cardId)
           const resumeKey = action === 'storyboard' ? storyboardResumeKey(record.project, episodeId, body) : undefined
-          const lastResume = resumeKey ? record.jobs.slice().reverse().find(item =>
-            item.action === 'storyboard' && item.episodeId === episodeId && item.resumeKey === resumeKey &&
-            (item.status === 'canceled' || (item.status === 'failed' && item.checkpoint))) : undefined
+          const resumable = resumeKey ? record.jobs.slice().reverse().filter(item =>
+            item.action === 'storyboard' && item.episodeId === episodeId && item.resumeKey &&
+            (item.status === 'canceled' || (item.status === 'failed' && item.checkpoint))) : []
+          // Existing unfinished checkpoints used the full unprojected text digest.
+          const legacyKey = resumable.length ? storyboardResumeKey(record.project, episodeId, body, true) : undefined
+          const lastResume = resumable.find(item => item.resumeKey === resumeKey || item.resumeKey === legacyKey)
           const previous = lastResume?.status === 'failed' ? lastResume : undefined
           const retryCurrentSegment = previous?.code === 'STORYBOARD_REPAIRS_EXHAUSTED' &&
             previous.progress?.batchSize === 1 &&
@@ -864,7 +953,7 @@ export function createScriptVideoRoutes(
     signal: AbortSignal,
   ) {
     try {
-      const started = await store.mutate(job.projectId, (record) => {
+      const started = await store.mutateEpisode(job.projectId, job.episodeId, (record) => {
         const current = record.jobs.find((item) => item.id === job.id)
         if (current?.status !== 'queued') return { result: false, recordChanged: false }
         current.status = 'running'
@@ -901,10 +990,12 @@ export function createScriptVideoRoutes(
                 checkpoint: job.checkpoint,
                 onProgress: async (progress, checkpoint) => {
                   signal.throwIfAborted()
-                  await store.mutate(job.projectId, (record) => {
+                await store.mutateEpisode(job.projectId, job.episodeId, (record) => {
                     const current = record.jobs.find(item => item.id === job.id)
-                    if (!current || current.status !== 'running' || current.resumeKey !== storyboardResumeKey(record.project, job.episodeId, body))
-                      throw new ScriptVideoStoreError('剧本、资产、模型或制作设置已发生变化，请重新生成', 409, 'STALE')
+                  if (!current || current.status !== 'running')
+                    throw new ScriptVideoStoreError('文字任务已停止', 409, 'CANCELED')
+                  // Keep the original snapshot's checkpoint. The completion check
+                  // below preserves newer edits and stores outdated output on the job.
                     current.progress = structuredClone(progress)
                     current.checkpoint = structuredClone(checkpoint)
                     current.updatedAt = new Date().toISOString()
@@ -929,21 +1020,27 @@ export function createScriptVideoRoutes(
                   ],
                 instruction: body.instruction.trim(),
               })
-      await store.mutate(job.projectId, (record) => {
+      await store.mutateEpisode(job.projectId, job.episodeId, (record) => {
         const current = record.jobs.find((item) => item.id === job.id)
         if (current?.status !== 'running' || signal.aborted) return { result: null, recordChanged: false }
+        const target = episodeOf(record.project, job.episodeId)
+        const removedTarget = job.action === 'revisions' && !target.cards.some((card: { id: string }) => card.id === body.cardId)
+        let removesPendingCard = false
+        if (job.action === 'outline' || job.action === 'storyboard') {
+          const proposed = new Set((result as { cards: {id:string}[] }).cards.map(card => card.id))
+          // Submitted renders retain their own task record through a re-outline.
+          // A browser-owned batch reservation still needs the card to exist.
+          removesPendingCard = queue.list(job.projectId, job.episodeId).some(item => !proposed.has(item.cardId))
+        }
         if (
-          digest(
-            record.project,
-            job.episodeId,
-            job.action as Action,
-            body.cardId,
-          ) !== base
+          removedTarget || removesPendingCard || digest(record.project, job.episodeId, job.action as Action, body.cardId) !== base
           || (job.action === 'storyboard' && job.resumeKey !== storyboardResumeKey(record.project, job.episodeId, body))
         ) {
           current.status = 'failed'
           current.code = 'STALE'
-          current.error = '剧本、资产或分镜已发生变化，请重新生成'
+          current.staleResult = true
+          current.result = result
+          current.error = removesPendingCard ? '编排结果会移除等待生成的分镜，本次结果已保留' : '输入已更新，本次结果已保留，可在任务中查看'
           current.updatedAt = new Date().toISOString()
           return { result: null }
         }
@@ -965,7 +1062,6 @@ export function createScriptVideoRoutes(
             )?.version,
           }
         } else {
-          const target = episodeOf(record.project, job.episodeId)
           const cards = (result as { cards: any[] }).cards
           const retimed = job.action === 'storyboard' && (
             cards.length !== target.cards.length ||
@@ -985,11 +1081,13 @@ export function createScriptVideoRoutes(
               (item: any) => item.id === card.id,
             )
             const { manuallyAdded: _manualOrigin, ...generated } = card
+            const videoVersions = previous ? listScriptVideoVersions(previous) : []
             return {
               ...generated,
               promptNeedsSync: false,
               videoUrl: retimed && (previous?.duration !== card.duration || previous?.prompt !== card.prompt)
                 ? undefined : previous?.videoUrl,
+              ...(videoVersions.length && { videoVersions }),
               status: 'draft',
               version: previous ? (Number(previous.version) || 0) + 1 : 1,
             }
@@ -1025,7 +1123,7 @@ export function createScriptVideoRoutes(
       if (signal.aborted) return
       const info = errorInfo(error)
       await store
-        .mutate(job.projectId, (record) => {
+        .mutateEpisode(job.projectId, job.episodeId, (record) => {
           const current = record.jobs.find((item) => item.id === job.id)
           if (current?.status !== 'running' && current?.status !== 'queued') return { result: null, recordChanged: false }
           current.status = 'failed'
@@ -1040,10 +1138,7 @@ export function createScriptVideoRoutes(
   }
   // The reservation is persisted before calling a provider. An interrupted submission
   // with no task ID is ambiguous and cannot be silently retried.
-  app.on('POST', [
-    '/projects/:id/episodes/:episodeId/cards/:cardId/video',
-    '/projects/:id/episodes/:episodeId/cards/:cardId/video/quote',
-  ],
+  app.post('/projects/:id/episodes/:episodeId/cards/:cardId/video',
     async (c) => {
       let job: ScriptVideoJob | undefined
       let releaseSubmission: (() => void) | undefined
@@ -1054,11 +1149,6 @@ export function createScriptVideoRoutes(
           episodeId = c.req.param('episodeId'),
           cardId = c.req.param('cardId')
         const body = await c.req.json()
-        const quoteOnly = new URL(c.req.url).pathname.endsWith('/quote')
-        if (quoteOnly || body.jimengQuoteId !== undefined) {
-          try { requireJimengPrivateAccess(c) }
-          catch (error) { throw new ScriptVideoStoreError((error as Error).message, 403, 'FORBIDDEN') }
-        }
         if (
           !Number.isSafeInteger(body.expectedCardVersion) ||
           !Number.isSafeInteger(body.configId) ||
@@ -1072,23 +1162,46 @@ export function createScriptVideoRoutes(
         if (body.duration !== undefined && !isScriptVideoGenerationDuration(body.duration)) {
           throw new ScriptVideoStoreError('生成时长须为 1–30 的整数秒')
         }
-        if (!quoteOnly) {
-          const configs = schema.aiServiceConfigs
-          const config = db.select({ provider: configs.provider }).from(configs).where(eq(configs.id, body.configId)).get()
-          releaseSubmission = holdVideoCliSubmission(config?.provider)
+        const configs = schema.aiServiceConfigs
+        const config = db.select({ provider: configs.provider }).from(configs).where(eq(configs.id, body.configId)).get()
+        if (config?.provider === 'jimeng') {
+          try { requireJimengPrivateAccess(c) }
+          catch (error) { throw new ScriptVideoStoreError((error as Error).message, 403, 'FORBIDDEN') }
         }
+        releaseSubmission = holdVideoCliSubmission(config?.provider)
         const session = scriptVideoSession(c.req.header(SESSION_HEADER))
         if (body.requestId !== undefined && !isVideoRequestId(body.requestId))
           throw new ScriptVideoStoreError('视频请求标识无效')
-        const prepared = await store.mutate<Pick<ScriptVideoGenerationInput, 'card' | 'assets' | 'cast' | 'stylePreset' | 'continuationSource'> & {
-          job?: ScriptVideoJob
+        let snapshot = await store.episodeSnapshot(id, episodeId)
+        const active = (job: ScriptVideoJob) => job.action === 'video' && job.cardId === cardId &&
+          (job.status === 'queued' || job.status === 'running')
+        const rejectActive = () => new ScriptVideoStoreError('此分镜已有视频任务正在提交或处理中', 409, 'VIDEO_ACTIVE')
+        queue.assertCanSubmit(id, episodeId, cardId, session, body.requestId)
+        if (snapshot.jobs.some(active)) throw rejectActive()
+        snapshot = await refreshVideoReferenceSources(snapshot, episodeId, cardId)
+        const queued = queuedReferenceCards(id, episodeId, session, body.requestId)
+        // File and task lookups can wait outside the write queue. Recheck the
+        // episode and reservations at commit before handing anything to a provider.
+        const [source, rejected] = await Promise.all([
+          continuationSource(snapshot.project, snapshot.jobs, episodeId, cardId, queued),
+          Promise.all(snapshot.jobs.filter(job => job.cardId === cardId && job.status === 'failed' &&
+            job.code === 'SUBMISSION_UNKNOWN' && job.taskId).map(async job => ({
+              job, state: await dependencies.getScriptVideoGeneration(job.taskId!).catch(() => null),
+            }))),
+        ])
+        const prepared = await store.mutateEpisode<Pick<ScriptVideoGenerationInput, 'card' | 'assets' | 'cast' | 'stylePreset' | 'continuationSource'> & {
+          job: ScriptVideoJob
           lightingPlan: ReturnType<typeof planScriptVideoLighting>[string]
-        }>(id, async (record) => {
+        }>(id, episodeId, (record) => {
           const episode = episodeOf(record.project, episodeId)
-          store.requireEpisodeLease(id, episodeId, session)
+
+          queue.assertCanSubmit(id, episodeId, cardId, session, body.requestId)
           if (body.requestId && (canceledVideoRequests.get(videoRequestKey(id, episodeId, session, body.requestId)) || 0) > Date.now()) {
             throw new ScriptVideoStoreError('视频生成已取消', 409, 'CANCELED')
           }
+          if (record.jobs.some(active)) throw rejectActive()
+          if (record.episodeRevision !== snapshot.episodeRevision)
+            throw new ScriptVideoStoreError('分集刚刚更新，请重试生成', 409, 'CONFLICT')
           requireConfirmed(episode, 'revisions')
           const card = episode.cards.find((item: any) => item.id === cardId)
           if (!card)
@@ -1102,7 +1215,7 @@ export function createScriptVideoRoutes(
           const cast = episode.production?.characters
           const stylePreset = episode.production?.stylePreset || record.project.settings?.stylePreset
           if (card.manuallyAdded) {
-            if (!card.prompt?.trim()) throw new ScriptVideoStoreError('请先输入本段视频提示词', 422, 'PROMPT_REQUIRED')
+            if (!hasScriptVideoPromptBody(card.prompt, stylePreset)) throw new ScriptVideoStoreError('请先输入本段视频提示词', 422, 'PROMPT_REQUIRED')
           } else {
             requireSynchronized([card])
             const missingVoices = getScriptVideoMissingVoices(card, record.project.assets, { cast, stylePreset })
@@ -1122,20 +1235,9 @@ export function createScriptVideoRoutes(
               item.episodeId === episodeId &&
               item.cardId === cardId,
           )
-          if (
-            previous.some(
-              (item) => item.status === 'queued' || item.status === 'running',
-            )
-          )
-            throw new ScriptVideoStoreError(
-              '此分镜已有视频任务正在提交或处理中',
-              409,
-              'VIDEO_ACTIVE',
-            )
-          for (const item of previous) {
-            if (item.status !== 'failed' || item.code !== 'SUBMISSION_UNKNOWN' || !item.taskId) continue
-            const state = await dependencies.getScriptVideoGeneration(item.taskId).catch(() => null)
-            reconcileRejectedVideoSubmission(episode, item, state)
+          for (const { job, state } of rejected) {
+            const current = previous.find(item => item.id === job.id && item.updatedAt === job.updatedAt)
+            if (current) reconcileRejectedVideoSubmission(episode, current, state)
           }
           const uncertain = previous.find(
             (item) =>
@@ -1150,22 +1252,21 @@ export function createScriptVideoRoutes(
               409,
               uncertain.code,
             )
-          const source = await continuationSource(record.project, record.jobs, episodeId, cardId)
-          if (source === 'pending') {
+          const remainingQueued = queuedReferenceCards(id, episodeId, session, body.requestId)
+          if (source === 'pending' || source && typeof source !== 'string' && remainingQueued.has(source.previousCardId)) {
             throw new ScriptVideoStoreError('本段从上一段尾帧继续，请等待上一段视频生成完成', 409, 'CONTINUATION_PENDING')
           }
           if (source === 'missing') {
             throw new ScriptVideoStoreError('本段从上一段尾帧继续，请先生成上一段视频', 409, 'CONTINUATION_REQUIRED')
           }
-          const lightingPlan = planScriptVideoLighting(record.project, episodeId, record.jobs)[cardId] || []
-          if (!source && lightingPlan.some(range => range.pendingPrevious)) {
+          const lightingPlan = planScriptVideoLighting(record.project, episodeId, record.jobs, remainingQueued)[cardId] || []
+          if (lightingPlan.some(range => range.pendingCardId)) {
             throw new ScriptVideoStoreError('同场上一段正在制作，出片后将自动提取光线参考图', 409, 'LIGHTING_PENDING')
           }
           const generation = {
             card: structuredClone(card), assets: structuredClone(record.project.assets), cast: structuredClone(cast),
             stylePreset: structuredClone(stylePreset), continuationSource: source, lightingPlan,
           }
-          if (quoteOnly) return { result: { ...generation, job: undefined }, recordChanged: false }
           if (body.confirmRetryAfterUnknown === true)
             for (const item of previous)
               if (
@@ -1183,7 +1284,8 @@ export function createScriptVideoRoutes(
             episodeId,
             cardId,
             cardVersion: card.version,
-            videoDigestVersion: 6,
+            ...(body.requestId && { requestId: body.requestId, ownerSession: session || undefined }),
+            videoDigestVersion: 7,
             videoModel: body.model.trim(),
             videoProvider: episode.modelName === body.model.trim() ? episode.modelProvider : undefined,
             videoDuration: body.duration ?? card.duration,
@@ -1214,6 +1316,7 @@ export function createScriptVideoRoutes(
           }
         })
         job = prepared.job
+        queue.submitted(id, episodeId, cardId, session, body.requestId)
         const lighting = await prepareScriptVideoLighting(prepared.lightingPlan)
         const generationInput = {
           projectId: id,
@@ -1227,25 +1330,20 @@ export function createScriptVideoRoutes(
           aspectRatio: body.aspectRatio,
           resolution: body.resolution,
           duration: body.duration,
+          allowJimeng: config?.provider === 'jimeng',
           allowLibTV: hasLoopbackAccess(c) || hasPrivateGatewayAccess(c),
           continuationSource: prepared.continuationSource,
           lightingRanges: lighting.ranges.map(({ source, sceneKey, ...range }) => range),
-          ...(quoteOnly || body.jimengQuoteId !== undefined ? {
-            jimengScope: createHash('sha256').update(JSON.stringify([id, episodeId, cardId, body.expectedCardVersion, session])).digest('hex'),
-            jimengQuoteId: body.jimengQuoteId,
-          } : {}),
         }
-        if (quoteOnly) {
-          try { return success(c, await quoteScriptVideoGeneration(generationInput)) }
-          catch (error) { throw new ScriptVideoStoreError(safeTaskError(error), 422, 'JIMENG_QUOTE_UNAVAILABLE') }
-        }
-        if (!job) throw new ScriptVideoStoreError('视频任务未能提交')
         submission.controller.signal.throwIfAborted()
         const submitted = await dependencies.startScriptVideoGeneration(generationInput, {
           signal: submission.controller.signal,
-          onTaskCreated: taskId => { submission.taskId = taskId },
+          onTaskCreated: taskId => {
+            submission.taskId = taskId
+            store.attachVideoTask(id, job!.id, taskId)
+          },
         })
-        const committed = await store.mutate(id, (record) => {
+        const committed = await store.mutateEpisode(id, episodeId, (record) => {
           const current = record.jobs.find((item) => item.id === job!.id)!
           if (current.status === 'canceled') return { result: false, recordChanged: false }
           current.status = 'running'
@@ -1292,7 +1390,7 @@ export function createScriptVideoRoutes(
             ? String((error as Error).message)
             : '提交未收到结果。重新提交可能重复计费。'
           await store
-            .mutate(job.projectId, (record) => {
+            .mutateEpisode(job.projectId, job.episodeId, (record) => {
               const current = record.jobs.find((item) => item.id === job!.id)
               if (current?.status === 'canceled') return { result: null, recordChanged: false }
               if (current) {
@@ -1336,17 +1434,20 @@ export function createScriptVideoRoutes(
           (body.jobIds !== undefined && (!Array.isArray(body.jobIds) || !body.jobIds.length || !body.jobIds.every(isVideoRequestId)))) {
         throw new ScriptVideoStoreError('取消的视频任务标识无效')
       }
+      if (!body.requestId && !body.jobIds?.length) throw new ScriptVideoStoreError('请选择要取消的生成请求或任务')
       const jobIds = body.jobIds ? new Set<string>(body.jobIds) : undefined
-      const canceled = await store.mutate(id, (record) => {
+      const canceled = await store.mutateEpisode(id, episodeId, (record) => {
         const episode = episodeOf(record.project, episodeId)
-        store.requireEpisodeLease(id, episodeId, session)
+
         if (body.requestId) {
+          if (session) queue.release(id, episodeId, session, body.requestId)
           const now = Date.now()
           for (const [key, expiresAt] of canceledVideoRequests) if (expiresAt <= now) canceledVideoRequests.delete(key)
           canceledVideoRequests.set(videoRequestKey(id, episodeId, session, body.requestId), now + 10 * 60_000)
         }
         const targets = record.jobs.filter(job => job.episodeId === episodeId && job.action === 'video' &&
           (job.status === 'queued' || job.status === 'running') &&
+          (!body.requestId || job.requestId === body.requestId && (job.ownerSession ?? null) === session) &&
           (!jobIds || jobIds.has(job.id)) && (!body.cardId || job.cardId === body.cardId))
         const time = new Date().toISOString()
         return {
@@ -1371,7 +1472,7 @@ export function createScriptVideoRoutes(
       const confirmed = (await Promise.all(canceled.flatMap(task =>
         !task.stopped && task.taskId ? [cancelDispatchedVideoTask(task.taskId).then(stopped => stopped ? task.jobId : undefined)] : [],
       ))).filter(Boolean)
-      if (confirmed.length) await store.mutate(id, (record) => {
+      if (confirmed.length) await store.mutateEpisode(id, episodeId, (record) => {
         const episode = episodeOf(record.project, episodeId)
         const time = new Date().toISOString()
         for (const job of record.jobs) {
@@ -1403,7 +1504,7 @@ export function createScriptVideoRoutes(
         )
         if (!match)
           throw new ScriptVideoStoreError('任务不属于此项目', 404, 'NOT_FOUND')
-        store.requireEpisodeLease(id, match.episodeId, session)
+
         if (match.status !== 'failed' || match.code !== 'DELIVERY_FAILED')
           throw new ScriptVideoStoreError(
             '该任务当前无需或无法恢复',
@@ -1461,9 +1562,39 @@ export function createScriptVideoRoutes(
     }
   })
 
+  app.post('/projects/:id/episodes/:episodeId/cards/:cardId/video-version', async (c) => {
+    try {
+      const { id, episodeId, cardId } = c.req.param()
+      const body = await c.req.json().catch(() => null)
+      if (typeof body?.url !== 'string' || !body.url.trim()) throw new ScriptVideoStoreError('请选择要设为正片的视频版本。')
+      const { url } = body
+      await store.mutateEpisode(id, episodeId, async ({ project, jobs }) => {
+        const episode = episodeOf(project, episodeId)
+        const card = episode.cards.find((item: any) => item.id === cardId)
+        if (!card) throw new ScriptVideoStoreError('分镜不存在', 404, 'NOT_FOUND')
+        const active = jobs.some(job => job.action === 'video' && job.cardId === cardId &&
+          (job.status === 'queued' || job.status === 'running'))
+        if (active || store.queue.list(id, episodeId).some(item => item.cardId === cardId))
+          throw new ScriptVideoStoreError('请等本段生成完成后再设置正片。', 409, 'VIDEO_ACTIVE')
+        const versions = listScriptVideoVersions(card, episode.tasks)
+        if (!versions.some(version => version.url === url) || !await resolveStoredVideo(url).catch(() => null)) {
+          throw new ScriptVideoStoreError('该片段的视频版本已不可用。', 404, 'VIDEO_VERSION_UNAVAILABLE')
+        }
+        if (card.status === 'ready' && card.videoUrl === url) return { result: null, recordChanged: false }
+        card.videoVersions = versions
+        card.videoUrl = url
+        card.status = 'ready'
+        return { result: null, documentChanged: true }
+      })
+      return success(c, { url })
+    } catch (error) {
+      return respondError(c, error)
+    }
+  })
+
   app.get('/projects/:id/episodes/:episodeId/video-export', async (c) => {
     try {
-      const project = await store.get(c.req.param('id'))
+      const { project } = await store.episodeSnapshot(c.req.param('id'), c.req.param('episodeId'))
       const episode = episodeOf(project, c.req.param('episodeId'))
       const requestedId = c.req.query('id')
       const mergeId = requestedId === undefined ? undefined : Number(requestedId)
@@ -1485,7 +1616,7 @@ export function createScriptVideoRoutes(
 
   app.post('/projects/:id/episodes/:episodeId/video-export', async (c) => {
     try {
-      const project = await store.get(c.req.param('id'))
+      const { project } = await store.episodeSnapshot(c.req.param('id'), c.req.param('episodeId'))
       const episode = episodeOf(project, c.req.param('episodeId'))
       const body = await c.req.json().catch(() => null)
       const requested: unknown = body?.cardIds
@@ -1504,8 +1635,7 @@ export function createScriptVideoRoutes(
       for (const [index, card] of episode.cards.entries()) {
         if (!ids.delete(card.id)) continue
         // Use the same available version as the preview for this segment.
-        const storedUrl = typeof card.videoUrl === 'string' ? card.videoUrl.trim() : ''
-        const url = card.status === 'ready' && storedUrl ? storedUrl : completed.get(card.id)?.trim() || storedUrl
+        const url = selectScriptVideoPlayback(card, completed.get(card.id))?.url
         if (!url) {
           throw new ScriptVideoStoreError(`第 ${index + 1} 段还没有可导出的成片。`)
         }

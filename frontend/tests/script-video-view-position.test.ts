@@ -122,10 +122,11 @@ test('进入分集后按服务端最新片段恢复，已移除的片段保留�
       episodeNavigationBusy: { value: false }, selectingEpisode: { value: false },
       episodeAccessNotice: { value: '' }, selectedEpisodeId: { value: '' }, selectedCardId: { value: '' },
       cards: { value: [{ id: 'removed' }] }, hasStoryboard: { value: true }, restoredStage: { value: undefined },
-      editorTab: { value: 'shots' }, outputMode: { value: 'internal' }, dialog: { value: null }, assetSearch: { value: '' },
-      episodeLock: { owns: () => false, enter: async () => {} }, saveProjectNow: async () => {},
-      scriptVideoRequest: async () => [{ id: 'first' }, { id: 'second' }],
-      installProject: async (cards: { id: string }[]) => {
+      editorTab: { value: 'prompt' }, outputMode: { value: 'internal' }, dialog: { value: null },
+      episodeLock: { owns: () => false, enter: () => {}, leave: () => {} }, persistBeforeNavigation: async () => {},
+      localProject: () => undefined, sharedLoaded: new Set(), navigator: { onLine: true },
+      refreshProject: async () => {
+        const cards = [{ id: 'first' }, { id: 'second' }]
         state.cards.value = cards
         state.selectedCardId.value = cards[0]!.id
       },
@@ -133,9 +134,9 @@ test('进入分集后按服务端最新片段恢复，已移除的片段保留�
       toast: { error: (error: string) => assert.fail(error) },
     }
     const selectEpisode = runInNewContext(`${controller}\nselectEpisode`, state)
-    await selectEpisode('ep54', { projectId: 'seven', episodeId: 'ep54', cardId, stage: 'production', tab: 'prompt', outputMode: 'external' })
+    await selectEpisode('ep54', { projectId: 'seven', episodeId: 'ep54', cardId, stage: 'production', tab: 'continuity', outputMode: 'external' })
     return [state.selectedEpisodeId.value, state.restoredStage.value, state.selectedCardId.value, state.editorTab.value, state.outputMode.value]
   }
-  assert.deepEqual(await open('second'), ['ep54', 'production', 'second', 'prompt', 'external'])
-  assert.deepEqual(await open('removed'), ['ep54', 'production', 'first', 'shots', 'external'])
+  assert.deepEqual(await open('second'), ['ep54', 'production', 'second', 'continuity', 'external'])
+  assert.deepEqual(await open('removed'), ['ep54', 'production', 'first', 'prompt', 'external'])
 })

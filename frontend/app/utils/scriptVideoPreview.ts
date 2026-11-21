@@ -3,6 +3,9 @@ import { annotateScriptVideoAssets } from '../../../backend/src/services/script-
 import { renderScriptVideoPrompt } from '../../../backend/src/services/script-video-format'
 import { formatScriptVideoStylePreset, scriptVideoPromptStylePrefix, type ScriptVideoStylePreset } from '../../../backend/src/services/script-video-style'
 import type { ScriptVideoVoiceMode } from '../../../backend/src/services/script-video-types'
+import type { ScriptVideoVersion } from '../../../backend/src/services/script-video-versions'
+export { listScriptVideoVersions, selectScriptVideoPlayback as scriptVideoCardPlayback } from '../../../backend/src/services/script-video-versions'
+export type { ScriptVideoVersion } from '../../../backend/src/services/script-video-versions'
 
 export type PreviewAsset = {
   id: string
@@ -72,6 +75,7 @@ export type PreviewCard = {
   version: number
   promptVersions?: PreviewPromptVersion[]
   videoUrl?: string
+  videoVersions?: ScriptVideoVersion[]
   openingRecap?: string
   opening?: string
   openingAssetIds?: string[]
@@ -84,13 +88,15 @@ export type PreviewCard = {
   excludedAssetIds?: string[]
 }
 
-export function scriptVideoCardPlayback(
-  card: Pick<PreviewCard, 'status' | 'videoUrl'>, completedTaskVideoUrl?: string,
-) {
-  if (card.status === 'ready' && card.videoUrl?.trim())
-    return { kind: 'current' as const, url: card.videoUrl }
-  const url = completedTaskVideoUrl?.trim() || card.videoUrl?.trim()
-  if (url) return { kind: 'previous' as const, url }
+export function scriptVideoClipFilename(episodeNumber = 1, segmentNumber = 1) {
+  const digits = '零一二三四五六七八九'
+  const units = ['', '十', '百', '千']
+  const chineseEpisode = Number.isInteger(episodeNumber) && episodeNumber > 0 && episodeNumber < 10_000
+    ? String(episodeNumber).split('').map((digit, index, all) =>
+      digit === '0' ? '零' : digits[Number(digit)] + units[all.length - index - 1],
+    ).join('').replace(/零+/gu, '零').replace(/零$/u, '').replace(/^一十/u, '十')
+    : String(episodeNumber)
+  return `第${chineseEpisode}集-${String(segmentNumber).padStart(2, '0')}.mp4`
 }
 
 type EpisodeStoryboard = {

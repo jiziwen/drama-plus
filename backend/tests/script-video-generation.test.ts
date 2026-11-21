@@ -223,12 +223,10 @@ test('拒绝无效模型、时长、绑定或本地参考图，且不创建任�
   await check({card: {...card, prompt: '@侍卫_夜行服 出剑。'}}, /找不到素材 @侍卫_夜行服/)
   await check({card: {...card, assetIds: ['b']}}, /尚未绑定/)
   await check({assets: [{...assets[0], image: '/static/uploads/missing.png'}, assets[1]]}, /不存在/)
-  for (const voiceMode of [undefined, 'reference'] as const) {
-    await check({
-      assets: [{ ...assets[0], kind: 'character', voiceMode }, assets[1]],
-      card: { ...card, prompt: '对白／音效：@侍卫（OS）：“天亮了。”' },
-    }, /侍卫.*上传角色参考音频/u)
-  }
+  await check({
+    assets: [{ ...assets[0], kind: 'character', voiceMode: 'reference' }, assets[1]],
+    card: { ...card, prompt: '对白／音效：@侍卫（OS）：“天亮了。”' },
+  }, /侍卫.*上传角色参考音频/u)
   assert.equal(db.select().from(schema.sysTask).all().length, before)
   assert.equal(submissions.length, priorSubmits)
 })
@@ -246,7 +244,7 @@ test('提示词的文字时长与时码不阻断提交，实际请求使用结�
 test('服务商拒绝时保留实际失败状态，未生成播放地址', async () => {
   const submitted = await startScriptVideoGeneration({
     ...input,
-    assets: [{ ...assets[0], kind: 'character', voiceMode: 'model' }, assets[1]],
+    assets: [{ ...assets[0], kind: 'character' }, assets[1]],
     card: { ...input.card, prompt: '对白／音效：@侍卫（OS）：“服务端拒绝。”' },
   })
   const result = await finish(submitted.taskId)
@@ -438,7 +436,7 @@ test('AICost 按 PUBLIC_BASE_URL 选择公网参考图与角色音频或本地�
     ['@音频1', '侍卫', voiceAudio.url], ['@音频2', '戍卒', otherVoiceAudio.url],
   ])
   const withoutVoice = await previewScriptVideoPrompt({ ...episode, selection: episode,
-    assets: [applicableAssets[0], { ...applicableAssets[1], voiceAudio: undefined }] })
+    assets: [applicableAssets[0], { ...applicableAssets[1], voiceAudio: undefined, voiceMode: 'reference' }] })
   assert.deepEqual(withoutVoice.missingVoices, ['戍卒'])
   assert.equal(withoutVoice.audios.length, 1)
   const submitted = await startScriptVideoGeneration(episode)
@@ -535,6 +533,8 @@ test('黑屏尾帧回退至末镜稳定画面，按所选服务商协议提交�
   assert.equal((await getScriptVideoGeneration(firstFrame.taskId)).finalShotRange, undefined)
   assert.equal((await getScriptVideoGeneration(firstFrame.taskId, { finalShotNumber: 1 })).finalShotRange, undefined)
   assert.deepEqual((await getScriptVideoGeneration(firstFrame.taskId, { finalShotNumber: 2 })).finalShotRange,
+    { shotStartSeconds: 3, shotEndSeconds: 5 })
+  assert.deepEqual((await getScriptVideoGeneration(firstFrame.taskId, { finalShotNumber: 'last' })).finalShotRange,
     { shotStartSeconds: 3, shotEndSeconds: 5 })
   const sent = aicostSubmissions.at(-1) as AicostJsonSubmission
   const native = submissions.at(-1)!

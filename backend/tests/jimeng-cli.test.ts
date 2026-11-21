@@ -5,9 +5,9 @@ import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
-import { createJimengVideoQuote, disconnectJimengAccount, downloadJimengVideo, getJimengAccount, getJimengVideoModels, inspectJimengVideo, JimengCliError, runJimengVideo, startJimengAuthorization } from '../src/services/jimeng-cli.js'
+import { createJimengVideoDraft, disconnectJimengAccount, downloadJimengVideo, getJimengAccount, getJimengVideoModels, inspectJimengVideo, JimengCliError, runJimengVideo, startJimengAuthorization } from '../src/services/jimeng-cli.js'
 
-test('Jimeng only runs inside the approved ceiling for the originally quoted personal draft', async t => {
+test('Jimeng submits the original personal draft once and still honors a legacy approved ceiling', async t => {
   const folder = await fs.mkdtemp(path.join(os.tmpdir(), 'drama-jimeng-cli-'))
   const script = path.join(folder, 'fake-dreamina-canvas')
   const log = path.join(folder, 'commands.jsonl')
@@ -40,6 +40,7 @@ const ok = data => console.log(JSON.stringify({ok: true,data}));
 switch (cmd) {
   case 'auth status': ok({loggedIn: true}); break;
   case 'auth account': console.log('{"ok":true,"data":{"userId":' + userId + ',"displayName":"Test User","availableCredits":"120.5"}}'); break;
+  case 'space current': ok({ userId, kind: state.teamSpace ? 'team' : 'personal' }); break;
   case 'model list': ok({items: [
     {model: 'seedance_2.5', displayName: 'Seedance 2.5'},
     {model: 'seedance_2.5_draft', displayName: 'Seedance 2.5', aliases: ['Seedance 2.5']},
@@ -85,11 +86,9 @@ switch (cmd) {
     projectId: randomUUID(), model: 'jimeng-seedance-2.5', prompt: '--literal',
     mode: 't2v', aspectRatio: '16:9', duration: 4, resolution: '720p',
   } as const
-  const quote = await createJimengVideoQuote(draft)
-  assert.equal(quote.credits, 70)
-  assert.deepEqual((await commands()).slice(-3).map(entry => entry.cmd), ['node create', 'node show', 'node quote'])
+  const runInput = await createJimengVideoDraft(draft, account.accountId!)
+  assert.deepEqual((await commands()).slice(-3).map(entry => entry.cmd), ['model list', 'node create', 'node show'])
   assert.ok((await commands()).find(entry => entry.cmd === 'node create').args.includes('--prompt=--literal'))
-  const approved = { ...quote, submitId: randomUUID() }
 
   const references = [
     { kind: 'image', resourceId: 'resource_1' },
@@ -97,40 +96,44 @@ switch (cmd) {
   ] as const
   const savedReferences = references.map(ref => ({ kind: 'resource', type: ref.kind, id: ref.resourceId })).reverse()
   await reset({ mode: 'm2v', references: savedReferences })
-  const multimodalQuote = await createJimengVideoQuote({ ...draft, mode: 'm2v', references })
-  assert.equal(multimodalQuote.credits, 70)
+  const multimodalDraft = await createJimengVideoDraft({ ...draft, mode: 'm2v', references }, runInput.accountId)
+  assert.equal(multimodalDraft.nodeId, runInput.nodeId)
   await reset({ mode: 'first_last_frame', references: savedReferences })
-  await assert.rejects(createJimengVideoQuote({ ...draft, mode: 'first_last_frame', references }), /参考素材/)
+  await assert.rejects(createJimengVideoDraft({ ...draft, mode: 'first_last_frame', references }, runInput.accountId), /参考素材/)
   assert.equal((await commands()).some(entry => entry.cmd === 'node quote'), false)
 
   for (const [state, message] of [
-    [{ credits: 71 }, /超过已确认的积分上限/],
     [{ prompt: 'Edited in the official canvas' }, /草稿已变更/],
     [{ userId: '18446744073709551616' }, /授权账号已变更/],
     [{ team: true }, /消费归属/],
+    [{ teamSpace: true }, /个人空间/],
   ] as const) {
     await reset(state)
-    await assert.rejects(runJimengVideo(approved), message)
+    await assert.rejects(runJimengVideo(runInput), message)
     assert.equal((await commands()).some(entry => ['node confirm', 'node run'].includes(entry.cmd)), false)
   }
 
+  await reset({ credits: 71 })
+  await assert.rejects(runJimengVideo({ ...runInput, credits: 70 }), /超过已确认的积分上限/)
+  assert.equal((await commands()).some(entry => ['node confirm', 'node run'].includes(entry.cmd)), false)
+
   await reset()
-  await runJimengVideo(approved)
-  assert.deepEqual((await commands()).slice(-3).map(entry => entry.cmd), ['node quote', 'node confirm', 'node run'])
+  await runJimengVideo(runInput)
+  assert.deepEqual((await commands()).map(entry => entry.cmd), ['space current', 'node show', 'node quote', 'node confirm', 'node run'])
   assert.ok((await commands()).find(entry => entry.cmd === 'node confirm').args.includes('--credit-ceiling=70'))
-  assert.ok((await commands()).find(entry => entry.cmd === 'node run').args.includes(`--submit-id=${approved.submitId}`))
+  assert.ok((await commands()).find(entry => entry.cmd === 'node run').args.includes(`--submit-id=${runInput.submitId}`))
 
   await reset({ ambiguous: true })
-  await assert.rejects(runJimengVideo(approved), error => error instanceof JimengCliError && error.possiblySubmitted && error.code === 40012)
+  await assert.rejects(runJimengVideo(runInput), error => error instanceof JimengCliError && error.possiblySubmitted && error.code === 40012)
   assert.equal((await commands()).filter(entry => entry.cmd === 'node run').length, 1)
 
-  const result = await inspectJimengVideo(quote.projectId, approved.submitId)
+  const result = await inspectJimengVideo(runInput.projectId, runInput.submitId)
   assert.deepEqual(result, { state: 'completed', resourceId: 'resource_1', duration: 4 })
   const destination = path.join(folder, 'result.mp4')
-  await downloadJimengVideo(quote.projectId, 'resource_1', destination)
+  await downloadJimengVideo(runInput.projectId, 'resource_1', destination)
   assert.equal((await fs.stat(destination)).size, 12)
   await reset({ invalidHash: true })
-  await assert.rejects(downloadJimengVideo(quote.projectId, 'resource_1', destination), /视频文件校验失败/)
+  await assert.rejects(downloadJimengVideo(runInput.projectId, 'resource_1', destination), /视频文件校验失败/)
 })
 
 test('disconnect clears the Jimeng profile and prevents old authorization from restoring credentials', async t => {

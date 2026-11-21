@@ -109,7 +109,7 @@ async function openBrowserSession(browser: typeof window, previous?: Session): P
   return { id: newSessionId(browser) }
 }
 
-function scriptVideoSession(): string | Promise<string> | undefined {
+export function scriptVideoSession(): string | Promise<string> | undefined {
   if (typeof window === 'undefined') return undefined
   const browser = window
   let context = browserSessions.get(browser)

@@ -35,7 +35,7 @@ async function confirm(durations: number[], versioned: boolean) {
     busy: {value: false}, aiErrors: {value: {}}, aiProgress: {value: {}}, alive: true, requestController: new AbortController(),
     storyboardAction: {value: {body: {}}},
     textOptions: {value: []}, saveProjectNow: async () => {},
-    waitScriptVideoJob: async () => ({result: {}}), installProject: async () => {},
+    waitScriptVideoJob: async () => ({result: {}}), refreshProject: async (pid: string, eid: string) => { requests.push('GET /projects/' + pid + '/episodes/' + eid) },
     scriptVideoRequest: async (path: string, method = 'GET', options?: {systemPrompt: string}) => {
       requests.push(method + ' ' + path)
       if (options) prompts.push(options.systemPrompt)
@@ -50,7 +50,7 @@ async function confirm(durations: number[], versioned: boolean) {
 test('多个短前段属于可编辑的编排选择，允许确认并生成正文', async () => {
   const result = await confirm([24, 22, 26, 24, 24], true)
   assert.equal(result.episode.outlineConfirmed, true)
-  assert.deepEqual(result.requests, ['POST /projects/project-1/episodes/episode-1/storyboard', 'GET /projects/project-1'])
+  assert.deepEqual(result.requests, ['POST /projects/project-1/episodes/episode-1/storyboard', 'GET /projects/project-1/episodes/episode-1'])
   assert.deepEqual(result.errors, [])
 })
 
@@ -58,7 +58,7 @@ test('确认大纲后使用两分钟内保留主干、跨段后仍说不完自�
   for (const durations of [[30, 30, 30, 28], [30, 11], [30, 30, 30, 30, 30, 30, 29]]) {
     const result = await confirm(durations, true)
     assert.equal(result.episode.outlineConfirmed, true)
-    assert.deepEqual(result.requests, ['POST /projects/project-1/episodes/episode-1/storyboard', 'GET /projects/project-1'])
+    assert.deepEqual(result.requests, ['POST /projects/project-1/episodes/episode-1/storyboard', 'GET /projects/project-1/episodes/episode-1'])
     assert.deepEqual(result.errors, [])
     assert.equal(result.prompts.length, 1)
     assert.match(result.prompts[0], /主干剧情优先排进 120 秒以内，通常安排 4 段/)

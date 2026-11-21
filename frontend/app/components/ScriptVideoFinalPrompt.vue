@@ -45,7 +45,8 @@
       />
     </section>
 
-    <div class="sv-prompt-text" tabindex="0" role="region" aria-label="最终视频提示词">
+    <ScriptVideoPromptStyle v-if="styleSection" :key="styleSection.name" :preset="styleSection" />
+    <div v-if="promptBody" class="sv-prompt-text" tabindex="0" role="region" aria-label="最终视频提示词">
       <template v-for="(part, index) in promptParts" :key="index">
         <button
           v-if="part.reference"
@@ -102,6 +103,7 @@ type Reference = Media & { id: string; tag: string; displayTag: string; kind: 'i
 
 const props = defineProps<{
   prompt: string
+  styleSection?: { name: string; text: string; bodyStart: number }
   images: readonly NumberedMedia[]
   audios: readonly NumberedMedia[]
   firstFrame?: Media
@@ -129,15 +131,17 @@ const references = computed<Reference[]>(() => props.firstFrame ? [
   ...numberedReferences.value,
 ] : numberedReferences.value)
 const selectedAudio = computed(() => numberedReferences.value.find(reference => reference.id === audioId.value))
+const promptBody = computed(() => props.prompt.slice(props.styleSection?.bodyStart ?? 0))
 const promptParts = computed(() => {
+  const prompt = promptBody.value
   const byTag = new Map(numberedReferences.value.map(reference => [reference.tag, reference]))
-  if (!byTag.size) return [{ text: props.prompt, reference: undefined }]
+  if (!byTag.size) return [{ text: prompt, reference: undefined }]
   const tags = [...byTag.values()].sort((a, b) => b.tag.length - a.tag.length).map(({ tag, kind }) => {
     const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     return kind === 'audio' && !tag.startsWith('@') ? `(?<=音色参考)${escaped}` : escaped
   })
   const tokens = new RegExp(`(${tags.join('|')})(?!\\d)`, 'g')
-  return props.prompt.split(tokens).filter(Boolean).map(text => ({ text, reference: byTag.get(text) }))
+  return prompt.split(tokens).filter(Boolean).map(text => ({ text, reference: byTag.get(text) }))
 })
 
 function showPreview(reference: Reference, event: Event, inline = false) {

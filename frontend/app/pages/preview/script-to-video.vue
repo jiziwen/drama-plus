@@ -69,6 +69,12 @@
         </button>
       </nav>
       <div class="vp-output-switch" aria-label="输出方式">
+        <button v-if="stage === 'production'" type="button" aria-haspopup="dialog" @click="dialog = 'script'">
+          <FileText :size="14" />查看原文
+        </button>
+        <button class="vp-workflow-assets" type="button" aria-haspopup="dialog" @click="dialog = 'assets'">
+          <Images :size="14" />项目资产
+        </button>
         <button
           :class="{ active: outputMode === 'internal' }"
           @click="outputMode = 'internal'"
@@ -96,11 +102,12 @@
             currentTextStatus ||
             ([currentAIError && summarizeAIError(currentAIError), currentProgressText].filter(Boolean).join(' ')) ||
             (savingProjects.has(currentProject.id)
-              ? '正在保存项目…'
-              : '项目已保存 · 生成后可在分镜中查看并调整内容与素材提示。')
+              ? '正在同步…'
+              : pendingEdits.has(currentProject.id) ? (locallySaved.has(currentProject.id) ? '已保存到本机，等待同步' : '正在保存本机草稿…') : '项目已同步')
       }}</span>
-      <button v-if="currentSaveError" @click="retrySave">{{ saveConflicts.has(currentProject.id) ? '保留我的修改并保存' : '重试保存' }}</button>
-      <button v-else-if="currentAIError && !loadingProjects && !loadError" @click="dialog = 'ai-error'">查看错误详情</button>
+      <button v-if="currentSaveError" @click="retrySave">重试同步</button>
+      <span v-if="occupiedEpisodeIds.includes(selectedEpisodeId)" class="vp-muted">另一个页面也在编辑本集</span>
+      <button v-if="currentAIError && !loadingProjects && !loadError" @click="dialog = 'ai-error'">查看错误详情</button>
       <button
         v-if="currentTextRun && !(stage === 'production' && editorTab === 'revise' && activeRevisionState)"
         type="button"
@@ -388,72 +395,6 @@
 
     <div v-else-if="episodeOpen" class="vp-production">
       <div class="vp-workbench" :inert="busy">
-        <aside class="vp-asset-panel vp-panel">
-          <div class="vp-section-header">
-            <h2>项目资产</h2>
-            <button
-              class="vp-icon-button"
-              aria-label="管理资产"
-              @click="dialog = 'assets'"
-            >
-              <Plus :size="16" />
-            </button>
-          </div>
-          <div class="vp-search">
-            <Search :size="13" /><input
-              v-model="assetSearch"
-              placeholder="搜索资产"
-              aria-label="搜索本次资产"
-            />
-          </div>
-          <div class="vp-kind-tabs">
-            <button
-              v-for="kind in assetKinds"
-              :key="kind.value"
-              :class="{ active: assetFilter === kind.value }"
-              @click="assetFilter = kind.value"
-            >
-              {{ kind.label }}
-            </button>
-          </div>
-          <div class="vp-asset-list">
-            <button
-              v-for="asset in visibleAssets"
-              :key="asset.id"
-              class="vp-library-asset"
-              :class="{ used: selectedCard?.assetIds.includes(asset.id) }"
-              @click="toggleAsset(asset.id)"
-            >
-              <span class="vp-library-image"
-                ><ScriptVideoPreviewAssetImage :asset="asset" /></span
-              ><span class="vp-library-copy"
-                ><strong>{{ asset.name }}</strong
-                ><small>{{ kindLabel(asset.kind) }}</small></span
-              ><Check
-                v-if="selectedCard?.assetIds.includes(asset.id)"
-                :size="13"
-              /><Plus v-else :size="13" />
-            </button>
-            <p v-if="!visibleAssets.length" class="vp-muted">没有匹配的资产</p>
-          </div>
-          <div class="vp-source-script">
-            <div>
-              <FileText :size="14" /><strong>本集已确认剧本</strong
-              ><span>{{ confirmedScript.length }} 字</span>
-            </div>
-            <p>{{ confirmedScript.slice(0, 94) }}…</p>
-            <button class="btn btn-sm vp-wide" @click="dialog = 'script'">
-              查看原文
-            </button>
-          </div>
-          <button
-            class="btn btn-ghost btn-sm vp-wide"
-            @click="dialog = 'assets'"
-          >
-            <Upload :size="12" />导入资产包
-          </button>
-        </aside>
-
         <div class="vp-editor-panel vp-panel">
           <ScriptVideoPreviewEditor
             v-if="selectedCard"
@@ -461,14 +402,20 @@
             v-model:tab="editorTab"
             :card="selectedCard"
             :completed-task-video-url="latestCompletedVideoByCard.get(selectedCard.id)?.videoUrl"
+            :video-versions="selectedVideoVersions"
+            :promoting-video-version="promotingVideoVersion"
             :assets="assets"
             :production="currentEpisode.production"
             :style-preset="currentProject.settings?.stylePreset"
             :video-provider="currentEpisode.modelProvider"
             :video-model="currentEpisode.modelName"
+            :episode-number="currentEpisode.number"
             :segment-number="cards.findIndex((item) => item.id === selectedCard?.id) + 1"
             :segment-count="cards.length"
             :segment-start="cards.slice(0, cards.findIndex((item) => item.id === selectedCard?.id)).reduce((sum, item) => sum + item.duration, 0)"
+            :can-upload-prompt-image="canEditSharedProject"
+            :uploading-prompt-image="uploadingPromptImages.has(currentProject.id)"
+            @upload-prompt-image="uploadPromptImage"
             :output-mode="outputMode"
             :video-voice-warning="videoVoiceWarningForCard(selectedCard.id)"
             :request-revision="revisionRequester"
@@ -478,7 +425,7 @@
             @cancel-revision="cancelTextGeneration"
             @consume-restored-revision="clearRestoredRevision"
             :running="
-              videoRequestPending || videoCanceling || tasks.some(
+              videoRequestPending || videoCanceling || activeCardIds.includes(selectedCard.id) || tasks.some(
                 (t) =>
                   t.cardId === selectedCard?.id && t.status === 'processing',
               )
@@ -488,6 +435,7 @@
             @update="updateCard"
             @generate="requestVideoGeneration([selectedCard!.id])"
             @cancel-video="cancelVideoGeneration(selectedVideoTask, selectedCard!.id)"
+            @promote-video-version="promoteVideoVersion(selectedCard!.id, $event)"
             @export="exportCards([selectedCard!])"
             @preview-final-prompt="showFinalPrompt({ cardId: selectedCard!.id, title: selectedCard!.title, event: $event })"
           />
@@ -646,7 +594,7 @@
                   <button
                     type="button"
                     class="vp-link"
-                    :disabled="videoRequestPending || taskActions.has(task.id) || !!videoVoiceWarningForCard(task.cardId)"
+                    :disabled="videoRequestPending || activeCardIds.includes(task.cardId) || taskActions.has(task.id) || !!videoVoiceWarningForCard(task.cardId)"
                     :aria-describedby="videoVoiceWarningForCard(task.cardId) ? `vp-task-voice-${task.id}` : undefined"
                     @click="requestVideoGeneration([task.cardId])"
                   >
@@ -671,12 +619,12 @@
           <p v-if="batchVideoVoiceWarning" id="vp-batch-video-voice" class="vp-video-voice-warning" role="status">
             {{ batchVideoVoiceWarning }}
           </p>
-          <button v-if="running || videoCanceling" class="btn vp-wide" type="button" :disabled="videoCanceling" @click="cancelVideoGeneration()">
+          <button v-if="activeVideoRun || videoCanceling" class="btn vp-wide" type="button" :disabled="videoCanceling" @click="cancelVideoGeneration()">
             <X :size="13" />{{ videoCanceling ? '正在取消…' : '取消本集视频生成' }}
           </button>
           <button v-else
             class="btn vp-wide"
-            :disabled="!cards.length || !!batchVideoVoiceWarning"
+            :disabled="!cards.length || running || !!activeCardIds.length || !!batchVideoVoiceWarning"
             :aria-describedby="batchVideoVoiceWarning ? 'vp-batch-video-voice' : undefined"
             @click="requestVideoGeneration(cards.map(card => card.id))"
           >
@@ -853,6 +801,7 @@
                 <p v-if="promptPreview.delivery.missingVoices.length" class="vp-final-prompt-warning" role="status">{{ missingVideoVoiceMessage(promptPreview.delivery.missingVoices) }}</p>
                 <ScriptVideoFinalPrompt
                   :prompt="promptPreview.delivery.prompt"
+                  :style-section="promptPreview.delivery.style"
                   :images="promptPreview.delivery.images"
                   :audios="promptPreview.delivery.audios"
                   :first-frame="promptPreview.delivery.firstFrame"
@@ -909,7 +858,7 @@
           </template>
           <template v-else-if="dialog === 'video-export'">
             <div class="vp-modal-body">
-              <p class="vp-modal-description">勾选要拼接的片段，按下方顺序导出一个 MP4。也可手动勾选上一版成片。</p>
+              <p class="vp-modal-description">默认选中各段正片，按下方顺序拼接成一个 MP4。其他已生成的片段也可手动勾选。</p>
               <div class="vp-export-clips">
                 <label v-for="(card, index) in cards" :key="card.id" class="vp-export-clip">
                   <input
@@ -931,17 +880,14 @@
             </div>
             <footer>
               <span class="vp-muted">已选 {{ selectedExportCards.length }} 段</span>
-              <a v-if="segmentExport?.videoUrl" class="btn" :href="segmentExport.videoUrl" :download="segmentExportFilename">
-                <Download :size="14" />下载上次成片
-              </a>
               <button
                 type="button"
-                class="btn btn-primary"
+                class="btn btn-primary vp-export-submit"
                 :disabled="segmentExportLoading || segmentExportBusy || !selectedExportCards.length"
                 @click="exportSelectedSegments"
               >
-                <LoaderCircle v-if="segmentExportBusy" :size="14" class="spin" />
-                <Download v-else :size="14" />
+                <LoaderCircle v-if="segmentExportBusy" :size="14" class="animate-spin" aria-hidden="true" />
+                <Download v-else :size="14" aria-hidden="true" />
                 {{ segmentExportBusy ? '拼接中…' : '拼接并导出' }}
               </button>
             </footer>
@@ -988,6 +934,9 @@
           <template v-else-if="dialog === 'assets'">
             <div class="vp-modal-body vp-assets-body">
               <div class="vp-assets-toolbar">
+                <p v-if="occupiedEpisodeIds.length" class="vp-modal-description" style="color: #b77429;" role="status">
+                  还有其他页面在编辑本项目。共享资产以最后保存的修改为准。
+                </p>
                 <div class="vp-assets-import-bar">
                   <p class="vp-modal-description">
                     目录自动分类，完整文件名用于 @ 引用。不同造型分别保留，同名图片自动消歧。
@@ -1016,7 +965,7 @@
                     </button>
                   </div>
                 </div>
-                <p v-if="!canEditSharedProject" class="vp-muted">其他分集正在编辑，图片等共享资产暂时只读。角色声音可单独保存。</p>
+                <p v-if="occupiedEpisodeIds.includes(selectedEpisodeId)" class="vp-muted">另一个页面也在编辑本集。</p>
                 <div class="vp-search">
                   <Search :size="13" /><input
                     v-model="assetManageSearch"
@@ -1083,14 +1032,31 @@
                         <span v-if="asset.sourcePath" class="vp-asset-source" :title="asset.sourcePath">{{ asset.sourcePath }}</span>
                       </div>
                     </div>
-                    <button
-                      class="btn btn-icon vp-asset-delete"
-                      :aria-label="`删除资产 ${asset.name}`"
-                      :disabled="!canEditSharedProject"
-                      @click="removeAsset(asset.id)"
-                    >
-                      <Trash2 :size="14" />
-                    </button>
+                    <div class="vp-asset-edit-actions">
+                      <label class="btn btn-sm vp-asset-replace">
+                        <Upload :size="13" aria-hidden="true" />
+                        {{ replacingImages.has(asset.id) ? '正在替换…' : '替换图片' }}
+                        <input
+                          type="file"
+                          accept="image/png,image/jpeg,image/webp"
+                          class="vp-replace-file"
+                          :aria-label="`替换图片 ${asset.name}`"
+                          :disabled="!canEditSharedProject || replacingImages.has(asset.id)"
+                          @change="replaceAssetImage(asset.id, $event)"
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        class="btn btn-icon vp-asset-delete"
+                        :aria-label="`删除资产 ${asset.name}`"
+                        aria-haspopup="dialog"
+                        title="删除资产"
+                        :disabled="!canEditSharedProject"
+                        @click="requestAssetDeletion(asset)"
+                      >
+                        <Trash2 :size="14" />
+                      </button>
+                    </div>
                     <ScriptVideoCharacterVoice
                       v-if="asset.kind === 'character'"
                       class="vp-asset-voice"
@@ -1354,13 +1320,23 @@
             </footer></template
           >
         </section>
-      </div></Teleport
-    >
-    <JimengVideoConfirmation
-      ref="jimengVideoConfirmation"
-      :allow-batch-cancel="(activeVideoRequests.get(episodeKey)?.cardIds.length || 0) > 1"
-      @cancel-batch="cancelVideoGeneration()"
-    />
+      </div>
+      <dialog
+        v-if="dialog === 'assets' && episodeOpen"
+        ref="assetDeleteDialog"
+        class="vp-asset-delete-dialog"
+        :aria-labelledby="assetDeleteTitleId"
+        :aria-describedby="assetDeleteMessageId"
+        @close="pendingAssetDeletion = undefined"
+      >
+        <h2 :id="assetDeleteTitleId">删除资产</h2>
+        <p :id="assetDeleteMessageId">确定从项目资产中删除「{{ pendingAssetDeletion?.name }}」吗？使用了它的片段可能需要重新选择素材。</p>
+        <div class="vp-asset-delete-actions">
+          <button type="button" class="btn" autofocus @click="assetDeleteDialog?.close()">取消</button>
+          <button type="button" class="btn vp-confirm-delete" @click="confirmAssetDeletion">确认删除</button>
+        </div>
+      </dialog>
+    </Teleport>
   </div>
 </template>
 
@@ -1401,32 +1377,30 @@ import {
 } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
 import { onBeforeRouteLeave } from 'vue-router'
-import JimengVideoConfirmation from '~/components/JimengVideoConfirmation.vue'
 import { useScriptVideoEpisodeLock } from '~/composables/useScriptVideoEpisodeLock'
-import { type JimengVideoQuote, usesJimengVideo } from '~/utils/jimengVideo'
+import { usesJimengVideo } from '~/utils/jimengVideo'
 import { jimengVideoModel } from '../../../../backend/src/services/jimeng-video-models'
 import { LIBTV_VIDEO_RATIOS, libtvVideoModel } from '../../../../backend/src/services/libtv-video-models'
 import {
   SCRIPT_VIDEO_STYLE_PRESETS,
   getScriptVideoStylePreset,
+  hasScriptVideoPromptBody,
   isScriptVideoStylePreset,
   type ScriptVideoStylePreset,
-  styleVisualSpecs,
 } from '../../../../backend/src/services/script-video-style'
 import { buildScriptVideoDelivery, getScriptVideoMissingVoices, type ScriptVideoContinuation, type ScriptVideoLightingRange } from '../../../../backend/src/services/script-video-delivery'
 import { buildScriptVideoLightingPlan } from '../../../../backend/src/services/script-video-lighting-plan'
+import { officialScriptVideoUrl } from '../../../../backend/src/services/script-video-versions'
 import { AICOST_VIDEO_RATIOS, AICOST_VIDEO_RESOLUTIONS, aicostVideoModelCapabilities } from '../../../../backend/src/services/aicost-video-models'
 import { seedanceModelLimits } from '../../../../backend/src/services/seedance-models'
-import { replaceScriptVideoPromptStyle } from '../../../../backend/src/services/script-video-format'
-import { annotateScriptVideoAssets, scriptVideoPromptStylePrefix } from '~/utils/scriptVideoPreviewMentions'
 import { isScriptVideoChibiAppearance, scriptVideoCharacterBase, scriptVideoCharacterName } from '../../../../backend/src/services/script-video-asset-identity'
 import { getScriptVideoOutlineDurationIssues } from '../../../../backend/src/services/script-video-types'
 import { getScriptVideoContinuationScene } from '../../../../backend/src/services/script-video-scene-boundary'
 import {
-  rebindCardAssets,
   exportMarkdown,
   hasScriptVideoStoryboard,
   scriptVideoCardPlayback,
+  listScriptVideoVersions,
   scriptVideoEpisodeProgress,
   scriptVideoTimecode,
   splitScriptVideoOutlineSummary,
@@ -1457,6 +1431,7 @@ import {
 import { aiConfigAPI, uploadAPI } from '~/composables/useApi'
 import {
   scriptVideoRequest,
+  scriptVideoSession,
   scriptVideoJobError,
   waitScriptVideoJob,
   ScriptVideoRequestError,
@@ -1464,6 +1439,9 @@ import {
   type ScriptVideoJobProgress,
   type ScriptVideoRevisionCandidate,
 } from '~/utils/scriptVideoClient'
+import { diffScriptVideoChanges } from '../../../../backend/src/services/script-video-sync'
+import { readScriptVideoDrafts, writeScriptVideoDraft, type ScriptVideoDraft } from '~/utils/scriptVideoDrafts'
+import { readSiteAccount } from '~/utils/siteSession'
 import { mergeScriptVideoProject } from '~/utils/scriptVideoStateMerge'
 import {
   captureScriptVideoScroll,
@@ -1504,6 +1482,9 @@ type Task = {
 }
 type PreviewEpisode = {
   id: string
+  _loaded?: boolean
+  _episodeRevision?: number
+  progress?: ReturnType<typeof scriptVideoEpisodeProgress>
   number: number
   title: string
   script: string
@@ -1612,7 +1593,7 @@ const selectedProjectId = ref('')
 const selectedEpisodeId = ref('')
 const selectingEpisode = ref(false)
 const workspace = ref<HTMLElement | null>(null)
-const editorTab = ref<ScriptVideoEditorTab>('shots')
+const editorTab = ref<ScriptVideoEditorTab>('prompt')
 const restoredStage = ref<Stage>()
 let restoringView = true
 let lastViewPosition: ScriptVideoViewPosition | undefined
@@ -1636,7 +1617,7 @@ const episodeOptions = computed(() =>
     number: episode.number,
     title: episode.title,
     confirmed: episode.confirmed,
-    progress: scriptVideoEpisodeProgress(episode),
+    progress: episode._loaded === false ? episode.progress : scriptVideoEpisodeProgress(episode),
   })) : [],
 )
 const projectTitle = computed(() => currentProject.value.title)
@@ -1648,6 +1629,9 @@ const stage = computed({
   },
 })
 watch(() => currentEpisode.value.stage, () => { restoredStage.value = undefined })
+watch(stage, next => {
+  if (next === 'production') editorTab.value = 'prompt'
+}, { flush: 'sync' })
 const script = computed({
   get: () => currentEpisode.value.script,
   set: (value: string) => {
@@ -1782,7 +1766,7 @@ const selectedRestoredRevision = computed(() => restoredRevisions.value[`${episo
 function clearRestoredRevision() {
   delete restoredRevisions.value[`${episodeKey.value}/${selectedCard.value?.id}`]
 }
-watch(() => selectedCard.value?.id, () => { editorTab.value = 'shots' }, { flush: 'sync' })
+watch(() => selectedCard.value?.id, () => { editorTab.value = 'prompt' }, { flush: 'sync' })
 const totalDuration = computed(() =>
   Number(cards.value.reduce((sum, card) => sum + card.duration, 0).toFixed(1)),
 )
@@ -1835,17 +1819,6 @@ function onAssetManageTabKeydown(event: KeyboardEvent, index: number) {
   const nextTab = tab.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[nextIndex]
   nextTab?.focus()
 }
-const assetFilter = ref('all'),
-  assetSearch = ref('')
-const visibleAssets = computed(() =>
-  assets.value.filter(
-    (asset) =>
-      (assetFilter.value === 'all' || asset.kind === assetFilter.value) &&
-      `${asset.name}\n${asset.sourcePath || ''}`
-        .toLowerCase()
-        .includes(assetSearch.value.toLowerCase()),
-  ),
-)
 const kindLabel = (kind: string) =>
   ({ character: '角色', scene: '背景', prop: '道具', creature: '生物' })[
     kind
@@ -2019,7 +1992,6 @@ const running = computed(() =>
   videoRequestPending.value || tasks.value.some((task) => task.status === 'processing'),
 )
 let alive = true
-const jimengVideoConfirmation = ref<InstanceType<typeof JimengVideoConfirmation> | null>(null)
 const requestController = new AbortController()
 const saveErrors = ref<Record<string, string>>({})
 const savingProjects = ref(new Set<string>())
@@ -2029,24 +2001,17 @@ const currentSaveError = computed(
 const syncing = ref(false)
 const saveTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const saveQueues = new Map<string, Promise<void>>()
-const acknowledged = new Map<string, string>()
+const locallySaved = ref(new Set<string>())
+const pendingEdits = ref(new Set<string>())
 const serverSnapshots = new Map<string, PreviewProject>()
-const saveConflicts = new Map<string, string[]>()
-const episodeLock = useScriptVideoEpisodeLock({
-  onLost: (_lease, message) => {
-    episodeAccessNotice.value = message
-    dialog.value = null
-    jimengVideoConfirmation.value?.cancel()
-  },
-  canReleaseOnPageHide: ({ projectId }) => projectIsSaved(projectId),
-})
+const episodeLock = useScriptVideoEpisodeLock()
 const occupiedEpisodeIds = computed(() => Object.keys(episodeLock.occupied.value))
 const episodeOpen = computed(() => !selectingEpisode.value && !!selectedEpisodeId.value &&
-  episodeLock.owns(currentProject.value.id, selectedEpisodeId.value))
+  currentEpisode.value._loaded !== false && currentEpisode.value !== placeholderEpisode)
 const episodeNavigationBusy = computed(() => selectingEpisode.value || importing.value ||
   assetImporting.value || savingStyle.value || voiceEdits.value.size > 0 || !!deletingProjectId.value ||
   !!currentTextRun.value?.cancelRequested)
-const canEditSharedProject = computed(() => episodeOpen.value && !occupiedEpisodeIds.value.length)
+const canEditSharedProject = computed(() => episodeOpen.value)
 const textOptions = ref<
   {
     key: string
@@ -2066,152 +2031,202 @@ const textSelection = computed({
     }
   },
 })
-function snapshotProject(project: PreviewProject) {
-  const copy = JSON.parse(JSON.stringify(project)) as PreviewProject
-  copy.episodes.forEach((episode) => {
-    episode.busy = false
+type EpisodeSummary = Pick<PreviewEpisode, 'id' | 'number' | 'title' | 'stage' | 'confirmed' | 'outlineConfirmed'> &
+  { progress?: PreviewEpisode['progress']; revision?: number }
+type ProjectSummary = Omit<PreviewProject, 'assets' | 'episodes'> & { assets?: PreviewAsset[]; episodes: EpisodeSummary[] }
+type SavedChanges = { project: ProjectSummary; episodes: PreviewEpisode[]; revision: number; sequence: number }
+type Draft = ScriptVideoDraft<PreviewProject>
+type Writer = Pick<Draft, 'clientId' | 'sequence' | 'sending'>
+const writers = new Map<string, Writer>()
+const diskQueues = new Map<string, Promise<void>>()
+const timersForRetry = new Map<string, ReturnType<typeof setTimeout>>()
+const sharedLoaded = new Map<string, number>()
+let draftAccount = ''
+let tabId = ''
+let canSend = true
+function copy<T>(value: T): T { return JSON.parse(JSON.stringify(value)) }
+function localProject(id: string) { return projects.value.find(project => project.id === id) }
+function writer(id: string): Writer {
+  if (!writers.has(id)) writers.set(id, { clientId: previewId('editor'), sequence: 0 })
+  return writers.get(id)!
+}
+function changesSince(base: PreviewProject, local: PreviewProject) {
+  return diffScriptVideoChanges(base, local, { loadedEpisodeIds: local.episodes.filter(ep => ep._loaded !== false).map(ep => ep.id) })
+}
+function materialize(summary: ProjectSummary, bodies: PreviewEpisode[], old?: PreviewProject): PreviewProject {
+  const byId = new Map(bodies.map(ep => [ep.id, ep]))
+  const bodyRevisions = new Map(summary.episodes.map(ep => [ep.id, ep.revision ?? summary.revision]))
+  const previous = new Map(old?.episodes.map(ep => [ep.id, ep]))
+  // A detail GET and a PATCH can finish on either side of the shared summary.
+  // Advance directory metadata and individual bodies independently.
+  const staleSummary = !!old && summary.revision < (sharedLoaded.get(summary.id) ?? -1)
+  const directory = staleSummary ? old! : summary
+  if (!staleSummary) sharedLoaded.set(summary.id, summary.revision)
+  const episodes = directory.episodes.map(row => {
+    const body = byId.get(row.id), prior = previous.get(row.id)
+    const bodyRevision = bodyRevisions.get(row.id) ?? -1
+    if (body && bodyRevision >= (prior?._episodeRevision ?? -1)) {
+      return { ...body, _loaded: true, _episodeRevision: bodyRevision }
+    }
+    if (prior && prior._loaded !== false) return staleSummary || bodyRevision < (prior._episodeRevision ?? -1)
+      ? prior : { ...prior, ...row }
+    return { ...placeholderEpisode, ...row, _loaded: false }
   })
-  return copy
+  return { ...directory, revision: Math.max(summary.revision, old?.revision ?? -1), assets: directory.assets ?? old?.assets ?? [], episodes }
 }
-function fingerprintProject(project: PreviewProject) {
-  // Navigation is local and the server may keep another editor's selection.
-  const { revision, episodeId, episodes, ...content } = snapshotProject(project)
-  const episodeContent = episodes.map(({ selectedCardId, ...episode }) => episode)
-  return JSON.stringify({ ...content, episodes: episodeContent }, (_key, value) =>
-    value && typeof value === 'object' && !Array.isArray(value)
-      ? Object.fromEntries(
-          Object.keys(value)
-            .sort()
-            .map((key) => [key, value[key]]),
-        )
-      : value,
-  )
-}
-function projectIsSaved(projectId: string) {
-  const project = projects.value.find((item) => item.id === projectId)
-  return !project || (!savingProjects.value.has(projectId) &&
-    acknowledged.get(projectId) === fingerprintProject(project))
-}
-async function installProject(
-  remote: PreviewProject,
-  baseOverride?: PreviewProject,
-) {
-  const index = projects.value.findIndex((item) => item.id === remote.id)
-  const local = projects.value[index]
-  if (local && remote.revision < local.revision) return
-  const base = baseOverride || serverSnapshots.get(remote.id)
-  const merged =
-    local && base
-      ? mergeScriptVideoProject(
-          base,
-          JSON.parse(JSON.stringify(local)) as PreviewProject,
-          remote,
-        )
-      : { project: remote, conflicts: [] }
-  syncing.value = true
-  if (index < 0) projects.value.push(merged.project)
-  else Object.assign(projects.value[index]!, merged.project)
-  serverSnapshots.set(remote.id, JSON.parse(JSON.stringify(remote)))
-  acknowledged.set(remote.id, fingerprintProject(remote))
-  if (merged.conflicts.length) {
-    saveConflicts.set(remote.id, merged.conflicts)
-    saveErrors.value[remote.id] =
-      '同一处内容也在服务器上改过。本地修改暂未保存，继续保存会覆盖冲突处的服务器版本。'
+function acceptProject(remote: PreviewProject, submitted?: PreviewProject) {
+  const local = localProject(remote.id), base = submitted ?? serverSnapshots.get(remote.id)
+  if (!submitted && (serverSnapshots.get(remote.id)?.revision ?? -1) > remote.revision) return
+  const actual = (serverSnapshots.get(remote.id)?.revision ?? -1) > remote.revision ? serverSnapshots.get(remote.id)! : remote
+  const installed = local && base ? mergeScriptVideoProject(base, copy(local), actual).project : copy(actual)
+  serverSnapshots.set(remote.id, copy(actual))
+  if (local) {
+    for (const key of Object.keys(local)) if (!(key in installed)) Reflect.deleteProperty(local, key)
+    Object.assign(local, installed)
   }
-  await nextTick()
-  syncing.value = false
+  else projects.value.push(installed)
+}
+async function refreshProject(projectId: string, episodeId?: string, signal?: AbortSignal, withShared = true) {
+  const basePath = `/projects/${encodeURIComponent(projectId)}`
+  const [summary, detail] = await Promise.all([
+    withShared || !sharedLoaded.has(projectId) ? scriptVideoRequest<ProjectSummary>(`${basePath}?view=summary`, 'GET', undefined, signal) : undefined,
+    episodeId ? scriptVideoRequest<{ episode: PreviewEpisode; revision: number; episodeRevision: number }>(
+      `${basePath}/episodes/${encodeURIComponent(episodeId)}`, 'GET', undefined, signal) : undefined,
+  ])
+  if (!alive || signal?.aborted) return
+  const base = serverSnapshots.get(projectId)
+  if (summary) acceptProject(materialize(summary, [], base))
+  const updated = serverSnapshots.get(projectId)
+  if (detail && updated) {
+    const index = updated.episodes.findIndex(ep => ep.id === episodeId)
+    if (index >= 0 && detail.episodeRevision >= (updated.episodes[index]!._episodeRevision ?? -1)) {
+      const next = { ...updated, revision: Math.max(detail.revision, updated.revision), episodes: updated.episodes.slice() }
+      next.episodes[index] = { ...detail.episode, _loaded: true, _episodeRevision: detail.episodeRevision }
+      acceptProject(next)
+    }
+  }
+}
+function persistDraft(id: string, dirty: boolean): Promise<void> {
+  const project = localProject(id), base = serverSnapshots.get(id)
+  if (!project || !base) return Promise.resolve()
+  const record = dirty ? copy<Draft>({ account: draftAccount, tabId, projectId: id, ...writer(id), base, local: project }) : undefined
+  const prior = diskQueues.get(id) ?? Promise.resolve()
+  const next = prior.catch(() => {}).then(() => {
+    if (alive) return writeScriptVideoDraft(draftAccount, tabId, id, record)
+  }).then(() => {
+    if (diskQueues.get(id) !== next) return
+    if (dirty) locallySaved.value.add(id)
+    else locallySaved.value.delete(id)
+  })
+  diskQueues.set(id, next)
+  return next
+}
+function writeStatus(id: string) {
+  const project = localProject(id), base = serverSnapshots.get(id)
+  if (!base || !project) return false
+  const dirty = !!writer(id).sending || changesSince(base, project).length > 0
+  if (dirty) pendingEdits.value.add(id)
+  else pendingEdits.value.delete(id)
+  return dirty
+}
+async function keepDraft(id: string) {
+  if (writeStatus(id)) await persistDraft(id, true)
 }
 async function retrySave() {
-  saveConflicts.delete(currentProject.value.id)
-  await saveProjectNow().catch((error) => toast.error(error.message))
+  if (!canSend && navigator.onLine) await reconnect()
+  await saveProjectNow().catch(error => toast.error(error.message))
 }
-async function saveProjectNow(projectId = currentProject.value.id) {
-  if (loadingProjects.value || projectId === 'loading' || projectId === deletingProjectId.value) return
-  if (saveConflicts.has(projectId)) throw new Error(saveErrors.value[projectId])
-  const timer = saveTimers.get(projectId)
-  if (timer) clearTimeout(timer)
-  saveTimers.delete(projectId)
-  const previous = saveQueues.get(projectId) || Promise.resolve()
-  const queued = previous
-    .catch(() => {})
-    .then(async () => {
-      savingProjects.value.add(projectId)
-      try {
-        for (let attempt = 0; attempt < 2; attempt++) {
-          const project = projects.value.find((item) => item.id === projectId)
-          if (!project) return
-          if (acknowledged.get(projectId) === fingerprintProject(project))
-            return
-          const submitted = snapshotProject(project)
-          try {
-            const saved = await scriptVideoRequest<PreviewProject>(
-              `/projects/${projectId}`,
-              'PUT',
-              { project: submitted, expectedRevision: project.revision },
-            )
-            await installProject(saved, submitted)
-            if (saveConflicts.has(projectId))
-              throw new Error(saveErrors.value[projectId])
-            delete saveErrors.value[projectId]
-            return
-          } catch (error) {
-            if (
-              error instanceof ScriptVideoRequestError &&
-              error.status === 409 &&
-              attempt === 0
-            ) {
-              await installProject(
-                await scriptVideoRequest<PreviewProject>(
-                  `/projects/${projectId}`,
-                ),
-              )
-              if (saveConflicts.has(projectId))
-                throw new Error(saveErrors.value[projectId])
-              continue
-            }
-            throw error
-          }
-        }
-      } catch (error) {
-        saveErrors.value[projectId] =
-          error instanceof Error ? error.message : '保存失败'
-        if (error instanceof ScriptVideoRequestError && error.code === 'EPISODE_LOCK_REQUIRED' &&
-            currentProject.value.id === projectId && selectedEpisodeId.value) {
-          episodeLock.invalidate(projectId, selectedEpisodeId.value, error.message)
-        }
-        throw error
-      } finally {
-        savingProjects.value.delete(projectId)
+async function syncProject(projectId: string) {
+  const state = writer(projectId)
+  for (;;) {
+    const project = localProject(projectId), base = serverSnapshots.get(projectId)
+    if (!project || !base) return
+    const changes = changesSince(base, project)
+    if (!state.sending && !changes.length) break
+    if (!state.sending) state.sending = { sequence: ++state.sequence, changes, submitted: copy(project) }
+    const batch = state.sending
+    pendingEdits.value.add(projectId)
+    try { await persistDraft(projectId, true) }
+    catch { locallySaved.value.delete(projectId) }
+    if (!canSend || !navigator.onLine) throw new Error(locallySaved.value.has(projectId) ? '已保存到本机，等待网络或原账号恢复后同步' : '未能写入本机草稿，请保持此页面打开')
+    const saved = await scriptVideoRequest<SavedChanges>(`/projects/${projectId}/changes`, 'PATCH', {
+      clientId: state.clientId, sequence: batch.sequence, changes: batch.changes,
+      expectedUser: draftAccount,
+      loadedEpisodeIds: selectedProjectId.value === projectId && selectedEpisodeId.value ? [selectedEpisodeId.value] : [],
+    }, AbortSignal.timeout(20_000)).catch(error => {
+      // A definite rejection has not consumed the write. Let a corrected edit replace
+      // it. An ambiguous failure retains its exact sequence and payload for replay.
+      if (error instanceof ScriptVideoRequestError && [400, 404, 409, 413, 422].includes(error.status)) {
+        state.sending = undefined
+        void persistDraft(projectId, true).catch(() => {})
       }
+      if (error instanceof ScriptVideoRequestError && [401, 403].includes(error.status)) canSend = false
+      throw error
     })
+    if (saved.sequence !== batch.sequence) throw new Error('未收到本次保存确认，修改已保留')
+    const latest = serverSnapshots.get(projectId)
+    acceptProject(materialize(saved.project, saved.episodes, latest), batch.submitted)
+    state.sending = undefined
+    delete saveErrors.value[projectId]
+    // A newly mounted instance of this tab may already have edited the draft.
+    // Leave the durable sequence for that instance to acknowledge idempotently.
+    if (!alive) return
+  }
+  if (pendingEdits.value.has(projectId) || locallySaved.value.has(projectId)) {
+    pendingEdits.value.delete(projectId)
+    await persistDraft(projectId, false).catch(() => {})
+  }
+  delete saveErrors.value[projectId]
+}
+async function saveProjectNow(projectId = currentProject.value.id): Promise<void> {
+  if (loadingProjects.value || projectId === 'loading' || projectId === deletingProjectId.value) return
+  clearTimeout(saveTimers.get(projectId))
+  clearTimeout(timersForRetry.get(projectId))
+  const running = saveQueues.get(projectId)
+  if (running) { await running; if (writeStatus(projectId)) await saveProjectNow(projectId); return }
+  const queued = syncProject(projectId).catch(error => {
+    saveErrors.value[projectId] = error instanceof ScriptVideoRequestError ? error.message :
+      locallySaved.value.has(projectId) ? '已保存到本机，等待同步' : '同步失败，请保持此页面打开'
+    if (alive && navigator.onLine && canSend && (!(error instanceof ScriptVideoRequestError) || error.status >= 500)) {
+      timersForRetry.set(projectId, setTimeout(() => { void saveProjectNow(projectId).catch(() => {}) }, 6000))
+    }
+    throw error
+  }).finally(() => { savingProjects.value.delete(projectId); saveQueues.delete(projectId) })
+  savingProjects.value.add(projectId)
   saveQueues.set(projectId, queued)
   await queued
-  const project = projects.value.find((item) => item.id === projectId)
-  if (project && acknowledged.get(projectId) !== fingerprintProject(project))
-    return saveProjectNow(projectId)
 }
-watch(
-  projects,
-  () => {
-    if (loadingProjects.value || syncing.value) return
-    for (const project of projects.value) {
-      if (
-        project.id === deletingProjectId.value || saveConflicts.has(project.id) ||
-        acknowledged.get(project.id) === fingerprintProject(project)
-      )
-        continue
-      const prior = saveTimers.get(project.id)
-      if (prior) clearTimeout(prior)
-      saveTimers.set(
-        project.id,
-        setTimeout(() => {
-          void saveProjectNow(project.id).catch(() => {})
-        }, 500),
-      )
+watch(projects, () => {
+  if (loadingProjects.value || syncing.value || !alive) return
+  for (const project of projects.value) {
+    if (project.id === deletingProjectId.value) continue
+    const wasDirty = pendingEdits.value.has(project.id)
+    if (!writeStatus(project.id)) {
+      if (wasDirty) void persistDraft(project.id, false).catch(() => {})
+      continue
     }
-  },
-  { deep: true },
-)
+    locallySaved.value.delete(project.id)
+    void persistDraft(project.id, true).catch(() => {
+      locallySaved.value.delete(project.id)
+      saveErrors.value[project.id] = '本机草稿未写入，请保持此页面打开'
+    })
+    clearTimeout(saveTimers.get(project.id))
+    saveTimers.set(project.id, setTimeout(() => { void saveProjectNow(project.id).catch(() => {}) }, 500))
+  }
+}, { deep: true })
+async function reconnect() {
+  const account = await readSiteAccount()
+  canSend = (account?.username ?? '') === draftAccount
+  if (!canSend) return
+  for (const id of pendingEdits.value) void saveProjectNow(id).catch(() => {})
+}
+async function persistBeforeNavigation(id = currentProject.value.id) {
+  if (!writeStatus(id)) return
+  try { await keepDraft(id) }
+  catch { await saveProjectNow(id); return }
+  void saveProjectNow(id).catch(() => {})
+}
+
 function textRequestOptions(project = currentProject.value) {
   const selected = textOptions.value.find(
     (item) => item.key === project.settings?.textSelection,
@@ -2269,27 +2284,57 @@ watch([selectedProjectId, selectedEpisodeId, selectingEpisode, stage, () => sele
 onMounted(async () => {
   lastViewPosition = readScriptVideoViewPosition()
   window.addEventListener('pagehide', saveViewOnPageHide, true)
+  window.addEventListener('online', reconnect)
   try {
-    const loaded = await scriptVideoRequest<PreviewProject[]>('/projects')
+    const [identity, session, directory] = await Promise.all([
+      readSiteAccount(), scriptVideoSession(), scriptVideoRequest<Pick<PreviewProject, 'id' | 'title' | 'revision'>[]>('/projects?view=summary')
+        .then(rows => ({ rows, error: '', denied: false })).catch(error => ({
+          rows: [] as Pick<PreviewProject, 'id' | 'title' | 'revision'>[], error: error.message || '项目目录加载失败',
+          denied: error instanceof ScriptVideoRequestError && [401, 403].includes(error.status),
+        })),
+    ])
+    if (!alive) return
+    if (directory.denied) throw new Error(directory.error)
+    tabId = session ?? previewId('tab')
+    draftAccount = identity?.username ?? ''
+    try {
+      if (directory.error && !identity) {
+        draftAccount = sessionStorage.getItem('script-video-draft-account') || ''
+        canSend = false
+      } else sessionStorage.setItem('script-video-draft-account', draftAccount)
+    } catch { /* Tab identity is still isolated when storage is blocked. */ }
+    const drafts = await readScriptVideoDrafts<PreviewProject>(draftAccount, tabId).catch(() => [])
     if (!alive) return
     syncing.value = true
-    projects.value = loaded
+    for (const draft of drafts) {
+      if (!directory.error && !directory.rows.some(row => row.id === draft.projectId)) continue
+      serverSnapshots.set(draft.projectId, draft.base)
+      writers.set(draft.projectId, { clientId: draft.clientId, sequence: draft.sequence, sending: draft.sending })
+      projects.value.push(draft.local)
+      locallySaved.value.add(draft.projectId)
+      pendingEdits.value.add(draft.projectId)
+    }
+    for (const row of directory.rows) {
+      if (!localProject(row.id)) acceptProject({ ...row, episodeId: '', assets: [], episodes: [] })
+    }
+    if (!projects.value.length && directory.error) throw new Error(directory.error)
     let remembered = lastViewPosition?.projectId
     if (!remembered) {
       try { remembered = localStorage.getItem('script-video-last-project') || undefined } catch { /* Use the first project. */ }
     }
-    selectedProjectId.value =
-      loaded.find((project) => project.id === remembered)?.id || loaded[0]?.id || ''
-    for (const project of loaded) {
-      acknowledged.set(project.id, fingerprintProject(project))
-      serverSnapshots.set(project.id, JSON.parse(JSON.stringify(project)))
-    }
-    agentPrompt.value =
-      currentProject.value.settings?.systemPrompt || defaultAgentPrompt
+    selectedProjectId.value = projects.value.find(project => project.id === remembered)?.id || projects.value[0]?.id || ''
     await nextTick()
     syncing.value = false
     loadingProjects.value = false
     const project = currentProject.value
+    if (project.id !== 'loading' && !directory.error) {
+      const requestedEpisode = lastViewPosition?.projectId === project.id ? lastViewPosition.episodeId : undefined
+      try { await refreshProject(project.id, requestedEpisode) }
+      catch (error) {
+        if (error instanceof ScriptVideoRequestError && error.status === 404 && requestedEpisode) await refreshProject(project.id)
+        else if (!project.episodes.length) throw error
+      }
+    }
     let position = lastViewPosition?.projectId === project.id ? lastViewPosition : undefined
     const navigation = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined
     // Apply the old saved selection on the first reload after an upgrade.
@@ -2297,7 +2342,7 @@ onMounted(async () => {
       position = { projectId: project.id, episodeId: project.episodeId }
     }
     if (position?.episodeId && project.episodes.some(episode => episode.id === position.episodeId)) {
-      await selectEpisode(position.episodeId, position)
+      await selectEpisode(position.episodeId, position, true)
       if (episodeOpen.value) {
         const episodeId = position.episodeId
         const focusCard = selectedCard.value?.id
@@ -2311,7 +2356,10 @@ onMounted(async () => {
         })
       }
     }
+    agentPrompt.value = currentProject.value.settings?.systemPrompt || defaultAgentPrompt
+    if (canSend && !directory.error) for (const id of pendingEdits.value) void saveProjectNow(id).catch(() => {})
   } catch (error) {
+    syncing.value = false
     loadError.value = error instanceof Error ? error.message : '项目加载失败'
     loadingProjects.value = false
   } finally {
@@ -2348,14 +2396,15 @@ function coverAsset(card: PreviewCard) {
     ) || assets.value.find((a) => card.assetIds.includes(a.id))
   )
 }
-function updateCard(card: PreviewCard) {
-  if (stage.value === 'outline') currentEpisode.value.outlineConfirmed = false
-  const index = cards.value.findIndex((c) => c.id === card.id)
+function updateCard(card: PreviewCard, targetEpisode?: PreviewEpisode) {
+  const episode = targetEpisode ?? currentEpisode.value
+  const index = episode.cards.findIndex((c) => c.id === card.id)
   if (index < 0) return
-  cards.value[index] = {
+  if (!targetEpisode && stage.value === 'outline') episode.outlineConfirmed = false
+  episode.cards[index] = {
     ...card,
     status: 'draft',
-    version: cards.value[index].version + 1,
+    version: episode.cards[index].version + 1,
   }
 }
 function openBindingDialog(cardId: string) {
@@ -2493,34 +2542,25 @@ function storyboardActionFor(state?: AIProgress) {
   }
   return { label: '确认大纲，生成分镜与提示词', body: {} }
 }
-function toggleAsset(id: string) {
-  if (!selectedCard.value) return
-  const card = selectedCard.value
-  const assetIds = card.assetIds.includes(id)
-    ? card.assetIds.filter((value) => value !== id)
-    : [...card.assetIds, id]
-  updateCard(rebindCardAssets(card, assetIds, assets.value, currentEpisode.value.production))
-}
 function showProject(id: string) {
   selectedEpisodeId.value = ''
   selectedProjectId.value = id
   restoredStage.value = undefined
-  editorTab.value = 'shots'
+  editorTab.value = 'prompt'
   agentPrompt.value =
     currentProject.value.settings?.systemPrompt || defaultAgentPrompt
   episodeAccessNotice.value = ''
   dialog.value = null
-  assetSearch.value = ''
 }
 async function selectProject(id: string) {
   if (episodeNavigationBusy.value || id === selectedProjectId.value ||
       !projects.value.some((project) => project.id === id)) return
   selectingEpisode.value = true
   try {
-    await saveProjectNow()
-    await episodeLock.leave()
+    await persistBeforeNavigation()
+    episodeLock.leave()
     showProject(id)
-    await installProject(await scriptVideoRequest<PreviewProject>(`/projects/${id}`))
+    await refreshProject(id)
     agentPrompt.value = currentProject.value.settings?.systemPrompt || defaultAgentPrompt
   } catch (error: any) {
     toast.error(error.message)
@@ -2549,15 +2589,26 @@ async function deleteProject(projectId: string) {
     const index = projects.value.findIndex((item) => item.id === projectId)
     projects.value = projects.value.filter((item) => item.id !== projectId)
     saveQueues.delete(projectId)
-    acknowledged.delete(projectId)
+    writers.delete(projectId)
+    await diskQueues.get(projectId)?.catch(() => {})
+    await writeScriptVideoDraft(draftAccount, tabId, projectId).catch(() => {})
     serverSnapshots.delete(projectId)
-    saveConflicts.delete(projectId)
+    sharedLoaded.delete(projectId)
+    diskQueues.delete(projectId)
+    clearTimeout(timersForRetry.get(projectId))
+    timersForRetry.delete(projectId)
+    pendingEdits.value.delete(projectId)
+    locallySaved.value.delete(projectId)
     delete saveErrors.value[projectId]
     project.assets.forEach(releaseAssetImage)
     if (selectedProjectId.value === projectId) {
       await episodeLock.leave()
       const next = projects.value[index] || projects.value.at(-1)
       showProject(next?.id || '')
+      if (next) {
+        await refreshProject(next.id).catch(() => toast.error('下一项目的目录读取失败，请重新选择项目'))
+        agentPrompt.value = currentProject.value.settings?.systemPrompt || defaultAgentPrompt
+      }
     }
     toast.success(`已删除《${project.title}》`)
   } catch (error: any) {
@@ -2569,23 +2620,22 @@ async function deleteProject(projectId: string) {
     }
   }
 }
-async function selectEpisode(id: string, position?: ScriptVideoViewPosition) {
+async function selectEpisode(id: string, position?: ScriptVideoViewPosition, alreadyFetched = false) {
   const projectId = currentProject.value.id
   if (episodeNavigationBusy.value || episodeLock.owns(projectId, id) ||
       !currentProject.value.episodes.some((episode) => episode.id === id)) return
   selectingEpisode.value = true
   episodeAccessNotice.value = ''
-  const openingDraft = selectedEpisodeId.value === id
   try {
-    if (!openingDraft) await saveProjectNow(projectId)
-    await episodeLock.enter(projectId, id)
-    selectedEpisodeId.value = id
-    try {
-      await installProject(await scriptVideoRequest<PreviewProject>(`/projects/${projectId}`))
-    } catch (error) {
-      await episodeLock.leave()
-      throw error
+    await persistBeforeNavigation(projectId)
+    const cached = localProject(projectId)?.episodes.find(ep => ep.id === id)
+    if (!cached || cached._loaded === false) {
+      await refreshProject(projectId, id, undefined, !sharedLoaded.has(projectId))
+    } else if (!alreadyFetched && navigator.onLine && serverSnapshots.get(projectId)?.episodes.some(ep => ep.id === id)) {
+      void refreshProject(projectId, id, requestController.signal, !sharedLoaded.has(projectId)).catch(() => {})
     }
+    selectedEpisodeId.value = id
+    episodeLock.enter(projectId, id)
     restoredStage.value = restoreScriptVideoStage(position?.stage, {
       confirmed: currentEpisode.value.confirmed, outlineConfirmed: currentEpisode.value.outlineConfirmed,
       cardCount: cards.value.length, hasStoryboard: hasStoryboard.value,
@@ -2593,14 +2643,13 @@ async function selectEpisode(id: string, position?: ScriptVideoViewPosition) {
     const cardId = position?.cardId
     if (cardId && cards.value.some(card => card.id === cardId)) {
       selectedCardId.value = cardId
-      editorTab.value = position?.tab ?? 'shots'
-    } else editorTab.value = 'shots'
+      editorTab.value = position?.tab ?? 'prompt'
+    } else editorTab.value = 'prompt'
     if (position?.outputMode) outputMode.value = position.outputMode
     dialog.value = null
-    assetSearch.value = ''
-    if (openingDraft && !saveConflicts.has(projectId)) await saveProjectNow(projectId)
     void restoreEpisodeAIJobs(projectId, id)
   } catch (error: any) {
+    if (!selectedEpisodeId.value) episodeLock.leave()
     episodeAccessNotice.value = error.message || '无法进入分集，请重试。'
     toast.error(episodeAccessNotice.value)
   } finally {
@@ -2611,11 +2660,11 @@ async function leaveEpisode() {
   if (episodeNavigationBusy.value) return
   selectingEpisode.value = true
   try {
-    await saveProjectNow()
-    await episodeLock.leave()
+    await persistBeforeNavigation()
+    episodeLock.leave()
     selectedEpisodeId.value = ''
     restoredStage.value = undefined
-    editorTab.value = 'shots'
+    editorTab.value = 'prompt'
     episodeAccessNotice.value = ''
     dialog.value = null
   } catch (error: any) {
@@ -2653,7 +2702,7 @@ function editAsset(id: string) {
 }
 function requireSharedProjectEdit() {
   if (canEditSharedProject.value) return true
-  toast.info(occupiedEpisodeIds.value.length ? '其他分集正在制作，请稍后再修改项目设置或共享资产。' : '请先进入分集。')
+  toast.info('请先进入分集。')
   return false
 }
 async function savePreviewConfig() {
@@ -2688,21 +2737,6 @@ async function saveProjectStyle() {
   if (!project) return
   savingStyle.value = true
   const style = { ...projectStyleDraft.value }
-  for (const episode of project.episodes) {
-    const previousStyle = episode.production?.stylePreset || project.settings?.stylePreset
-    for (const card of episode.cards) {
-      if (!card.prompt.trim()) continue
-      const prompt = replaceScriptVideoPromptStyle(card.prompt, style, previousStyle, episode.production)
-      if (prompt === card.prompt) continue
-      card.promptVersions = [...(card.promptVersions || []), {
-        id: previewId('prompt'), prompt: card.prompt, assetIds: [...card.assetIds],
-        ...(card.excludedAssetIds?.length ? { excludedAssetIds: [...card.excludedAssetIds] } : {}),
-        createdAt: new Date().toISOString(), instruction: '更新项目统一风格', summary: '更新风格前的提示词',
-      }]
-      card.prompt = prompt
-    }
-    if (episode.production) episode.production = { ...episode.production, stylePreset: { ...style }, visualSpecs: styleVisualSpecs(style, { aspectRatio: episode.aspectRatio, resolution: episode.resolution, videoModel: episode.modelName }) }
-  }
   project.settings = { ...project.settings, stylePreset: style }
   try {
     await saveProjectNow(project.id)
@@ -2723,7 +2757,7 @@ async function createProject() {
       'POST',
       { title: newProjectTitle.value.trim(), stylePreset: { ...newProjectStyle.value } },
     )
-    await installProject(project)
+    acceptProject(materialize(project, project.episodes))
     await selectProject(project.id)
     if (selectedProjectId.value === project.id) await selectEpisode(project.episodeId)
     toast.success('项目已创建，可以导入分集剧本和资产包')
@@ -2847,7 +2881,7 @@ async function monitorAIJob(projectId: string, episodeId: string, job: ScriptVid
     if (job.action === 'review') {
       episodeReviews.value[key] = { ...completed.result, updatedAt: completed.updatedAt }
     } else if (job.action !== 'revisions') {
-      await installProject(await scriptVideoRequest<PreviewProject>(`/projects/${projectId}`))
+      await refreshProject(projectId, episodeId)
     }
     return completed
   } finally {
@@ -2860,7 +2894,7 @@ async function restoreEpisodeAIJobs(projectId: string, episodeId: string) {
   let jobs: ScriptVideoClientJob[]
   try {
     jobs = await scriptVideoRequest<ScriptVideoClientJob[]>(
-      `/projects/${projectId}/jobs?episodeId=${encodeURIComponent(episodeId)}`,
+      `/projects/${projectId}/jobs?episodeId=${encodeURIComponent(episodeId)}&view=restore`,
       'GET', undefined, requestController.signal,
     )
   } catch {
@@ -3002,7 +3036,7 @@ function removeCard(id: string) {
 }
 function addCard() {
   if (stage.value === 'outline') currentEpisode.value.outlineConfirmed = false
-  const id = `card-${Date.now()}`
+  const id = previewId('card')
   const manuallyAdded = stage.value === 'production'
   const card: PreviewCard = {
     id,
@@ -3038,7 +3072,8 @@ function taskParts(card: PreviewCard) {
 }
 const processingSegmentIds = computed(() => new Set(tasks.value.filter(task => task.status === 'processing').map(task => task.cardId)))
 function segmentDisplayStatus(card: PreviewCard) {
-  if (processingSegmentIds.value.has(card.id)) return 'generating'
+  if (queuedCardIds.value.includes(card.id)) return 'queued'
+  if (activeCardIds.value.includes(card.id) || processingSegmentIds.value.has(card.id)) return 'generating'
   const pending = activeVideoRun.value?.cardStatuses.get(card.id)
   if (pending) return pending
   if (segmentPlayback.value.get(card.id)?.kind === 'previous') return 'previous'
@@ -3080,13 +3115,11 @@ const segmentExportBusy = computed(() => segmentExportSubmitting.value || segmen
 const exportableCardIds = computed(() => new Set(cards.value.filter(card =>
   segmentPlayback.value.get(card.id),
 ).map(card => card.id)))
-const defaultExportCardIds = computed(() => cards.value.filter(card =>
-  segmentPlayback.value.get(card.id)?.kind === 'current' && !processingSegmentIds.value.has(card.id),
-).map(card => card.id))
+const defaultExportCardIds = computed(() => cards.value.filter(card => officialScriptVideoUrl(card)).map(card => card.id))
 function exportCardLabel(card: PreviewCard) {
+  if (officialScriptVideoUrl(card)) return '正片'
   const playback = segmentPlayback.value.get(card.id)
   if (playback?.kind === 'previous') return '上一版成片'
-  if (playback?.kind === 'current') return '当前成片'
   return statusLabel(segmentDisplayStatus(card))
 }
 const selectedExportCards = computed(() => cards.value.filter(card =>
@@ -3120,7 +3153,7 @@ async function pollSegmentExport(path: string, request: number, download: boolea
       if (!alive || request !== segmentExportRequest) return
       segmentExport.value = state
       failures = 0
-      if (download && state?.status === 'completed' && state.videoUrl && dialog.value === 'video-export') {
+      if (download && state?.status === 'completed' && state.videoUrl) {
         const anchor = document.createElement('a')
         anchor.href = state.videoUrl
         anchor.download = segmentExportFilename.value
@@ -3135,9 +3168,9 @@ async function pollSegmentExport(path: string, request: number, download: boolea
   }
 }
 async function openSegmentExport() {
-  selectedExportIds.value = [...defaultExportCardIds.value]
   dialog.value = 'video-export'
   if (segmentExportBusy.value || segmentExportLoading.value) return
+  selectedExportIds.value = [...defaultExportCardIds.value]
   const path = segmentExportPath()
   const request = ++segmentExportRequest
   segmentExportLoading.value = true
@@ -3160,6 +3193,7 @@ async function exportSelectedSegments() {
   const path = segmentExportPath()
   const request = ++segmentExportRequest
   segmentExportSubmitting.value = true
+  segmentExport.value = null
   segmentExportError.value = ''
   try {
     await saveProjectNow(currentProject.value.id)
@@ -3181,6 +3215,7 @@ type FinalPromptMedia = { name: string; url: string }
 type FinalPromptReference = FinalPromptMedia & { index: number; tag?: string }
 type FinalPromptDelivery = {
   prompt: string
+  style?: { name: string; text: string; bodyStart: number }
   images: FinalPromptReference[]
   audios: FinalPromptReference[]
   firstFrame?: FinalPromptMedia
@@ -3206,6 +3241,7 @@ type VideoRun = {
   controller: AbortController
   cardIds: string[]
   cardStatuses: Map<string, 'queued' | 'generating'>
+  waitingToSubmit: Set<string>
 }
 const activeVideoRequests = ref(new Map<string, VideoRun>())
 const activeVideoRun = computed(() => activeVideoRequests.value.get(episodeKey.value))
@@ -3235,7 +3271,6 @@ async function cancelVideoGeneration(task?: Task, cardId?: string) {
   if (run) {
     run.controller.abort()
     run.cardStatuses.clear()
-    jimengVideoConfirmation.value?.cancel()
   }
   try {
     const result = await scriptVideoRequest<{ canceled: number; upstreamUnconfirmed: number }>(
@@ -3243,7 +3278,7 @@ async function cancelVideoGeneration(task?: Task, cardId?: string) {
       { ...(task && { jobIds: [task.id] }), ...(cardId && { cardId }), ...(run && { requestId: run.id }) },
     )
     if (run && activeVideoRequests.value.get(scope)?.id === run.id) activeVideoRequests.value.delete(scope)
-    await scriptVideoRequest<PreviewProject>(`/projects/${projectId}`).then(project => installProject(project)).catch(() =>
+    await refreshProject(projectId, episodeId).catch(() =>
       toast.error('取消请求已处理，任务列表加载失败。刷新页面可查看最新状态。'),
     )
     if (result.upstreamUnconfirmed) toast.info('已停止站内等待。未确认服务商已取消，可能仍在生成或已计费。')
@@ -3258,9 +3293,28 @@ async function cancelVideoGeneration(task?: Task, cardId?: string) {
 const latestCompletedVideoByCard = computed(
   () => indexVideoTasks(tasks.value.filter(task => task.status === 'completed' && task.videoUrl)),
 )
+const selectedVideoVersions = computed(() => selectedCard.value ? listScriptVideoVersions(selectedCard.value, tasks.value) : [])
 const segmentPlayback = computed(() => new Map(cards.value.map(card =>
   [card.id, scriptVideoCardPlayback(card, latestCompletedVideoByCard.value.get(card.id)?.videoUrl)] as const,
 )))
+const promotingVideoVersion = ref('')
+async function promoteVideoVersion(cardId: string, url: string) {
+  if (promotingVideoVersion.value) return
+  const projectId = currentProject.value.id, episodeId = currentEpisode.value.id
+  promotingVideoVersion.value = url
+  try {
+    await saveProjectNow(projectId)
+    await scriptVideoRequest(
+      `/projects/${projectId}/episodes/${episodeId}/cards/${cardId}/video-version`, 'POST', { url },
+    )
+    await refreshProject(projectId, episodeId, requestController.signal, false)
+    toast.success('已设为正片')
+  } catch (error) {
+    toast.error(error instanceof Error ? error.message : '设置正片失败，请重试')
+  } finally {
+    promotingVideoVersion.value = ''
+  }
+}
 function openSegmentCard(card: PreviewCard, event: MouseEvent) {
   selectedCardId.value = card.id
   if (segmentPlayback.value.get(card.id) &&
@@ -3325,8 +3379,8 @@ function rejectVideoRequestWithoutVoices(request: VideoGenerationRequest) {
   toast.error(warning)
   return true
 }
-function currentVideoTask(episode: PreviewEpisode, card: PreviewCard) {
-  return episode.tasks.filter(task => task.cardId === card.id && task.cardVersion === card.version && task.status !== 'canceled' && !task.staleResult).at(-1)
+function pendingVideoTask(episode: PreviewEpisode, card: PreviewCard) {
+  return episode.tasks.filter(task => task.cardId === card.id && task.cardVersion === card.version && task.status === 'processing').at(-1)
 }
 function videoEpisode(projectId: string, episodeId: string) {
   return projects.value
@@ -3355,6 +3409,8 @@ function openVideoRetry(request: VideoGenerationRequest, jobs = retryJobs(reques
   return true
 }
 async function requestVideoGeneration(cardIds: string[]) {
+  if (cardIds.some(id => activeCardIds.value.includes(id))) return
+  if (!navigator.onLine) { toast.info('联网后可生成视频'); return }
   const episode = currentEpisode.value
   const request = { projectId: currentProject.value.id, episodeId: episode.id, cardIds, durations: { ...episode.videoDurations } }
   if (rejectVideoRequestWithoutVoices(request)) return
@@ -3367,7 +3423,7 @@ async function requestVideoGeneration(cardIds: string[]) {
       scriptVideoRequest(`/projects/${request.projectId}/video/${task.taskId}`),
     ))
     try {
-      await installProject(await scriptVideoRequest<PreviewProject>(`/projects/${request.projectId}`))
+      await refreshProject(request.projectId, request.episodeId)
       jobs = retryJobs(request)
     } catch { /* Keep the local uncertainty if status is temporarily unavailable. */ }
   }
@@ -3386,7 +3442,7 @@ async function runVideoRequests(request: VideoGenerationRequest, approvedJobs?: 
   const scope = `${projectId}/${episodeId}`
   const run = reactive<VideoRun>({
     id: previewId('video-request'), controller: new AbortController(), cardIds: request.cardIds,
-    cardStatuses: new Map(),
+    cardStatuses: new Map(), waitingToSubmit: new Set(),
   })
   const ownsEpisode = () => alive && !run.controller.signal.aborted && episodeLock.owns(projectId, episodeId)
   const episode = videoEpisode(projectId, episodeId)
@@ -3429,7 +3485,28 @@ async function runVideoRequests(request: VideoGenerationRequest, approvedJobs?: 
   }
 
   activeVideoRequests.value.set(scope, run)
+  const queuePath = `/projects/${projectId}/episodes/${episodeId}/video-queue`
+  const toReserve = request.cardIds.filter(id => initialTasks.get(id)?.status !== 'processing' && !isVideoDeliveryRecovery(initialTasks.get(id)))
+  let reserved = false, renewing = false
+  let keepQueue: ReturnType<typeof setInterval> | undefined
   try {
+    await saveProjectNow(projectId)
+    if (!ownsEpisode()) return
+    if (toReserve.length) {
+      await scriptVideoRequest(queuePath, 'POST', { requestId: run.id, cardIds: toReserve }, run.controller.signal)
+      reserved = true
+      for (const id of toReserve) run.waitingToSubmit.add(id)
+      if (!ownsEpisode()) return
+      keepQueue = setInterval(async () => {
+        if (renewing || run.controller.signal.aborted) return
+        const waiting = [...run.waitingToSubmit]
+        if (!waiting.length) return
+        renewing = true
+        try { await scriptVideoRequest(queuePath, 'POST', { requestId: run.id, cardIds: waiting }, run.controller.signal) }
+        catch { /* The submit endpoint validates reservations atomically. */ }
+        finally { renewing = false }
+      }, 30_000)
+    }
     for (const [index, card] of episode.cards.entries()) {
       if (!selected.has(card.id)) continue
       const previous = episode.cards[index - 1]
@@ -3446,7 +3523,7 @@ async function runVideoRequests(request: VideoGenerationRequest, approvedJobs?: 
             if (!shared?.length) continue
             const task = initialTasks.get(prior.id)
             const pending = scheduled.get(prior.id) || (task?.status === 'processing' && task.taskId)
-            if (!pending && !(prior.status === 'ready' && prior.videoUrl)) continue
+            if (!pending && !officialScriptVideoUrl(prior)) continue
             if (pending) sources.add(pending)
             for (const range of shared) sceneKeys.delete(range.sceneKey)
             if (!sceneKeys.size) break
@@ -3468,16 +3545,13 @@ async function runVideoRequests(request: VideoGenerationRequest, approvedJobs?: 
           const prior = await precedingSubmission
           if (prior === 'needs-approval') return prior
           if (prior && await waitForRender(prior)) return submit(card.id)
-        } else {
-          const current = videoEpisode(projectId, episodeId)
-          const source = current?.cards.find(item => item.id === previous.id)
-          const task = current && source && currentVideoTask(current, source)
-          if (task?.status === 'processing' && task.taskId) {
-            if (await waitForRender(task.taskId)) return submit(card.id)
-          } else if (task?.status === 'completed' && task.videoUrl) {
-            return submit(card.id)
-          }
         }
+        const current = videoEpisode(projectId, episodeId)
+        const source = current?.cards.find(item => item.id === previous.id)
+        const task = current && source && pendingVideoTask(current, source)
+        if (task?.taskId && await waitForRender(task.taskId)) return submit(card.id)
+        const latestSource = videoEpisode(projectId, episodeId)?.cards.find(item => item.id === previous.id)
+        if (latestSource && officialScriptVideoUrl(latestSource) && (!task || task.taskId)) return submit(card.id)
         if (ownsEpisode()) blocked.push({ segment: index + 1, previous: index })
       })())
     }
@@ -3486,6 +3560,7 @@ async function runVideoRequests(request: VideoGenerationRequest, approvedJobs?: 
         return [id, await result] as const
       } finally {
         run.cardStatuses.delete(id)
+        run.waitingToSubmit.delete(id)
       }
     }))
     if (!ownsEpisode()) return
@@ -3498,7 +3573,12 @@ async function runVideoRequests(request: VideoGenerationRequest, approvedJobs?: 
     }
     const needsApproval = results.filter(([, result]) => result === 'needs-approval').map(([id]) => id)
     if (needsApproval.length) openVideoRetry({ ...request, cardIds: needsApproval })
+  } catch (error) {
+    if (!run.controller.signal.aborted) toast.error(error instanceof Error ? error.message : '生成任务未提交')
   } finally {
+    clearInterval(keepQueue)
+    if (reserved) void scriptVideoRequest(queuePath, 'DELETE', { requestId: run.id }).catch(() => {})
+    requestActivityRefresh?.()
     if (activeVideoRequests.value.get(scope)?.id === run.id) activeVideoRequests.value.delete(scope)
   }
 }
@@ -3516,7 +3596,7 @@ async function waitForVideoTail(projectId: string, episodeId: string, taskId: nu
         )
         if (!ownsEpisode()) return false
         if (state.status !== 'processing') {
-          await installProject(await scriptVideoRequest<PreviewProject>(`/projects/${projectId}`, 'GET', undefined, signal))
+          await refreshProject(projectId, episodeId, signal)
           return state.status === 'completed' && !!state.videoUrl
         }
         failures = 0
@@ -3547,7 +3627,7 @@ async function recoverFailedVideo(projectId: string, task: Task) {
   taskActions.value.add(task.id)
   try {
     await scriptVideoRequest(`/projects/${projectId}/video/${taskId}/recover`, 'POST')
-    await installProject(await scriptVideoRequest<PreviewProject>(`/projects/${projectId}`))
+    await refreshProject(projectId, selectedProjectId.value === projectId ? selectedEpisodeId.value : undefined)
     return taskId
   } catch (error) {
     toast.error(error instanceof Error ? error.message : '恢复视频任务失败')
@@ -3605,7 +3685,7 @@ async function generateCard(
     return
   }
   if (card.manuallyAdded) {
-    if (!card.prompt.trim()) {
+    if (!hasScriptVideoPromptBody(card.prompt, deliveryOptions(project, episode).stylePreset)) {
       toast.error('请先输入本段视频提示词')
       return
     }
@@ -3647,23 +3727,9 @@ async function generateCard(
       ...(duration === undefined ? {} : { duration }),
       ...(confirmedRetry ? { confirmRetryAfterUnknown: true } : {}),
     }
-    let approvedQuoteId: string | undefined
-    if (usesJimengVideo(current.modelProvider, current.modelName)) {
-      const signal = run ? AbortSignal.any([requestController.signal, run.controller.signal]) : requestController.signal
-      const quote = await scriptVideoRequest<JimengVideoQuote>(`${path}/quote`, 'POST', payload, signal)
-      if (!alive || run?.controller.signal.aborted || !episodeLock.owns(projectId, episodeId)) return
-      const label = latest.title || `第 ${current.cards.indexOf(latest) + 1} 段`
-      if (!await jimengVideoConfirmation.value?.approve(quote, label, confirmedRetry, duration ?? latest.duration)) return
-      if (!alive || run?.controller.signal.aborted || !episodeLock.owns(projectId, episodeId)) return
-      approvedQuoteId = quote.quote_id
-    }
-    const result = await scriptVideoRequest<{ taskId: number }>(path, 'POST', {
-      ...payload,
-      ...(approvedQuoteId ? { jimengQuoteId: approvedQuoteId } : {}),
-    })
-    await installProject(
-      await scriptVideoRequest<PreviewProject>(`/projects/${project.id}`),
-    )
+    run?.waitingToSubmit.delete(card.id)
+    const result = await scriptVideoRequest<{ taskId: number }>(path, 'POST', payload)
+    await refreshProject(project.id, episodeId)
     return result.taskId
   } catch (error: any) {
     if (run?.controller.signal.aborted || error instanceof ScriptVideoRequestError && error.code === 'CANCELED') return
@@ -3672,9 +3738,7 @@ async function generateCard(
       (error.code === 'SUBMISSION_UNKNOWN' || error.code === 'DELIVERY_FAILED')
     ) {
       try {
-        await installProject(
-          await scriptVideoRequest<PreviewProject>(`/projects/${project.id}`),
-        )
+        await refreshProject(project.id, episodeId)
         if (error.status === 409 && retryJobs({ projectId, episodeId, cardIds: [card.id] }).size) return 'needs-approval'
       } catch {
         toast.error('任务列表更新失败，刷新项目可重新读取')
@@ -3697,32 +3761,21 @@ function deliveryOptions(project: PreviewProject, episode: PreviewEpisode, conti
   }
 }
 async function deliveryContinuations(project: PreviewProject, episode: PreviewEpisode, cards: PreviewCard[]) {
-  const continuations: Record<string, ScriptVideoContinuation> = {}
-  const lightingRanges: Record<string, ScriptVideoLightingRange[]> = {}
   const plan = episodeLightingPlan(project, episode)
-  const pending = cards.flatMap(card => {
-    const accepted = episode.tasks.filter(task =>
-      task.cardId === card.id && task.cardVersion === card.version && task.modelLabel === episode.modelName &&
-      (task.configId === undefined || task.configId === episode.modelConfigId) && task.taskId && !task.staleResult,
-    ).at(-1)
-    if (accepted?.continuation) continuations[card.id] = accepted.continuation
-    if (accepted?.lightingRanges) lightingRanges[card.id] = accepted.lightingRanges
-    const needsLighting = !accepted?.lightingRanges && !!plan[card.id]?.length
-    if (accepted?.continuation && !needsLighting) return []
+  const cardIds = cards.filter(card => {
     const previous = episode.cards[episode.cards.findIndex(item => item.id === card.id) - 1]
-    const task = previous && currentVideoTask(episode, previous)
-    // The server can already have the finished file before this view's next status refresh.
-    const canResolve = task?.status === 'completed' && task.videoUrl || task?.status === 'processing' && task.taskId
-    return needsLighting || canResolve && getScriptVideoContinuationScene(previous, card, project.assets) ? [card.id] : []
-  })
-  if (!pending.length || !episode.modelConfigId || !episode.modelName) return { continuations, lightingRanges }
+    return plan[card.id]?.length || previous && getScriptVideoContinuationScene(previous, card, project.assets)
+  }).map(card => card.id)
+  if (!cardIds.length || !episode.modelConfigId || !episode.modelName) return { continuations: {}, lightingRanges: {} }
   await saveProjectNow(project.id)
-  const prepared = await scriptVideoRequest<{ continuations: typeof continuations; lightingRanges?: typeof lightingRanges }>(
+  const prepared = await scriptVideoRequest<{
+    continuations: Record<string, ScriptVideoContinuation>; lightingRanges?: Record<string, ScriptVideoLightingRange[]>
+  }>(
     `/projects/${project.id}/episodes/${episode.id}/continuations`, 'POST', {
-      cardIds: pending, configId: episode.modelConfigId, model: episode.modelName,
+      cardIds, configId: episode.modelConfigId, model: episode.modelName,
     },
   )
-  return { continuations: { ...prepared.continuations, ...continuations }, lightingRanges: { ...prepared.lightingRanges, ...lightingRanges } }
+  return { continuations: prepared.continuations, lightingRanges: prepared.lightingRanges ?? {} }
 }
 async function copyPromptPreview() {
   const preview = promptPreview.value
@@ -4005,6 +4058,36 @@ function uniqueName(name: string, except?: string, collection = assets.value) {
     next = `${name}-${suffix++}`
   return next
 }
+const uploadingPromptImages = ref(new Set<string>())
+async function uploadPromptImage(file: File) {
+  const projectId = currentProject.value.id
+  const episodeId = currentEpisode.value.id
+  const cardId = selectedCard.value?.id
+  if (!cardId || uploadingPromptImages.value.has(projectId) || !requireSharedProjectEdit()) return
+  if (!file.size || !/\.(?:png|jpe?g|webp)$/iu.test(file.name) ||
+      file.type && !['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
+    toast.error('请选择 PNG、JPEG 或 WebP 图片')
+    return
+  }
+  uploadingPromptImages.value.add(projectId)
+  try {
+    const { url } = await uploadAPI.image(file)
+    const project = projects.value.find(item => item.id === projectId)
+    if (!alive || !project) return
+    const name = uniqueName(file.name.replace(/\.[^.]+$/u, '').trim() || '自定义图片', undefined, project.assets)
+    const asset = { id: previewId('asset'), name, kind: 'prop' as const, image: url, sourcePath: file.name }
+    project.assets.push(asset)
+    const episode = project.episodes.find(item => item.id === episodeId)
+    const card = episode?.cards.find(item => item.id === cardId)
+    if (episode && card) updateCard({ ...card, assetIds: [...card.assetIds, asset.id] }, episode)
+    await saveProjectNow(projectId)
+    toast.success(card ? `已加入本段参考素材，输入 @${name} 引用` : `图片已保存到项目资产，输入 @${name} 引用`)
+  } catch (error) {
+    toast.error(error instanceof Error ? error.message : '图片上传失败')
+  } finally {
+    uploadingPromptImages.value.delete(projectId)
+  }
+}
 async function importAssetFiles(
   files?: FileList | File[] | null,
   project = currentProject.value,
@@ -4146,6 +4229,24 @@ async function dropAssets(event: DragEvent) {
     assetImporting.value = false
   }
 }
+const replacingImages = ref(new Set<string>())
+async function replaceAssetImage(id: string, event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file || replacingImages.value.has(id) || !requireSharedProjectEdit()) return
+  const project = currentProject.value
+  replacingImages.value.add(id)
+  try {
+    const uploaded = await uploadAPI.image(file)
+    const asset = project.assets.find(item => item.id === id)
+    if (!asset) throw new Error('素材已移除')
+    asset.image = uploaded.url
+    await saveProjectNow(project.id)
+    toast.success('素材图片已替换')
+  } catch (error) { toast.error(error instanceof Error ? error.message : '图片替换失败') }
+  finally { replacingImages.value.delete(id) }
+}
 function releaseAssetImage(asset: { image: string }) {
   if (asset.image.startsWith('blob:')) URL.revokeObjectURL(asset.image)
 }
@@ -4157,174 +4258,127 @@ function changeAssetKind(asset: PreviewAsset, kind: string) {
     delete asset.voiceMode
   }
 }
-async function saveCharacterVoice<Field extends 'voiceAudio' | 'voiceMode'>(
-  assetId: string, field: Field, next: () => (NonNullable<PreviewAsset[Field]> | null) | Promise<NonNullable<PreviewAsset[Field]> | null>,
+async function saveCharacterVoiceAudio(
+  assetId: string, next: () => NonNullable<PreviewAsset['voiceAudio']> | null | Promise<NonNullable<PreviewAsset['voiceAudio']> | null>,
   operation: 'upload' | 'save' = 'save',
 ) {
   const project = currentProject.value
-  const episodeId = currentEpisode.value.id
   const asset = project.assets.find(item => item.id === assetId)
   if (!episodeOpen.value || !asset || asset.kind !== 'character' || voiceEdits.value.has(assetId)) return
-  const expected = asset[field] ?? null
   voiceEdits.value.set(assetId, operation)
   try {
     const value = await next()
     if (!alive) return
-    const saved = await scriptVideoRequest<PreviewProject>(
-      `/projects/${project.id}/episodes/${episodeId}/assets/${assetId}/voice`,
-      'PATCH', { field, expected, value },
-    )
-    await installProject(saved)
-    if (field === 'voiceAudio') {
-      toast.success(value ? `${asset.name}的声音参考已保存` : '已移除角色声音参考')
-    }
+    const current = project.assets.find(item => item.id === assetId)
+    if (!current) throw new Error('角色已移除')
+    if (value === null) delete current.voiceAudio
+    else current.voiceAudio = value
+    await saveProjectNow(project.id)
+    toast.success(value ? `${current.name}的声音参考已保存` : '已移除角色声音参考')
   } catch (error: any) {
-    if (error instanceof ScriptVideoRequestError && error.code === 'ASSET_VOICE_CONFLICT') {
-      await scriptVideoRequest<PreviewProject>(`/projects/${project.id}`).then(project => installProject(project)).catch(() => {})
-    }
     toast.error(error.message || '角色声音保存失败')
   } finally { voiceEdits.value.delete(assetId) }
 }
 function setCharacterModelVoice(assetId: string, enabled: boolean) {
-  return saveCharacterVoice(assetId, 'voiceMode', () => enabled ? 'model' : null)
+  if (!episodeOpen.value || voiceEdits.value.has(assetId)) return
+  const asset = currentProject.value.assets.find(item => item.id === assetId)
+  if (asset?.kind === 'character') asset.voiceMode = enabled ? 'model' : 'reference'
 }
 function uploadCharacterVoice(assetId: string, file: File) {
   if (!/\.(?:mp3|wav)$/iu.test(file.name) || !file.size || file.size > 15 * 1024 * 1024) {
     toast.error('请选择不超过 15 MB 的 MP3 或 WAV 音频')
     return
   }
-  return saveCharacterVoice(assetId, 'voiceAudio', async () => {
+  return saveCharacterVoiceAudio(assetId, async () => {
     const result = await uploadAPI.audio(file)
     return { url: result.url, name: file.name, mimeType: file.type || undefined }
   }, 'upload')
 }
 function removeCharacterVoice(assetId: string) {
-  return saveCharacterVoice(assetId, 'voiceAudio', () => null)
+  return saveCharacterVoiceAudio(assetId, () => null)
 }
 function renameAsset(asset: PreviewAsset, value: string) {
   if (!requireSharedProjectEdit()) return
-  const project = currentProject.value
   const nextName = uniqueName(value.trim() || asset.name, asset.id)
   if (nextName === asset.name) return
-  // Resolve every old token before changing the project index. A prefix such
-  // as @顾凌天 may belong to a different reference than @顾凌天_龙袍.
-  for (const episode of project.episodes) {
-    const style = episode.production?.stylePreset || project.settings?.stylePreset
-    for (const card of episode.cards) {
-      if (!card.assetIds.includes(asset.id)) continue
-      const rename = (text: string, dialogue = false) => {
-        const result = annotateScriptVideoAssets(text, project.assets, card.assetIds, {
-          characters: card.characters, cast: episode.production?.characters, dialogue,
-          protectedPrefix: style && scriptVideoPromptStylePrefix(style), excludedIds: card.excludedAssetIds,
-        })
-        let out = '', last = 0
-        for (const match of result.mentions) {
-          if (match.id !== asset.id || match.spoken || !match.explicit) continue
-          out += text.slice(last, match.start) + '@' + nextName
-          last = match.end
-        }
-        return out + text.slice(last)
-      }
-      card.prompt = rename(card.prompt)
-      for (const field of ['openingRecap', 'opening', 'scene', 'characters', 'independentGeneration', 'ending'] as const) {
-        if (card[field]) card[field] = rename(card[field]!)
-      }
-      card.shots = card.shots.map(shot => ({
-        ...shot, camera: rename(shot.camera), action: rename(shot.action), dialogue: rename(shot.dialogue, true),
-      }))
-      card.status = 'draft'
-      card.version += 1
-    }
-  }
   asset.originalName ||= asset.name
   asset.name = nextName
 }
-function removeAsset(id: string) {
-  if (!requireSharedProjectEdit()) return
+const assetDeleteDialog = ref<HTMLDialogElement>()
+const assetDeleteTitleId = useId()
+const assetDeleteMessageId = useId()
+const pendingAssetDeletion = ref<{ projectId: string; id: string; name: string }>()
+async function requestAssetDeletion(asset: PreviewAsset) {
+  const confirmation = assetDeleteDialog.value
+  if (!confirmation || confirmation.open || !requireSharedProjectEdit()) return
+  pendingAssetDeletion.value = { projectId: currentProject.value.id, id: asset.id, name: asset.name }
+  await nextTick()
+  if (confirmation.isConnected && !confirmation.open) confirmation.showModal()
+}
+async function confirmAssetDeletion() {
+  const pending = pendingAssetDeletion.value
   const project = currentProject.value
-  const asset = project.assets.find((item) => item.id === id)
-  for (const episode of project.episodes) {
-    episode.cards = episode.cards.map((card) => ({
-      ...rebindCardAssets(
-        card,
-        card.assetIds.filter((value) => value !== id),
-        project.assets, episode.production,
-      ),
-      status: 'draft',
-      version: card.version + 1,
-    }))
+  if (!pending || pending.projectId !== project.id || !requireSharedProjectEdit()) return
+  assetDeleteDialog.value?.close()
+  const asset = project.assets.find(item => item.id === pending.id)
+  if (!asset) return
+  releaseAssetImage(asset)
+  project.assets = project.assets.filter(item => item.id !== asset.id)
+  try {
+    await saveProjectNow(project.id)
+    toast.success(`已从项目资产移除 ${asset.name}`)
+  } catch (error) {
+    toast.error(error instanceof Error ? error.message : '资产删除失败')
   }
-  if (asset) releaseAssetImage(asset)
-  project.assets = project.assets.filter((item) => item.id !== id)
-  toast.info(`已从项目资产移除 ${asset?.name || '资产'}`)
 }
-const VIDEO_STATUS_INTERVAL_MS = 5_000
-const MAX_VIDEO_STATUS_INTERVAL_MS = 30_000
+const sharedActivity = ref<{ scope: string; activeCardIds: string[]; queuedCardIds: string[] }>({ scope: '', activeCardIds: [], queuedCardIds: [] })
+const activeCardIds = computed(() => sharedActivity.value.scope === episodeKey.value ? sharedActivity.value.activeCardIds : [])
+const queuedCardIds = computed(() => sharedActivity.value.scope === episodeKey.value ? sharedActivity.value.queuedCardIds : [])
 const pageVisible = ref(false)
-function updatePageVisibility() {
-  pageVisible.value = document.visibilityState === 'visible'
-}
+function updatePageVisibility() { pageVisible.value = document.visibilityState === 'visible' }
 onMounted(() => {
   updatePageVisibility()
   document.addEventListener('visibilitychange', updatePageVisibility)
 })
-function pendingVideoTaskIds(list: Task[]) {
-  return list.flatMap(task => task.status === 'processing' && task.taskId ? [task.taskId] : [])
-}
-watch(
-  () => pageVisible.value && episodeOpen.value && !videoTailWaiting.value && pendingVideoTaskIds(tasks.value).length > 0
-    ? `${currentProject.value.id}/${currentEpisode.value.id}` : '',
-  (scope, _, onCleanup) => {
-    if (!scope) return
-    const projectId = currentProject.value.id
-    const episodeId = currentEpisode.value.id
-    const controller = new AbortController()
-    let timer: ReturnType<typeof setTimeout> | undefined
-    let interval = VIDEO_STATUS_INTERVAL_MS
-
-    onCleanup(() => {
-      controller.abort()
-      clearTimeout(timer)
-    })
-
-    async function refreshVideoStatus() {
-      try {
-        const pending = pendingVideoTaskIds(tasks.value)
-        const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)])
-        const status = await scriptVideoRequest<{ tasks: { taskId: number; status: Task['status'] }[] }>(
-          `/projects/${projectId}/episodes/${episodeId}/video-status`, 'GET', undefined, signal,
-        )
-        const stillProcessing = new Set(status.tasks.filter(task => task.status === 'processing').map(task => task.taskId))
-        if (!controller.signal.aborted && pending.some(id => !stillProcessing.has(id))) {
-          const project = await scriptVideoRequest<PreviewProject>(`/projects/${projectId}`, 'GET', undefined, signal)
-          if (controller.signal.aborted) return
-          const before = new Set(pendingVideoTaskIds(tasks.value))
-          const finished = project.episodes.find(episode => episode.id === episodeId)?.tasks.filter(
-            task => task.taskId && before.has(task.taskId) && task.status !== 'processing',
-          ) || []
-          await installProject(project)
-          if (pageVisible.value && episodeOpen.value && currentProject.value.id === projectId && currentEpisode.value.id === episodeId) {
-            const failed = finished.find(task => task.status === 'failed')
-            const completed = finished.filter(task => task.status === 'completed').length
-            if (failed) toast.error(videoTaskError(failed) || '视频生成失败')
-            if (completed) toast.success(completed === 1 ? '视频已生成' : `已有 ${completed} 个视频生成`)
-          }
-        }
-        interval = VIDEO_STATUS_INTERVAL_MS
-      } catch {
-        interval = Math.min(interval * 2, MAX_VIDEO_STATUS_INTERVAL_MS)
-      } finally {
-        if (!controller.signal.aborted) timer = setTimeout(() => { void refreshVideoStatus() }, interval)
-      }
+let requestActivityRefresh: (() => void) | undefined
+watch(() => pageVisible.value && episodeOpen.value ? episodeKey.value : '', (scope, _, onCleanup) => {
+  if (!scope) return
+  const projectId = currentProject.value.id, episodeId = currentEpisode.value.id
+  const ctrl = new AbortController()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let polling = false
+  type Activity = { revision: number; episodeRevision: number; tasks: Task[]; jobs: ScriptVideoClientJob[]; activeCardIds: string[]; queuedCardIds: string[] }
+  async function poll() {
+    if (polling || ctrl.signal.aborted) return
+    polling = true
+    clearTimeout(timer)
+    try {
+      const signal = AbortSignal.any([ctrl.signal, AbortSignal.timeout(8000)])
+      const status = await scriptVideoRequest<Activity>(`/projects/${projectId}/episodes/${episodeId}/activity`, 'GET', undefined, signal)
+      if (ctrl.signal.aborted || episodeKey.value !== scope) return
+      sharedActivity.value = { scope, activeCardIds: status.activeCardIds, queuedCardIds: status.queuedCardIds || [] }
+      const episode = currentEpisode.value
+      const bodyChanged = status.episodeRevision > (episode._episodeRevision ?? -1)
+      const sharedChanged = status.revision > (sharedLoaded.get(projectId) ?? -1)
+      if (bodyChanged || sharedChanged) await refreshProject(projectId, bodyChanged ? episodeId : undefined, signal, sharedChanged)
+      if (ctrl.signal.aborted || episodeKey.value !== scope) return
+      const active = status.jobs.find(job => job.action !== 'video' && ['queued','running'].includes(job.status))
+      if (active && !textRuns.value[scope]) void restoreEpisodeAIJobs(projectId, episodeId)
+    } catch { /* The editor and the local draft stay available while the status service is unreachable. */ }
+    finally {
+      polling = false
+      if (!ctrl.signal.aborted) timer = setTimeout(() => { void poll() }, 2500)
     }
-    void refreshVideoStatus()
-  },
-)
+  }
+  requestActivityRefresh = () => { void poll() }
+  void poll()
+  onCleanup(() => { ctrl.abort(); clearTimeout(timer); requestActivityRefresh = undefined })
+})
 onBeforeRouteLeave(async () => {
   if (episodeNavigationBusy.value) return false
   keepViewPosition(true)
   try {
-    await saveProjectNow()
+    await persistBeforeNavigation()
   } catch (error: any) {
     toast.error(error.message)
     return false
@@ -4333,6 +4387,8 @@ onBeforeRouteLeave(async () => {
 onBeforeUnmount(() => {
   alive = false
   window.removeEventListener('pagehide', saveViewOnPageHide, true)
+  window.removeEventListener('online', reconnect)
+  for (const timer of timersForRetry.values()) clearTimeout(timer)
   document.removeEventListener('visibilitychange', updatePageVisibility)
   projects.value.forEach((project) => project.assets.forEach(releaseAssetImage))
   requestController.abort()
@@ -4422,8 +4478,8 @@ onBeforeUnmount(() => {
   overflow-wrap: anywhere;
 }
 .vp-editing-warnings {
-  margin: 0 0 14px;
-  padding: 12px 16px;
+  margin: 0 0 5px;
+  padding: 7px 16px;
   border: 1px solid color-mix(in srgb, var(--warning, #b77429) 35%, transparent);
   border-radius: 8px;
   color: var(--warning, #b77429);
@@ -4483,10 +4539,13 @@ onBeforeUnmount(() => {
   min-width: 0;
   height: 100%;
   min-height: 0;
-  padding: 22px 28px 20px;
-  gap: 15px;
+  padding: 14px 28px 20px;
+  gap: 5px;
   color: var(--text-0);
   overflow: hidden;
+}
+.video-preview-page:has(> .vp-production) {
+  overflow-y: auto;
 }
 .vp-heading,
 .vp-title,
@@ -4590,6 +4649,7 @@ onBeforeUnmount(() => {
 }
 .vp-output-switch {
   display: flex;
+  flex-wrap: wrap;
   gap: 3px;
 }
 .vp-output-switch button {
@@ -4603,6 +4663,15 @@ onBeforeUnmount(() => {
   cursor: pointer;
   border-radius: 7px;
   font-size: 11px;
+  white-space: nowrap;
+}
+.vp-output-switch .vp-workflow-assets {
+  margin-right: 5px;
+  border: 1px solid var(--border);
+  color: var(--text-1);
+}
+.vp-output-switch .vp-workflow-assets:hover {
+  border-color: var(--accent);
 }
 .vp-output-switch button.active {
   background: var(--button-bg);
@@ -4645,17 +4714,16 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   flex: 1;
-  min-height: 0;
+  min-height: 590px;
   gap: 14px;
 }
 .vp-workbench {
   display: grid;
-  grid-template-columns: 200px minmax(320px, 1fr) 235px;
+  grid-template-columns: minmax(0, 1fr) 235px;
   gap: 14px;
   flex: 1;
   min-height: 0;
 }
-.vp-asset-panel,
 .vp-inspector {
   padding: 17px 14px;
   display: flex;
@@ -4678,15 +4746,6 @@ onBeforeUnmount(() => {
   color: var(--text-3);
   line-height: 1.6;
 }
-.vp-icon-button {
-  display: grid;
-  place-items: center;
-  padding: 3px;
-  border: 0;
-  background: none;
-  color: var(--text-2);
-  cursor: pointer;
-}
 .vp-search {
   display: flex;
   align-items: center;
@@ -4705,32 +4764,6 @@ onBeforeUnmount(() => {
   background: none;
   color: var(--text-1);
   font-size: 11px;
-}
-.vp-kind-tabs {
-  display: flex;
-  justify-content: space-between;
-  border-bottom: 1px solid var(--border);
-}
-.vp-kind-tabs button {
-  border: 0;
-  background: none;
-  color: var(--text-3);
-  font-size: 10px;
-  padding: 0 5px 9px;
-  border-bottom: 2px solid transparent;
-  cursor: pointer;
-}
-.vp-kind-tabs button.active {
-  border-color: var(--accent);
-  color: var(--accent-text);
-}
-.vp-asset-list {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  overflow-y: auto;
-  min-height: 90px;
-  flex: 1;
 }
 .vp-library-asset {
   display: flex;
@@ -4778,34 +4811,6 @@ onBeforeUnmount(() => {
 .vp-library-asset > svg {
   flex-shrink: 0;
   color: var(--accent-text);
-}
-.vp-source-script {
-  padding-top: 13px;
-  border-top: 1px solid var(--border);
-}
-.vp-source-script > div {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-}
-.vp-source-script strong {
-  font-weight: 500;
-}
-.vp-source-script span {
-  margin-left: auto;
-  font-size: 9px;
-  color: var(--text-3);
-}
-.vp-source-script p {
-  font-size: 10px;
-  color: var(--text-3);
-  line-height: 1.8;
-  margin: 10px 0;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
 }
 .vp-wide {
   width: 100%;
@@ -4967,15 +4972,15 @@ onBeforeUnmount(() => {
   color: var(--text-3);
 }
 .vp-muted {
-  color: var(--text-3);
+  color: var(--warning, #b77429);
   font-size: 10px;
 }
 .vp-rail {
-  padding: 13px 16px;
+  padding: 5px 16px;
   flex-shrink: 0;
 }
 .vp-rail-head {
-  margin-bottom: 12px;
+  margin-bottom: 5px;
 }
 .vp-rail-head strong {
   font-size: 12px;
@@ -5517,7 +5522,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 23px 26px;
+  padding: 10px 26px;
   border-bottom: 1px solid var(--border);
 }
 .vp-modal h2 {
@@ -5565,6 +5570,9 @@ onBeforeUnmount(() => {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
+@media (prefers-reduced-motion: reduce) {
+  .vp-export-submit .animate-spin { animation: none; }
+}
 .vp-confirm-delete {
   border-color: var(--error, #c75d63);
   color: var(--error, #e67579);
@@ -5579,8 +5587,8 @@ onBeforeUnmount(() => {
 .vp-assets-toolbar {
   display: flex;
   flex-direction: column;
-  gap: 18px;
-  padding: 20px 26px 0;
+  gap: 7px;
+  padding: 10px 26px 0;
   flex-shrink: 0;
 }
 .vp-assets-import-bar {
@@ -5733,8 +5741,8 @@ onBeforeUnmount(() => {
 }
 .vp-asset-edit-row {
   display: grid;
-  grid-template-columns: 68px minmax(0, 1fr) 28px;
-  gap: 12px;
+  grid-template-columns: 68px minmax(0, 1fr);
+  gap: 10px 12px;
   align-items: center;
   padding: 12px;
   border: 1px solid var(--border);
@@ -5804,11 +5812,41 @@ onBeforeUnmount(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.vp-asset-edit-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+}
+.vp-asset-edit-actions > .btn {
+  min-height: 30px;
+  white-space: nowrap;
+}
+.vp-asset-replace {
+  position: relative;
+  cursor: pointer;
+}
+.vp-asset-replace:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.vp-asset-replace:has(input:disabled) {
+  opacity: .45;
+  cursor: not-allowed;
+}
+.vp-replace-file {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  opacity: 0;
+  cursor: inherit;
+}
 .vp-asset-delete {
-  width: 28px;
-  min-width: 28px;
-  height: 28px;
-  min-height: 28px;
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  margin-inline-start: auto;
   padding: 0;
   border-color: transparent;
   background: transparent;
@@ -5819,6 +5857,35 @@ onBeforeUnmount(() => {
   color: var(--error);
   border-color: var(--error);
   background: var(--error-bg);
+}
+.vp-asset-delete-dialog {
+  width: min(420px, calc(100% - 32px));
+  margin: auto;
+  padding: 24px;
+  border: 1px solid var(--border-strong);
+  border-radius: 13px;
+  background: var(--surface-raised);
+  color: var(--text-0);
+  box-shadow: var(--shadow-elevated);
+}
+.vp-asset-delete-dialog::backdrop {
+  background: var(--scrim);
+}
+.vp-asset-delete-dialog h2 {
+  margin: 0;
+  font-size: 17px;
+}
+.vp-asset-delete-dialog p {
+  margin: 8px 0 16px;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.vp-asset-delete-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 .vp-asset-edit-row .vp-asset-voice {
   grid-column: 1 / -1;
@@ -5983,7 +6050,7 @@ onBeforeUnmount(() => {
     padding-right: 40px;
   }
   .vp-workbench {
-    grid-template-columns: 235px minmax(0, 1fr) 270px;
+    grid-template-columns: minmax(0, 1fr) 270px;
   }
   .vp-segment-item {
     flex-basis: 200px;
@@ -5998,10 +6065,9 @@ onBeforeUnmount(() => {
     gap: 12px;
   }
   .vp-workbench {
-    grid-template-columns: 170px minmax(300px, 1fr) 200px;
+    grid-template-columns: minmax(0, 1fr) 200px;
     gap: 10px;
   }
-  .vp-asset-panel,
   .vp-inspector {
     padding: 14px 11px;
     gap: 12px;
@@ -6038,7 +6104,7 @@ onBeforeUnmount(() => {
     overflow: visible;
   }
   .vp-workbench {
-    grid-template-columns: 150px minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
     min-height: 600px;
   }
   .vp-inspector {
@@ -6123,17 +6189,6 @@ onBeforeUnmount(() => {
     display: flex;
     flex-direction: column;
   }
-  .vp-asset-panel {
-    max-height: 230px;
-  }
-  .vp-asset-list {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-  }
-  .vp-source-script,
-  .vp-asset-panel > .vp-wide {
-    display: none;
-  }
   .vp-editor-panel {
     min-height: 620px;
   }
@@ -6212,7 +6267,7 @@ onBeforeUnmount(() => {
     gap: 16px;
   }
   .vp-asset-edit-row {
-    grid-template-columns: 56px minmax(0, 1fr) 28px;
+    grid-template-columns: 56px minmax(0, 1fr);
     gap: 10px;
     padding: 10px;
   }

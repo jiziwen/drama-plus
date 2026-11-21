@@ -9,6 +9,7 @@ import * as preview from '../app/utils/scriptVideoPreview'
 import * as promptVoiceView from '../app/utils/scriptVideoPromptVoiceView'
 import * as validation from '../app/utils/scriptVideoPreviewValidation'
 import { getScriptVideoPromptVoices } from '../../backend/src/services/script-video-delivery'
+import { getScriptVideoStylePreset, scriptVideoPromptStylePrefix, splitScriptVideoPromptStyle } from '../../backend/src/services/script-video-style'
 
 const filename = 'ScriptVideoPreviewEditor.vue'
 const source = readFileSync(new URL('../app/components/' + filename, import.meta.url), 'utf8')
@@ -18,12 +19,13 @@ const component: any = {}
 const menu = { name: 'MentionTextarea' }
 const modules: Record<string, unknown> = {
   vue: { ...vue, useId: () => 'editor-validation', resolveComponent: (name: string) => name, withDirectives: (node: unknown) => node },
-  'lucide-vue-next': { Eye: 'Eye', Sparkles: 'Sparkles', X: 'X' },
+  'lucide-vue-next': { Eye: 'Eye', Sparkles: 'Sparkles', Upload: 'Upload', X: 'X' },
   './MentionTextarea.vue': { default: menu },
   '~/utils/scriptVideoPreview': preview,
   '~/utils/scriptVideoPromptVoiceView': promptVoiceView,
   '~/utils/scriptVideoPreviewValidation': validation,
   '../../../backend/src/services/script-video-delivery': { getScriptVideoPromptVoices },
+  '../../../backend/src/services/script-video-style': { splitScriptVideoPromptStyle },
 }
 runInNewContext(outputText, {exports: component, require: (id: string) => modules[id]})
 
@@ -120,6 +122,33 @@ test('直接修改视频提示词时让引用按新提示词重新判定', async
   assert.equal(editor.props.card.shots[0]!.speakerAssetIds, undefined)
   assert.equal(editor.props.card.openingRecap, '侍卫_夜行在前镜退场。')
   assert.deepEqual(Array.from(editor.props.card.assetIds), ['night', 'guard', 'other'])
+})
+
+test('冷暖色预设折叠显示，编辑正文后仍保存完整风格内容与素材引用', async () => {
+  for (const id of ['cool', 'warm']) {
+    const editor = setup(['guard'])
+    const preset = getScriptVideoStylePreset(id)!
+    const prefix = scriptVideoPromptStylePrefix(preset).replaceAll('\r\n', '\n')
+    const body = '画面与动作：@侍卫 守门。'
+    editor.props.card.prompt = prefix + '\n\n' + body
+    const textarea = editor.nodes().find(n => n.type === menu)
+    assert.equal(textarea.props['model-value'], body)
+    const detail = editor.nodes().find(n => n.type === 'ScriptVideoPromptStyle')
+    assert.equal(detail.props.preset.name, preset.name)
+    const edited = '画面与动作：@第三人 推门。'
+    await editPrompt(textarea, edited)
+    const current = editor.nodes().find(n => n.type === menu)
+    const hit = current.props['resolve-preview-ranges'](edited).find((ref: { id: string }) => ref.id === 'other')
+    assert.equal(edited.slice(hit.start, hit.end), '@第三人')
+    current.props.onCommit(edited, true)
+    assert.equal(editor.props.card.prompt, prefix + '\n\n' + edited)
+    assert.deepEqual(Array.from(editor.props.card.assetIds), ['guard', 'other'])
+
+    editor.props.card.manuallyAdded = true
+    await editPrompt(editor.nodes().find(n => n.type === menu), '')
+    assert.equal(editor.nodes().find(n => n.type === menu).props['model-value'], '')
+    assert.equal(editor.nodes().find(n => n.type === 'button' && n.props?.class === 'sv-button sv-primary').props.disabled, true)
+  }
 })
 
 test('移除绑定也会从开场、逐镜配图和声音标注移除该素材', () => {
@@ -264,12 +293,13 @@ test('自动保存整理的提示词只在结束编辑后回填，编辑中的�
   assert.equal(editor.props.card.prompt, stored)
 })
 
-test('无外部状态时默认打开正式分镜，并保留本地切换', () => {
+test('无外部状态时默认打开视频提示词，并保留本地切换', () => {
   const editor = setup([], { openPrompt: false })
-  assert.equal(editor.tabButtons().find(n => n.props['aria-pressed']).children, '正式分镜')
-  editor.tabButtons().find(n => n.children === '视频提示词').props.onClick()
+  assert.deepEqual(editor.tabButtons().slice(0, 2).map(n => n.children), ['视频提示词', '正式分镜'])
   assert.equal(editor.tabButtons().find(n => n.props['aria-pressed']).children, '视频提示词')
-  assert.deepEqual(editor.tabChanges, ['prompt'])
+  editor.tabButtons().find(n => n.children === '正式分镜').props.onClick()
+  assert.equal(editor.tabButtons().find(n => n.props['aria-pressed']).children, '正式分镜')
+  assert.deepEqual(editor.tabChanges, ['shots'])
 })
 
 test('外部恢复的编辑标签生效，AI 调整等编辑器内操作继续更新标签', () => {
@@ -279,7 +309,8 @@ test('外部恢复的编辑标签生效，AI 调整等编辑器内操作继续�
   editor.props.tab = 'prompt'
   assert.ok(editor.nodes().some(n => n.type === menu))
   const actions = editor.nodes().find(n => n.props?.class === 'sv-prompt-actions')
-  const revise = flatten(actions).find(n => n.type === 'button')
+  const revise = flatten(actions).find(n => n.type === 'button' && Array.isArray(n.children) &&
+    n.children.some((child: { children?: string }) => child.children?.includes('让 AI 调整')))
   revise.props.onClick()
   assert.equal(editor.props.tab, 'revise')
   editor.nodes().find(n => n.type === 'ScriptVideoPreviewRevision').props.onClose()
@@ -287,9 +318,9 @@ test('外部恢复的编辑标签生效，AI 调整等编辑器内操作继续�
   assert.deepEqual(editor.tabChanges, ['revise', 'prompt'])
 })
 
-test('预览标签待成片可用后恢复，等待期间回到正式分镜并保留原选择', () => {
+test('预览标签待成片可用后恢复，等待期间打开视频提示词并保留原选择', () => {
   const editor = setup([], { tab: 'preview', openPrompt: false })
-  assert.equal(editor.tabButtons().find(n => n.props['aria-pressed']).children, '正式分镜')
+  assert.equal(editor.tabButtons().find(n => n.props['aria-pressed']).children, '视频提示词')
   assert.equal(editor.props.tab, 'preview')
   assert.deepEqual(editor.tabChanges, [])
   editor.props.card.videoUrl = '/static/videos/ready.mp4'
@@ -300,7 +331,7 @@ test('预览标签待成片可用后恢复，等待期间回到正式分镜并�
   editor.props.card.status = 'draft'
   assert.equal(editor.tabButtons().find(n => n.props['aria-pressed']).children, '上一版成片')
   assert.equal(editor.nodes().find(n => n.type === 'video').props.src, '/static/videos/ready.mp4')
-  assert.equal(editor.nodes().find(n => n.type === 'a' && n.props.download === '').props.href, '/static/videos/ready.mp4')
+  assert.equal(editor.nodes().find(n => n.type === 'a' && n.props.download?.endsWith('.mp4')).props.href, '/static/videos/ready.mp4')
   editor.tabButtons().find(n => n.children === '正式分镜').props.onClick()
   editor.props.card.status = 'ready'
   assert.equal(editor.tabButtons().find(n => n.props['aria-pressed']).children, '正式分镜')

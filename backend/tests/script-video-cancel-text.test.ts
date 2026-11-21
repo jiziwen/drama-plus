@@ -101,9 +101,8 @@ test('canceling script-video text jobs aborts work, preserves committed content 
     const jobs = ((await (await app.request(`${projectPath}/jobs?episodeId=${project.episodeId}`)).json()) as any).data
     assert.equal(jobs.find((job: any) => job.id === id).status, 'running')
     const path = `${projectPath}/jobs/${id}/cancel`
-    assert.equal((await post(path, undefined, randomUUID())).status, 423)
     assert.equal(signal.aborted, false)
-    const canceled = await post(path)
+    const canceled = await post(path, undefined, randomUUID())
     assert.equal(canceled.status, 200)
     const stopped = ((await canceled.json()) as any).data
     assert.equal(stopped.status, 'canceled')

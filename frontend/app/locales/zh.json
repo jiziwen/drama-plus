@@ -305,7 +305,7 @@
     "jimeng": {
       "provider": "即梦积分",
       "cli": "官方 CLI",
-      "billing": "使用已授权即梦账号的积分，生成前显示官方报价",
+      "billing": "生成视频使用已授权即梦账号的积分",
       "account": "即梦账号与积分",
       "viewAccount": "查看账号",
       "connected": "已连接",

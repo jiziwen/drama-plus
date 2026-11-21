@@ -226,7 +226,7 @@ sudo docker compose logs --tail=50 gateway
 
 在应用的 `/opt/drama-plus/.env` 设置 `JIMENG_PRIVATE_ORIGIN=https://你的自用域名`。用 `openssl rand -hex 32` 生成代理密钥，将同一个值写入应用和 `/opt/drama-plus-public/.env` 的 `JIMENG_PRIVATE_PROXY_SECRET`，并将两份文件权限设为 `600`。同步应用和网关的 Compose 配置，并按仓库 Caddyfile 更新现有站点的两个 `handle` 块，保留实际域名、TLS 和访问密码。`start-private.sh` 检测到即梦域名后会构建内含官方 Linux CLI 的应用镜像。
 
-重建两个容器后，在自用站打开「设置 → AI 服务 → 视频 → 新增 → 即梦积分 · 官方 CLI」，连接个人即梦账号并在官网确认授权。容器的 `jimeng-data` 卷保存钥匙串和任务状态，更新容器时需保留该卷。授权完成后在「剧本转视频」选择即梦模型，每次生成前会显示官方积分报价。
+重建两个容器后，在自用站打开「设置 → AI 服务 → 视频 → 新增 → 即梦积分 · 官方 CLI」，连接个人即梦账号并在官网确认授权。容器的 `jimeng-data` 卷保存钥匙串和任务状态，更新容器时需保留该卷。授权完成后在「剧本转视频」选择即梦模型，点击生成视频即提交任务，由 CLI 在后台完成本次积分授权。
 
 ### 在线反馈管理
 

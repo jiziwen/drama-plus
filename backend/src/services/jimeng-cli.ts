@@ -35,7 +35,7 @@ export interface JimengVideoModel {
   canonicalModel: string
 }
 
-export interface JimengVideoQuoteInput {
+export interface JimengVideoDraftInput {
   projectId: string
   model: string
   prompt: string
@@ -46,17 +46,14 @@ export interface JimengVideoQuoteInput {
   references?: readonly { kind: JimengReferenceKind; resourceId: string }[]
 }
 
-export interface JimengVideoQuote {
+export interface JimengVideoRunInput {
   projectId: string
   nodeId: string
-  credits: number
   accountId: string
-  draftVersion: number
   draftFingerprint: string
-}
-
-export interface JimengVideoRunInput extends JimengVideoQuote {
   submitId: string
+  /** Ceiling a user confirmed before direct submission was introduced. */
+  credits?: number
 }
 
 export interface JimengVideoStatus {
@@ -118,9 +115,9 @@ function cliError(info: CliData) {
   const candidate = string(info.reason)
   const reason = candidate && /^[a-z][a-z0-9_]{0,70}$/u.test(candidate) ? candidate : undefined
   if (code === 3) return new JimengCliError('请先授权即梦账号', code, 'auth_required')
-  if (code === 40018) return new JimengCliError('即梦需要确认积分上限，或最新报价已超过上限，请重新报价', code, reason)
+  if (code === 40018) return new JimengCliError('即梦积分授权未成功，请检查账号和积分后重试', code, reason)
   if (reason === 'vip_membership_required') return new JimengCliError('当前即梦账号没有使用该模型所需的会员权益', code, reason)
-  if (reason === 'account_changed') return new JimengCliError('即梦授权账号已变更，请重新报价', code, reason)
+  if (reason === 'account_changed') return new JimengCliError('即梦授权账号已变更，请重新提交', code, reason)
   const details = [code, reason].filter(value => value !== undefined).join('，')
   return new JimengCliError(details ? `即梦官方 CLI 请求失败（${details}）` : '即梦官方 CLI 请求失败', code, reason)
 }
@@ -249,24 +246,22 @@ export async function getJimengVideoModels(): Promise<JimengVideoModel[]> {
   })
 }
 
-async function personalAccount() {
-  const account = await getJimengAccount()
-  if (!account.authenticated || !account.accountId) throw new JimengCliError(account.message || '请先授权即梦账号')
-  return account.accountId
+export async function getJimengPersonalSpaceAccountId() {
+  const space = await invoke(['space', 'current'])
+  const accountId = string(space.userId)
+  if (!accountId || String(space.kind).toLowerCase() !== 'personal' || space.team) {
+    throw new JimengCliError('请先授权即梦账号并切换到个人空间')
+  }
+  return accountId
 }
 
 function requirePersonalSubject(subject: CliData, accountId: string) {
   if (String(subject.kind).toLowerCase() !== 'personal' || String(subject.userId) !== accountId || subject.teamId) {
-    throw new JimengCliError('当前即梦消费归属与已授权的个人账号不一致，请检查即梦空间后重新报价')
+    throw new JimengCliError('当前即梦消费归属与个人账号不一致，请检查即梦空间后重试')
   }
 }
 
 export async function createJimengCanvas(title: string, projectId = randomUUID()): Promise<{ projectId: string; webUrl?: string }> {
-  const accountId = await personalAccount()
-  const space = await invoke(['space', 'current'])
-  if (String(space.kind).toLowerCase() !== 'personal' || String(space.userId) !== accountId || space.team) {
-    throw new JimengCliError('当前即梦 CLI 空间与已授权的个人账号不一致，请检查即梦空间后再继续')
-  }
   const data = await invoke(['canvas', 'create', `--project-id=${projectId}`, '--', title])
   const project = object(data.project)
   if (project.projectId !== projectId) throw new JimengCliError('即梦没有返回预期的画布 ID')
@@ -296,7 +291,7 @@ async function showVideoNode(projectId: string, nodeId: string) {
   return node
 }
 
-function verifyVideoDraft(input: JimengVideoQuoteInput, canonicalModel: string, node: CliData) {
+function verifyVideoDraft(input: JimengVideoDraftInput, canonicalModel: string, node: CliData) {
   const generation = object(node.generation)
   const expectedReferences = (input.references || []).map(ref => `${ref.kind}:${ref.resourceId}`)
   const actualReferences = list(generation.references).map(ref => ref.kind === 'resource' ? `${ref.type}:${ref.id}` : '')
@@ -317,7 +312,7 @@ function verifyVideoDraft(input: JimengVideoQuoteInput, canonicalModel: string, 
   ]
   const mismatches = checks.filter(([matches]) => !matches).map(([, field]) => field)
   if (mismatches.length) {
-    throw new JimengCliError(`即梦保存的分镜参数与请求不一致（${mismatches.join('、')}），请检查后重新报价`)
+    throw new JimengCliError(`即梦保存的分镜参数与请求不一致（${mismatches.join('、')}），请检查后重试`)
   }
 }
 
@@ -335,11 +330,10 @@ async function quoteNode(projectId: string, nodeId: string, accountId: string) {
     data.confirmable === false || typeof version !== 'number' || !Number.isSafeInteger(version)) {
     throw new JimengCliError('即梦未返回可确认的积分报价')
   }
-  return { credits: total, draftVersion: version }
+  return total
 }
 
-export async function createJimengVideoQuote(input: JimengVideoQuoteInput): Promise<JimengVideoQuote> {
-  const accountId = await personalAccount()
+export async function createJimengVideoDraft(input: JimengVideoDraftInput, accountId: string): Promise<JimengVideoRunInput> {
   const models = (await getJimengVideoModels()).filter(item => item.id === input.model || item.canonicalModel === input.model)
   if (models.length !== 1) throw new JimengCliError('当前即梦账号未返回唯一可用的所选 Seedance 模型')
   const data = await invoke([
@@ -352,20 +346,24 @@ export async function createJimengVideoQuote(input: JimengVideoQuoteInput): Prom
   if (!nodeId) throw new JimengCliError('即梦未返回视频草稿节点 ID')
   const node = await showVideoNode(input.projectId, nodeId)
   verifyVideoDraft(input, models[0].canonicalModel, node)
-  const fingerprint = draftFingerprint(node)
-  const quote = await quoteNode(input.projectId, nodeId, accountId)
-  return { projectId: input.projectId, nodeId, ...quote, accountId, draftFingerprint: fingerprint }
+  return { projectId: input.projectId, nodeId, accountId, draftFingerprint: draftFingerprint(node), submitId: randomUUID() }
 }
 
 export async function runJimengVideo(input: JimengVideoRunInput, beforeRun?: () => void): Promise<void> {
-  const { projectId, nodeId, submitId, credits, accountId } = input
-  if (!Number.isSafeInteger(credits) || credits < 0) throw new JimengCliError('已批准的即梦积分上限无效')
-  if (await personalAccount() !== accountId) throw new JimengCliError('即梦授权账号已变更，请重新报价')
+  const { projectId, nodeId, submitId, accountId } = input
+  if (input.credits !== undefined && (!Number.isSafeInteger(input.credits) || input.credits < 0)) {
+    throw new JimengCliError('已确认的即梦积分上限无效')
+  }
+  if (await getJimengPersonalSpaceAccountId() !== accountId) throw new JimengCliError('即梦授权账号已变更，请重新提交')
   const context = [`--project-id=${projectId}`, `--node-id=${nodeId}`]
   const current = await showVideoNode(projectId, nodeId)
-  if (draftFingerprint(current) !== input.draftFingerprint) throw new JimengCliError('即梦视频草稿已变更，请重新报价')
+  if (draftFingerprint(current) !== input.draftFingerprint) throw new JimengCliError('即梦视频草稿已变更，请重新提交')
+  // The official CLI requires a short-lived token issued under an exact credit ceiling.
   const latest = await quoteNode(projectId, nodeId, accountId)
-  if (latest.credits > credits) throw new JimengCliError('即梦最新报价超过已确认的积分上限，请重新报价')
+  if (input.credits !== undefined && latest > input.credits) {
+    throw new JimengCliError('即梦最新报价超过已确认的积分上限，请重新提交')
+  }
+  const credits = input.credits ?? latest
   const approval = await invoke(['node', 'confirm', ...context, `--credit-ceiling=${credits}`])
   requirePersonalSubject(object(approval.consumptionSubject), accountId)
   const token = string(approval.creditConfirmationToken)
@@ -396,7 +394,7 @@ export async function inspectJimengVideo(projectId: string, submitId: string): P
   const state = String(operation.state).toLowerCase()
   if (state === 'failed' || state === 'awaiting_confirmation' || state === 'rejected') {
     const message = state === 'awaiting_confirmation'
-      ? '即梦未受理生成，请重新检查报价并确认'
+      ? '即梦未受理生成，请检查积分授权后重试'
       : cliError(object(operation.submissionError)).message
     return { state: 'failed', message }
   }

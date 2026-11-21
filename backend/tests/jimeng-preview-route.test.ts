@@ -68,7 +68,7 @@ const card: ScriptVideoCard = {
   prompt: '',
 }
 
-test('script-to-video binds a single approval to the exact quote and saves the generated clip on the card', {
+test('script-to-video submits directly with one internal Jimeng credit authorization and saves the generated clip', {
   skip: process.platform === 'win32' ? 'The fixture uses an executable shebang.' : false,
   timeout: 12_000,
 }, async t => {
@@ -137,30 +137,20 @@ test('script-to-video binds a single approval to the exact quote and saves the g
   assert.match(preview.payload.data.prompt, /总时长：12秒/u)
   assert.match(preview.payload.data.prompt, /镜头\s*01（0–12秒）/u)
 
-  const missing = await request(videoUrl, 'POST', body)
-  assert.equal(missing.status, 400, missing.payload.message)
-  assert.match(missing.payload.message, /报价/)
+  const unauthorized = await routes.request(videoUrl, { method: 'POST', headers, body: JSON.stringify(body) })
+  assert.equal(unauthorized.status, 403)
+  const obsolete = await fetch(`${base}${videoUrl}/quote`, { method: 'POST', headers, body: JSON.stringify(body) })
+  assert.equal(obsolete.status, 404)
+  const stale = await request(videoUrl, 'POST', { ...body, expectedCardVersion: card.version + 1 })
+  assert.equal(stale.status, 409)
   assert.equal((await commands()).length, 0)
-  const quote = await request(`${videoUrl}/quote`, 'POST', body)
-  assert.equal(quote.status, 200, quote.payload.message)
-  assert.equal(quote.payload.data.credits, 22)
-  const quotedVideo = JSON.parse(await fs.readFile(path.join(root, 'node.json'), 'utf8'))
-  assert.equal(quotedVideo.generation.durationSeconds, 12)
-  assert.equal(quotedVideo.generation.prompt, preview.payload.data.prompt)
-  assert.equal((await commands()).filter(isMoneyCommand).length, 0)
-
-  const approved = { ...body, jimengQuoteId: quote.payload.data.quote_id }
-  const modified = await request(videoUrl, 'POST', { ...approved, aspectRatio: '9:16' })
-  assert.equal(modified.status, 400, modified.payload.message)
-  assert.match(modified.payload.message, /报价/)
-  const changedDuration = await request(videoUrl, 'POST', { ...approved, duration: 13 })
-  assert.equal(changedDuration.status, 400, changedDuration.payload.message)
-  assert.match(changedDuration.payload.message, /报价/)
   assert.equal(db.select().from(schema.sysTask).all().length, 0)
-  assert.equal((await commands()).filter(isMoneyCommand).length, 0)
 
-  const started = await request(videoUrl, 'POST', approved)
+  const started = await request(videoUrl, 'POST', body)
   assert.equal(started.status, 201, started.payload.message)
+  const draftedVideo = JSON.parse(await fs.readFile(path.join(root, 'node.json'), 'utf8'))
+  assert.equal(draftedVideo.generation.durationSeconds, 12)
+  assert.equal(draftedVideo.generation.prompt, preview.payload.data.prompt)
   const taskUrl = `${projectUrl}/video/${started.payload.data.taskId}`
   const deadline = Date.now() + 6_000
   let result = await request(taskUrl)
@@ -180,11 +170,11 @@ test('script-to-video binds a single approval to the exact quote and saves the g
   assert.equal(updatedEpisode.tasks.find((task: { taskId: number }) => task.taskId === started.payload.data.taskId).duration, 12)
   assert.equal((await fs.readFile(path.join(root, localVideo.replace(/^\//, '')))).toString('hex'), '0000000c667479706d703432')
 
-  const replay = await request(videoUrl, 'POST', approved)
-  assert.equal(replay.status, 400, replay.payload.message)
-  assert.match(replay.payload.message, /报价/)
   assert.equal(db.select().from(schema.sysTask).all().length, 1)
-  const paid = (await commands()).filter(isMoneyCommand)
+  const calls = await commands()
+  assert.equal(calls.filter(entry => entry.command === 'node quote').length, 1)
+  assert.ok(!calls.some(entry => entry.command === 'auth account'))
+  const paid = calls.filter(isMoneyCommand)
   assert.deepEqual(paid.map(entry => entry.command), ['node confirm', 'node run'])
   assert.ok(paid[0].args.includes('--credit-ceiling=22'))
 })

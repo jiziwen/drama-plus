@@ -40,7 +40,8 @@ export interface ScriptVideoDeliveryCard {
 
 export interface ScriptVideoContinuation {
   previousCardId: string
-  previousTaskId: number
+  previousTaskId?: number
+  previousVideoUrl?: string
   imageUrl: string
   mode: 'first-frame' | 'reference'
 }
@@ -231,7 +232,7 @@ function voiceReferenceUrl(asset: ScriptVideoDeliveryAsset | undefined) {
 
 export function scriptVideoVoiceSource(asset: ScriptVideoDeliveryAsset | undefined) {
   if (asset?.kind !== 'character') return undefined
-  return voiceReferenceUrl(asset) ?? (asset.voiceMode === 'model' ? 'model' : 'reference')
+  return voiceReferenceUrl(asset) ?? (asset.voiceMode === 'reference' ? 'reference' : 'model')
 }
 
 function inspectScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(

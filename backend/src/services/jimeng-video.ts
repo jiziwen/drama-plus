@@ -1,4 +1,3 @@
-import { createHash, randomUUID } from 'node:crypto'
 import { mkdtemp, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -6,13 +5,11 @@ import { STORAGE_ROOT } from '../utils/paths.js'
 import type { AIConfig } from './adapters/types.js'
 import type { GenerateVideoParams } from './generation.js'
 import {
-  createJimengCanvas, createJimengVideoQuote, getJimengAccount, uploadJimengReference,
-  type JimengVideoRunInput,
+  createJimengCanvas, createJimengVideoDraft, getJimengPersonalSpaceAccountId, JimengCliError, uploadJimengReference,
 } from './jimeng-cli.js'
 import { jimengVideoModel } from './jimeng-video-models.js'
 
 export { jimengVideoModels } from './jimeng-video-models.js'
-const quoteLifetime = 10 * 60_000
 const maxReferenceBytes = 100 * 1024 * 1024
 const mediaExtensions = {
   image: ['.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif'],
@@ -20,10 +17,8 @@ const mediaExtensions = {
   audio: ['.mp3', '.wav', '.m4a', '.aac', '.ogg', '.flac'],
 }
 type Reference = { kind: keyof typeof mediaExtensions; source: string }
-type Quote = { input: JimengVideoRunInput; expiresAt: number; requestDigest: string }
-const quotes = new Map<string, Quote>()
 const canvases = new Map<string, Promise<{ projectId: string }>>()
-let pendingQuotes = 0
+let preparing = 0
 
 function draftInput(params: GenerateVideoParams, config: AIConfig) {
   const model = config.model
@@ -58,12 +53,6 @@ function draftInput(params: GenerateVideoParams, config: AIConfig) {
   if (!['16:9', '9:16', '1:1', '4:3', '3:4', '21:9'].includes(aspectRatio)) throw new Error('所选画幅不适用于即梦视频')
   if (images.length > spec.images || videos.length > spec.videos || audios.length > spec.audios || references.length > spec.maxReferences) throw new Error('即梦参考素材超出所选模型限制')
   return { model, mode, prompt, duration, aspectRatio, resolution, references }
-}
-
-type Draft = ReturnType<typeof draftInput>
-
-function requestDigest(draft: Draft, params: GenerateVideoParams, config: AIConfig) {
-  return createHash('sha256').update(JSON.stringify([config.id, params.storyboardId, params.dramaId, params.jimengScope, draft])).digest('hex')
 }
 
 async function resolveReference(ref: Reference, scratch: string, index: number) {
@@ -109,46 +98,27 @@ export function validateJimengVideo(params: GenerateVideoParams, config: AIConfi
   draftInput(params, config)
 }
 
-export async function quoteJimengVideo(params: GenerateVideoParams, config: AIConfig) {
-  if (!params.jimengScope) throw new Error('请在「剧本转视频」中为分镜获取即梦报价')
-  const draft = draftInput(params, config)
-  const account = await getJimengAccount()
-  if (!account.authenticated || !account.accountId) throw new Error(account.message || '请先在 AI 服务中连接即梦账号')
-  for (const [id, quote] of quotes) if (quote.expiresAt <= Date.now()) quotes.delete(id)
-  if (pendingQuotes >= 3 || quotes.size >= 100) throw new Error('即梦待确认报价过多，请稍后再试')
-  pendingQuotes++
+export async function prepareJimengVideo(params: GenerateVideoParams, config: AIConfig, signal?: AbortSignal) {
+  if (preparing >= 3) throw new JimengCliError('即梦正在准备的任务过多，请稍后再试')
+  preparing++
   let scratch: string | undefined
   try {
+    const draft = draftInput(params, config)
+    const accountId = await getJimengPersonalSpaceAccountId()
     scratch = await mkdtemp(path.join(tmpdir(), 'drama-jimeng-'))
     const files = await Promise.all(draft.references.map((ref, index) => resolveReference(ref, scratch!, index)))
-    const { projectId } = await getCanvas(String(account.accountId))
+    signal?.throwIfAborted()
+    const { projectId } = await getCanvas(accountId)
     const references = []
     for (const [index, ref] of draft.references.entries()) {
+      signal?.throwIfAborted()
       references.push({ kind: ref.kind, resourceId: await uploadJimengReference(projectId, files[index], ref.kind) })
     }
+    signal?.throwIfAborted()
     const { references: _references, ...input } = draft
-    const quote = await createJimengVideoQuote({ ...input, projectId, prompt: providerPrompt(input.prompt, references), references })
-    if (String(quote.accountId) !== String(account.accountId)) throw new Error('即梦报价账号有变动，请重新报价')
-    const id = randomUUID()
-    const expiresAt = Date.now() + quoteLifetime
-    quotes.set(id, { input: { ...quote, submitId: randomUUID() }, expiresAt, requestDigest: requestDigest(draft, params, config) })
-    return { quote_id: id, credits: quote.credits, model: draft.model, expires_at: new Date(expiresAt).toISOString() }
+    return await createJimengVideoDraft({ ...input, projectId, prompt: providerPrompt(input.prompt, references), references }, accountId)
   } finally {
-    pendingQuotes--
     if (scratch) await rm(scratch, { recursive: true, force: true }).catch(() => {})
+    preparing--
   }
-}
-
-export function claimJimengVideoQuote(params: GenerateVideoParams, config: AIConfig) {
-  const id = params.jimengQuoteId
-  const quote = id ? quotes.get(id) : undefined
-  if (!params.jimengScope || !quote || quote.expiresAt <= Date.now() || requestDigest(draftInput(params, config), params, config) !== quote.requestDigest) {
-    throw new JimengQuoteRequiredError()
-  }
-  quotes.delete(id!)
-  return quote.input
-}
-
-export class JimengQuoteRequiredError extends Error {
-  constructor() { super('请获取当前分镜的即梦积分报价，并确认后再生成') }
 }

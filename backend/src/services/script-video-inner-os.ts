@@ -1,3 +1,5 @@
+import { mapScriptVideoSoundLine, speechClosers } from './script-video-foley.js'
+
 export const SCRIPT_VIDEO_INNER_OS_DIRECTION = '（内心 OS，角色闭口，嘴唇不动，不对口型）'
 const bareOs = /(?:内心(?:独白|声|[ \t]*O\.?S\.?)?|心声|(?:^|[ \t])O\.?S\.?)[ \t]*$/iu
 const cueOs = /(?:^|[ \t，,、；;／/])(?:内心(?:独白|声|[ \t]*O\.?S\.?)?|心声|O\.?S\.?)(?=$|[ \t，,、；;／/])/iu
@@ -48,17 +50,20 @@ export function annotateScriptVideoInnerOs(
   const start = protectedPrefix && prompt.startsWith(protectedPrefix) ? protectedPrefix.length : 0
   return prompt.slice(0, start) + prompt.slice(start).replace(/[^\r\n]+/gu, line => {
     const heading = soundHeading.exec(line)?.[0] || ''
-    const body = line.slice(heading.length)
-    const first = speaker.exec(body)
-    if (!heading && (!first || !hasScriptVideoInnerOs(first[0]) &&
-        !/^[：:][ \t]*[“「『"{]/u.test(body.slice(first[0].length)))) return line
-    let result = heading
-    let cursor = 0
-    for (const match of body.matchAll(quotedOrSeparator)) {
-      if (match[0] !== '；' && match[0] !== ';') continue
-      result += annotateSpeaker(body.slice(cursor, match.index), knownSpeakers) + match[0]
-      cursor = match.index + 1
-    }
-    return result + annotateSpeaker(body.slice(cursor), knownSpeakers)
+    return heading + mapScriptVideoSoundLine(line.slice(heading.length), body => {
+      const first = speaker.exec(body)
+      if (!heading && (!first || !hasScriptVideoInnerOs(first[0]) &&
+          !/^[：:][ \t]*[“「『"{]/u.test(body.slice(first[0].length)))) return body
+      let result = '', cursor = 0
+      for (const match of body.matchAll(quotedOrSeparator)) {
+        const token = match[0]
+        if (token !== '；' && token !== ';' && !(token.length > 1 && speechClosers[token[0]] === token.at(-1))) continue
+        const end = match.index + token.length
+        const separator = /^[ \t，,。.!！？?]*/u.exec(body.slice(end))![0]
+        result += annotateSpeaker(body.slice(cursor, end), knownSpeakers) + separator
+        cursor = end + separator.length
+      }
+      return result + annotateSpeaker(body.slice(cursor), knownSpeakers)
+    })
   })
 }

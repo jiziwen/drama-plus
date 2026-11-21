@@ -5,6 +5,8 @@ import { runInNewContext } from 'node:vm'
 import { computed, reactive, ref } from 'vue'
 import ts from 'typescript'
 import { officialScriptVideoUrl } from '../../backend/src/services/script-video-versions.ts'
+import { buildScriptVideoDelivery, scriptVideoDeliveryTags } from '../../backend/src/services/script-video-delivery.ts'
+import { hasScriptVideoPromptBody, splitScriptVideoPromptStyle } from '../../backend/src/services/script-video-style.ts'
 
 const source = readFileSync(new URL('../app/pages/preview/script-to-video.vue', import.meta.url), 'utf8')
 const start = source.indexOf('const taskActions =')
@@ -24,7 +26,7 @@ class ScriptVideoRequestError extends Error {
 const failed = (id, cardId, code, taskId) => ({ id, cardId, code, taskId, status: 'failed', error: '通道不可用' })
 
 function controller(initialTasks = [], {
-  onLookup, onSubmit, onFinalPrompt, onContinuations, clipboardWrite, onSave, missingVoices = () => [],
+  onLookup, onSubmit, onFinalPrompt, onContinuations, clipboardWrite, onSave, onRefresh, missingVoices = () => [],
   connections = [], lightingScenes = {}, cardIds = ['a', 'b'],
   remoteActiveIds = [], queueTimer = setInterval,
 } = {}) {
@@ -40,27 +42,49 @@ function controller(initialTasks = [], {
   const dialog = ref(null)
   const toasts = []
   const copied = []
-  const value = runInNewContext(controllerSource + '\n;({ requestVideoGeneration, cancelVideoGeneration, confirmVideoRetry, pendingVideoRetry, videoTaskError, showFinalPrompt, copyPromptPreview, promptPreview, batchVideoVoiceWarning, videoVoiceWarningForCard, activeVideoRun, deliveryContinuations })', {
+  const currentProject = ref(project), currentEpisode = ref(episode), projects = ref([project])
+  const selectedProjectId = ref(project.id), selectedEpisodeId = ref(episode.id)
+  const episodeKey = computed(() => `${selectedProjectId.value}/${selectedEpisodeId.value}`)
+  const refreshes = []
+  function navigate(otherProject = false) {
+    const otherEpisode = { ...episode, id: 'other-episode', modelName: 'other-model', resolution: '1080P', tasks: [], cards: [] }
+    const other = otherProject ? { id: 'other-project', assets: [], episodes: [otherEpisode] } : project
+    if (otherProject) projects.value.push(other)
+    else project.episodes.push(otherEpisode)
+    currentProject.value = other
+    currentEpisode.value = otherEpisode
+    selectedProjectId.value = other.id
+    selectedEpisodeId.value = otherEpisode.id
+    return { project: other, episode: otherEpisode }
+  }
+  function navigateBack() {
+    currentProject.value = project
+    currentEpisode.value = episode
+    selectedProjectId.value = project.id
+    selectedEpisodeId.value = episode.id
+  }
+  const value = runInNewContext(controllerSource + '\n;({ requestVideoGeneration, cancelVideoGeneration, confirmVideoRetry, pendingVideoRetry, videoTaskError, showFinalPrompt, copyPromptPreview, promptPreview, batchVideoVoiceWarning, videoVoiceWarningForCard, activeVideoRun, activeVideoRequests, deliveryContinuations })', {
     ref, computed, reactive, dialog, activeCardIds: ref(remoteActiveIds), requestActivityRefresh: () => {}, setInterval: queueTimer, clearInterval, ScriptVideoRequestError, alive: true, AbortController, AbortSignal, requestController: new AbortController(),
     officialScriptVideoUrl,
     outputMode: ref('internal'), promptReturnFocus: null,
-    episodeKey: ref('project/episode'), previewId: () => 'video-request-fixture',
+    episodeKey, previewId: () => 'video-request-fixture',
     setTimeout: done => queueMicrotask(done), clearTimeout,
-    episodeLock: { owns: (projectId, episodeId) => leaseActive.value && projectId === project.id && episodeId === episode.id },
+    episodeLock: { owns: (projectId, episodeId) => leaseActive.value && projectId === selectedProjectId.value && episodeId === selectedEpisodeId.value },
     getScriptVideoContinuationScene: (previous, next) => connections.includes(`${previous.id}/${next.id}`),
     buildScriptVideoLightingPlan: () => Object.fromEntries(Object.entries(lightingScenes).map(([id, sceneKey]) =>
       [id, [{ sceneKey }]])),
-    currentProject: ref(project), currentEpisode: ref(episode), projects: ref([project]), tasks: computed(() => episode.tasks),
-    cards: computed(() => episode.cards), assets: computed(() => project.assets),
-    saveProjectNow: async () => { await onSave?.() }, refreshProject: async () => {},
-    selectedProjectId: ref(project.id), selectedEpisodeId: ref(episode.id),
+    currentProject, currentEpisode, projects, tasks: computed(() => currentEpisode.value.tasks),
+    cards: computed(() => currentEpisode.value.cards), assets: computed(() => currentProject.value.assets),
+    saveProjectNow: async id => { await onSave?.(id) }, refreshProject: async (projectId, episodeId) => { refreshes.push({ projectId, episodeId }); await onRefresh?.(projectId, episodeId) },
+    selectedProjectId, selectedEpisodeId,
     navigator: { onLine: true, clipboard: { writeText: async text => {
       await clipboardWrite?.(text)
       copied.push(text)
     } } },
     validatePreviewCards: () => ({ ok: true }),
     getScriptVideoMissingVoices: missingVoices,
-    buildScriptVideoDelivery: () => ({ voices: [] }),
+    buildScriptVideoDelivery: (card, assets, options) => options.preview ? buildScriptVideoDelivery(card, assets, options) : { voices: [] },
+    scriptVideoDeliveryTags, hasScriptVideoPromptBody, splitScriptVideoPromptStyle,
     toast: { error: message => toasts.push(message), success: () => {}, info: message => toasts.push(message) },
     scriptVideoRequest: async (path, method = 'GET', body) => {
       calls.push({ path, method, body })
@@ -75,7 +99,7 @@ function controller(initialTasks = [], {
       return onSubmit?.(path, body, episode) || { taskId: 21 }
     },
   })
-  return { ...value, dialog, calls, episode, project, toasts, copied, leaseActive,
+  return { ...value, dialog, calls, episode, project, toasts, copied, leaseActive, navigate, navigateBack, refreshes,
     get submissions() { return calls.filter(call => call.method === 'POST' && /\/cards\/[^/]+\/video$/.test(call.path)) },
   }
 }
@@ -156,7 +180,7 @@ test('切换到时长上限更低的模型时，超出范围的生成设置会�
   assert.equal(app.submissions[0].body.duration, 15)
 })
 
-test('提交即梦前保存时已离开原分集，取消提交', async () => {
+test('已发起的单段生成在保存期间离开分集后仍提交原片段', async () => {
   let saves = 0
   const app = controller([], { onSave: async () => {
     if (++saves === 2) app.leaseActive.value = false
@@ -165,7 +189,101 @@ test('提交即梦前保存时已离开原分集，取消提交', async () => {
   app.episode.modelName = 'jimeng-seedance-2.5'
   await app.requestVideoGeneration(['a'])
   assert.equal(saves, 2)
-  assert.equal(app.submissions.length, 0)
+  assert.equal(app.submissions.length, 1)
+  assert.match(app.submissions[0].path, /\/projects\/project\/episodes\/episode\/cards\/a\/video$/u)
+})
+
+for (const otherProject of [false, true]) test(otherProject ? '批量提交中切换项目后继续提交原分集的其余片段' : '批量提交中切换分集后继续提交原分集的其余片段', async () => {
+  let submittedFirst, finishFirst
+  const started = new Promise(resolve => { submittedFirst = resolve })
+  const app = controller([], { onSubmit(path) {
+    if (path.endsWith('/a/video')) {
+      submittedFirst()
+      return new Promise(resolve => { finishFirst = resolve })
+    }
+    return { taskId: 22 }
+  } })
+  const generation = app.requestVideoGeneration(['a', 'b'])
+  await started
+  const other = app.navigate(otherProject)
+  assert.equal(app.activeVideoRun.value, undefined)
+  assert.ok(app.activeVideoRequests.value.has('project/episode'))
+  finishFirst({ taskId: 21 })
+  await generation
+  assert.equal(app.submissions.length, 2)
+  assert.ok(app.submissions.every(call => call.path.startsWith('/projects/project/episodes/episode/cards/')))
+  assert.ok(app.submissions.every(call => call.body.model === 'custom-model' && call.body.resolution === '720p'))
+  assert.ok(app.refreshes.every(call => call.projectId === 'project' && call.episodeId === 'episode'))
+  assert.equal(other.episode.tasks.length, 0)
+})
+
+test('等待上一段尾帧期间切换分集，前段完成后仍会提交原分集续接段', async () => {
+  let startedLookup, finishLookup
+  const started = new Promise(resolve => { startedLookup = resolve })
+  const app = controller([], { connections: ['a/b'], onLookup() {
+    startedLookup()
+    return new Promise(resolve => { finishLookup = resolve })
+  } })
+  const generation = app.requestVideoGeneration(['a', 'b'])
+  await started
+  app.navigate()
+  finishLookup({ status: 'completed', videoUrl: '/static/videos/task-21.mp4' })
+  await generation
+  assert.equal(app.submissions.length, 2)
+  assert.match(app.submissions[1].path, /\/projects\/project\/episodes\/episode\/cards\/b\/video$/u)
+})
+
+test('视频已成功提交后缓存刷新失败，仍保留任务编号并继续等待续接段', async () => {
+  const app = controller([], { connections: ['a/b'], onRefresh() { throw new Error('临时读取失败') } })
+  await app.requestVideoGeneration(['a', 'b'])
+  assert.equal(app.submissions.length, 2)
+  assert.ok(app.calls.some(call => call.method === 'GET' && call.path.endsWith('/video/21')))
+})
+
+test('切走后再返回明确取消批次，未提交的后续片段不会继续生成', async () => {
+  let submittedFirst, finishFirst
+  const started = new Promise(resolve => { submittedFirst = resolve })
+  const app = controller([], { onSubmit() {
+    submittedFirst()
+    return new Promise(resolve => { finishFirst = resolve })
+  } })
+  const generation = app.requestVideoGeneration(['a', 'b'])
+  await started
+  app.navigate()
+  app.navigateBack()
+  await app.cancelVideoGeneration()
+  finishFirst({ taskId: 21 })
+  await generation
+  assert.equal(app.submissions.length, 1)
+  assert.ok(app.calls.some(call => call.path.endsWith('/video-cancel')))
+})
+
+test('原集后台出现未知提交时不在新集弹确认，返回原集主动重试后才允许重新提交', async () => {
+  let startedSubmit, rejectFirst, first = true
+  const started = new Promise(resolve => { startedSubmit = resolve })
+  const app = controller([], { onSubmit(path) {
+    if (path.endsWith('/a/video') && first) {
+      first = false
+      startedSubmit()
+      return new Promise((_resolve, reject) => { rejectFirst = reject })
+    }
+    return { taskId: 22 }
+  } })
+  const generation = app.requestVideoGeneration(['a', 'b'])
+  await started
+  app.navigate()
+  app.episode.tasks.push(failed('late-unknown', 'a', 'SUBMISSION_UNKNOWN'))
+  rejectFirst(new ScriptVideoRequestError('提交结果未知', 409, 'SUBMISSION_UNKNOWN'))
+  await generation
+  assert.equal(app.submissions.length, 2)
+  assert.equal(app.dialog.value, null)
+  assert.equal(app.pendingVideoRetry.value, null)
+  app.navigateBack()
+  await app.requestVideoGeneration(['a'])
+  assert.equal(app.dialog.value, 'video-retry')
+  assert.equal(app.submissions.length, 2)
+  await app.confirmVideoRetry(true)
+  assert.equal(app.submissions.length, 3)
 })
 
 test('缓存中的未知任务先读本地状态，查明已拒绝后直接重新提交', async () => {
@@ -346,6 +464,79 @@ test('当前预览和任务记录都在弹框内按显示文字原样复制', as
   assert.equal(app.promptPreview.value.copied, true)
   assert.equal(app.calls.length, 2)
   assert.equal(app.submissions.length, 0)
+})
+
+test('素材引用警告与最终提示词一起返回，仍可原样复制正文且不提交生成', async () => {
+  const warnings = ['请确认本段引用的角色「吴良」。', '折扇缺少参考图。']
+  const prompt = '画面与动作：吴良展开折扇。\n对白／音效：〈折扇轻响〉'
+  const app = controller([], { onFinalPrompt: () => finalDelivery({ prompt, warnings }) })
+  await app.showFinalPrompt({ cardId: 'a', title: '当前分镜' })
+  const preview = app.promptPreview.value
+  assert.equal(app.dialog.value, 'prompt-preview')
+  assert.equal(preview.context, '待补齐素材 · custom-model')
+  assert.deepEqual([...preview.delivery.warnings], warnings)
+  assert.equal(preview.delivery.prompt, prompt)
+  assert.equal(preview.pending, false)
+  assert.equal(preview.error, '')
+  await app.copyPromptPreview()
+  assert.deepEqual(app.copied, [prompt])
+  assert.deepEqual(app.calls.map(call => call.path), ['/projects/project/episodes/episode/final-prompt'])
+  assert.equal(app.submissions.length, 0)
+})
+
+test('保存遇到已删除素材时直接预览和复制本机当前草稿，保留现存素材编号', async () => {
+  const message = '引用的素材已移除，请更新本地草稿后再保存'
+  const app = controller([], {
+    connections: ['a/b'],
+    onSave() { throw new ScriptVideoRequestError(message, 409, 'ASSET_REMOVED') },
+  })
+  const card = app.episode.cards[1]
+  app.episode.modelName = 'wf-minimax-h3'
+  app.episode.modelProvider = 'minimax'
+  app.project.assets.push(
+    { id: 'wu', kind: 'character', name: '吴良', image: '/static/uploads/wu.png', voiceAudio: { name: '吴良声音', url: '/static/uploads/wu.wav' } },
+    { id: 'fan', kind: 'prop', name: '折扇', image: '/static/uploads/fan.png' },
+  )
+  const action = '@吴良展开@折扇。'
+  const dialogue = '吴良：“这句只有本机草稿有。”'
+  Object.assign(card, {
+    assetIds: ['removed', 'fan', 'wu'], shots: [{ duration: 30, action, dialogue }],
+    prompt: '镜头 01（0–30秒）\n画面与动作：' + action + '\n对白／音效：' + dialogue,
+  })
+  const before = structuredClone(card)
+  await app.showFinalPrompt({ cardId: 'b', title: '待同步分镜' })
+  const preview = app.promptPreview.value
+  assert.equal(preview.context, '本机草稿 · 尚未同步')
+  assert.equal(preview.error, '')
+  assert.ok(preview.delivery.warnings.includes(message))
+  assert.ok(preview.delivery.warnings.some(item => item.includes('removed')))
+  assert.match(preview.delivery.prompt, /这句只有本机草稿有/u)
+  assert.deepEqual(Array.from(preview.delivery.images, ref => [ref.index, ref.tag, ref.url]), [
+    [1, '<Picture 1>', '/static/uploads/fan.png'], [2, '<Picture 2>', '/static/uploads/wu.png'],
+  ])
+  assert.deepEqual(Array.from(preview.delivery.audios, ref => [ref.index, ref.tag, ref.name, ref.url]), [
+    [1, '<Audio 1>', '吴良', '/static/uploads/wu.wav'],
+  ])
+  assert.match(preview.delivery.pending, /尾帧/u)
+  assert.equal(preview.delivery.firstFrame, undefined)
+  await app.copyPromptPreview()
+  assert.deepEqual(app.copied, [preview.delivery.prompt])
+  assert.deepEqual(card, before)
+  assert.equal(app.calls.length, 0)
+})
+
+test('登录、普通保存冲突和网络错误仍然中止预览，不用本机草稿代替', async () => {
+  for (const error of [
+    new ScriptVideoRequestError('请重新登录', 401),
+    new ScriptVideoRequestError('版本冲突', 409, 'CONFLICT'),
+    new Error('网络断开'),
+  ]) {
+    const app = controller([], { onSave() { throw error } })
+    await app.showFinalPrompt({ cardId: 'a', title: '当前分镜' })
+    assert.equal(app.promptPreview.value.delivery, null)
+    assert.ok(app.promptPreview.value.error)
+    assert.equal(app.calls.length, 0)
+  }
 })
 
 test('历史任务可单独查看首帧，当前设置可显示等待及缺音频状态', async () => {

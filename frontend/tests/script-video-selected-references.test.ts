@@ -8,7 +8,7 @@ import ts from 'typescript'
 import * as preview from '../app/utils/scriptVideoPreview'
 import * as promptVoiceView from '../app/utils/scriptVideoPromptVoiceView'
 import * as validation from '../app/utils/scriptVideoPreviewValidation'
-import { getScriptVideoPromptVoices } from '../../backend/src/services/script-video-delivery'
+import { buildScriptVideoDelivery, getScriptVideoPromptVoices } from '../../backend/src/services/script-video-delivery'
 import { getScriptVideoStylePreset, scriptVideoPromptStylePrefix, splitScriptVideoPromptStyle } from '../../backend/src/services/script-video-style'
 
 const filename = 'ScriptVideoPreviewEditor.vue'
@@ -122,6 +122,77 @@ test('直接修改视频提示词时让引用按新提示词重新判定', async
   assert.equal(editor.props.card.shots[0]!.speakerAssetIds, undefined)
   assert.equal(editor.props.card.openingRecap, '侍卫_夜行在前镜退场。')
   assert.deepEqual(Array.from(editor.props.card.assetIds), ['night', 'guard', 'other'])
+})
+
+test('添加复述和等待对象时保留逐镜绑定，手工改选只更新本镜配图', async () => {
+  const editor = setup(['guard', 'night'])
+  const prompt = [
+    '人物：侍卫_夜行在话中被提及。',
+    '镜头 01（0–1秒）',
+    '画面与动作：@侍卫在门边。',
+    '对白／音效：@侍卫：“侍卫_夜行已经离开了。”',
+    '镜头 02（1–3秒）',
+    '画面与动作：@侍卫_夜行从墙后走过。',
+    '对白／音效：无对白。',
+  ].join('\n')
+  Object.assign(editor.props.card, { prompt, shots: [
+    { id: 'shot-1', duration: 1, camera: '近景', action: '@侍卫在门边。', dialogue: '@侍卫：“侍卫_夜行已经离开了。”',
+      visualAssetIds: ['guard'], speakerAssetIds: ['guard'] },
+    { id: 'shot-2', duration: 2, camera: '中景', action: '@侍卫_夜行从墙后走过。', dialogue: '无对白。',
+      visualAssetIds: ['night'], speakerAssetIds: [] },
+  ] })
+  const textarea = () => editor.nodes().find(node => node.type === menu)
+  const recapEdit = prompt.replace('在话中被提及', '只在报信中被提及')
+  await editPrompt(textarea(), recapEdit)
+  assert.deepEqual(Array.from(editor.props.card.shots[0]!.visualAssetIds ?? []), ['guard'])
+  assert.deepEqual(Array.from(editor.props.card.shots[0]!.speakerAssetIds ?? []), ['guard'])
+  assert.deepEqual(Array.from(editor.props.card.shots[1]!.visualAssetIds ?? []), ['night'])
+
+  const actionEdit = recapEdit.replace('@侍卫在门边。', '@侍卫在门边，继续等待第三人。')
+  await editPrompt(textarea(), actionEdit)
+  textarea().props.onCommit(actionEdit)
+  assert.deepEqual(Array.from(editor.props.card.shots[0]!.visualAssetIds ?? []), ['guard'])
+  assert.deepEqual(new Set(validation.getPreviewMaterialUse(editor.props.card, assets, {}).imageIds), new Set(['guard', 'night']))
+  assert.match(editor.props.card.prompt, /继续等待第三人。/u)
+  assert.doesNotMatch(editor.props.card.prompt, /@第三人/u)
+
+  const manualEdit = actionEdit.replace('@侍卫在门边', '@第三人在门边')
+  await editPrompt(textarea(), manualEdit)
+  assert.deepEqual(Array.from(editor.props.card.shots[0]!.speakerAssetIds ?? []), ['guard'])
+  assert.deepEqual(Array.from(editor.props.card.shots[1]!.visualAssetIds ?? []), ['night'])
+  const used = validation.getPreviewMaterialUse(editor.props.card, assets, {})
+  assert.deepEqual(new Set(used.imageIds), new Set(['other', 'night']))
+  assert.deepEqual(used.speakerIds, ['guard'])
+})
+
+test('正式分镜的补充画面引用立即出现在参考素材，并带入最终提示词', async () => {
+  const pendant: preview.PreviewAsset = { id: 'pendant', name: '玉佩', kind: 'prop', image: '/static/pendant.png' }
+  const assetList = [...assets, pendant]
+  const base = '镜头 01（0–3秒）\n画面与动作：@侍卫 站在门边。\n对白／音效：@侍卫：“@第三人 还没来。”'
+  for (const prompt of [
+    base + '\n补充镜头指示：近距离展示 @玉佩 。',
+    base + '\n近距离展示 @玉佩 。',
+    base.replace('@侍卫：“@第三人 还没来。”', '无。') + '\n桌面摆放 @玉佩 。',
+    base.replace('@侍卫：“@第三人 还没来。”', '无对白。仅保留旗布轻响 @玉佩 '),
+    base + '；画面与动作：手持 @玉佩 。',
+    '独立生成：近距离展示 @玉佩 。\n' + base,
+    '参考图：@玉佩 \n' + base,
+  ]) {
+    const editor = setup(['guard'], { assetList })
+    Object.assign(editor.props.card, { prompt: base, shots: [
+      { id: 'shot', duration: 3, camera: '中景', action: '侍卫站在门边。', dialogue: '侍卫：“@第三人 还没来。”',
+        visualAssetIds: ['guard'], speakerAssetIds: ['guard'] },
+    ] })
+    await editPrompt(editor.nodes().find(n => n.type === menu), prompt)
+    assert.deepEqual(Array.from(editor.props.card.assetIds), ['guard', 'pendant'])
+    assert.deepEqual(editor.names(), ['移除参考素材 侍卫', '移除参考素材 玉佩'])
+    assert.match(flatten(editor.nodes().find(n => n.props?.['aria-label'] === '查看参考图 玉佩'))
+      .find(n => n.type === 'small')?.children, /配图/)
+    const result = buildScriptVideoDelivery(editor.props.card, assetList)
+    assert.deepEqual(result.images.map(asset => asset.id), ['guard', 'pendant'])
+    assert.match(result.prompt, /@图片2玉佩/u)
+    assert.doesNotMatch(result.prompt, /@图片\d+第三人/u)
+  }
 })
 
 test('冷暖色预设折叠显示，编辑正文后仍保存完整风格内容与素材引用', async () => {

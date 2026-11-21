@@ -84,11 +84,16 @@ export function replaceScriptVideoPromptStyle(
     const specs = production?.visualSpecs?.split(/\r\n|[\r\n]/u) || []
     const lines = preface.match(/[^\r\n]*(?:\r\n|[\r\n]|$)/gu) || []
     const content = (line: string) => line.replace(/(?:\r\n|[\r\n])$/u, '')
+    const knownSpecsAt = (index: number) => !!specs.length &&
+      content(lines[index] || '') === '画面规格：' + specs[0] &&
+      specs.slice(1).every((value, offset) => content(lines[index + offset + 1] || '') === value)
     let preserved = ''
     let inGeneratedHeader = false
     for (let index = 0; index < lines.length; index++) {
       const line = content(lines[index])
-      if (/^参考图：@/u.test(line)) {
+      const next = content(lines[index + 1] || '')
+      if (/^参考图：@/u.test(line) && (knownSpecsAt(index + 1) ||
+        /^画面规格：.*视觉造型以本段已绑定的资产参考图为准。/u.test(next))) {
         inGeneratedHeader = true
         continue
       }
@@ -100,20 +105,14 @@ export function replaceScriptVideoPromptStyle(
         if (matchesRecording || (!production?.characters?.length && inGeneratedHeader)) continue
       }
       if (line.startsWith('画面规格：')) {
-        const knownSpecs =
-          line === '画面规格：' + specs[0] &&
-          specs.slice(1).every((value, offset) => {
-            const next = lines[index + offset + 1]
-            return next !== undefined && content(next) === value
-          })
-        if (knownSpecs) {
+        if (knownSpecsAt(index)) {
           inGeneratedHeader = true
           index += specs.length - 1
           continue
         }
-        // A historical header can also be identified by its adjacent reference
-        // list when the original production snapshot is no longer available.
-        if (index > 0 && /^参考图：@/u.test(lines[index - 1])) continue
+        // Only omit specs without a production snapshot when the previous
+        // reference line was recognized as part of the old generated header.
+        if (inGeneratedHeader && index > 0 && /^参考图：@/u.test(lines[index - 1])) continue
       }
       inGeneratedHeader = false
       preserved += lines[index]
@@ -166,7 +165,7 @@ export function renderScriptVideoCardReferences(
       ...(production?.characters?.map(role => role.name) ?? [])],
   })
   const annotated = annotateScriptVideoAssets(prompt, assets, card.assetIds, {
-    characters: card.characters, cast: production?.characters, excludedIds: card.excludedAssetIds, autoBind,
+    card, characters: card.characters, cast: production?.characters, excludedIds: card.excludedAssetIds, autoBind,
   })
   return { prompt: prependStyle(annotated.text, style), usedIds: annotated.assetIds, contextAssetIds: annotated.contextAssetIds }
 }

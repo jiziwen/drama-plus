@@ -82,16 +82,20 @@ export function splitScriptVideoHandoff(text: string): { body: string; notes: st
 function soundRanges(line: string, origin: number): ScriptVideoAssetScopeRange[] {
   const result: ScriptVideoAssetScopeRange[] = []
   const spans = enclosedText(line)
-  const pauses = [...line.matchAll(/[；;，,。！？!?]/gu)].flatMap(match => {
+  const cut = Math.min(line.length,
+    ...[...line.matchAll(nextSegmentHeading), ...line.matchAll(nextSegmentSentence)]
+      .filter(match => outside(spans, match.index!)).map(match => match.index!))
+  const current = line.slice(0, cut)
+  const pauses = [...current.matchAll(/[；;，,。！？!?]/gu)].flatMap(match => {
     const index = match.index!
     if (!outside(spans, index)) return []
-    const after = line.slice(index + 1)
+    const after = current.slice(index + 1)
     return /[；;]/u.test(match[0]) || foleyHeading.test(after) || visualHeading.test(after) ||
       speakerHeading.test(after) || /^\s*</u.test(after) ? [index] : []
   })
   let start = 0
-  for (const end of [...pauses, line.length]) {
-    const value = line.slice(start, end)
+  for (const end of [...pauses, current.length]) {
+    const value = current.slice(start, end)
     // A same-line visual column starts a new context, even if a manual edit
     // uses punctuation instead of a newline between the two columns.
     if (visualHeading.test(value)) break
@@ -106,6 +110,7 @@ function soundRanges(line: string, origin: number): ScriptVideoAssetScopeRange[]
     }
     start = end + 1
   }
+  if (cut < line.length) result.push({ start: origin + cut, end: origin + line.length, kind: 'handoff' })
   return result
 }
 
@@ -188,5 +193,5 @@ export function isScriptVideoNonvisualMention(text: string, start: number, end: 
   if (notVisiting.test(before) || proposedDestination.test(before) || unseenReference.test(before)) return true
   const after = text.slice(end, end + 32)
   if (searchOrRecall.test(before) && !realizedTarget.test(after)) return true
-  return /^[ \t]*[（(](?:仅(?:提及|对白提及|台词提及)|未到达|不出镜|不拍摄)[）)]/u.test(after)
+  return /^[ \t]*(?:[（(](?:仅(?:提及|对白提及|台词提及)|未到达|不出镜|不入画|不拍摄)[）)]|[只仅](?:在(?:对白|台词|谈话|话)中)?(?:被)?提(?:及|到)|[，,][ \t]*(?:不入画|不出镜|没有出镜)(?=[，,、。；;]|$))/u.test(after)
 }

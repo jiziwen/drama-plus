@@ -45,6 +45,54 @@ test('开启后允许模型为没有参考音频的 OS 生成音色，上传音�
   assert.doesNotMatch(delivery.prompt, /(?:阿宁_常服|小禾|阿川)由模型生成音色/u)
 })
 
+test('一句齐声对白按各个已绑定角色的配音设置处理', () => {
+  const group = { id: 'group', name: '七天_素材/角色/残障乞讨孩童/群体', kind: 'character',
+    originalName: '群体', sourcePath: '七天_素材/角色/残障乞讨孩童/群体.png',
+    image: '/static/uploads/group.png', voiceMode: 'model' as const }
+  const child = { id: 'child', name: '断腿小乞丐', kind: 'character',
+    image: '/static/uploads/child.png', voiceMode: 'model' as const }
+  const voices = [group, child]
+  const cue = `@${group.name} 、@${child.name} （稚嫩齐喊）：“天，上天的天！”`
+  const card = { ...makeCard(cue), assetIds: voices.map(asset => asset.id),
+    prompt: `镜头 01（0–10秒）\n画面与动作：@${group.name} 和 @${child.name} 坐在草席上。\n对白／音效：${cue}` }
+  const jimeng = { provider: 'jimeng', model: 'jimeng-seedance-2.5' }
+  assert.deepEqual(getScriptVideoMissingVoices(card, voices, jimeng), [])
+  const delivery = buildScriptVideoDelivery(card, voices, jimeng)
+  assert.deepEqual(delivery.voices, [])
+  assert.match(delivery.prompt, /@图片1七天_素材\/角色\/残障乞讨孩童\/群体由模型生成音色/u)
+  assert.match(delivery.prompt, /@图片2断腿小乞丐由模型生成音色/u)
+  assert.match(delivery.prompt, /@图片1七天_素材\/角色\/残障乞讨孩童\/群体 、@图片2断腿小乞丐 （稚嫩齐喊）：“天，上天的天！”/u)
+  const seedance = buildScriptVideoDelivery(card, voices, { provider: 'volcengine', model: 'doubao-seedance-2-5-260628' })
+  assert.match(seedance.prompt, /@图片1七天_素材\/角色\/残障乞讨孩童\/群体 、@图片2断腿小乞丐 （稚嫩齐喊）：\{天，上天的天！\}/u)
+  assert.doesNotMatch(seedance.prompt, /是本镜画内发声者/u)
+
+  const audioRequired = { ...child, voiceMode: 'reference' as const }
+  assert.deepEqual(getScriptVideoMissingVoices(card, [group, audioRequired], jimeng), [child.name])
+  const withAudio = buildScriptVideoDelivery(card, [group, { ...child, voiceAudio: audio }], jimeng)
+  assert.deepEqual(withAudio.voices.map(voice => voice.asset.id), [child.id])
+  assert.match(withAudio.prompt, /@图片2断腿小乞丐（音色参考@音频1）/u)
+  assert.doesNotMatch(withAudio.prompt, /断腿小乞丐由模型生成音色/u)
+
+  const normalized = card.prompt.replace(cue, cue.replace(group.name, '残障乞讨孩童／群体'))
+  assert.deepEqual(getScriptVideoMissingVoices({ ...card, prompt: normalized }, voices), [])
+  const unknown = card.prompt.replace(cue, cue.replace(`@${child.name}`, '断腿小乞丐_补丁布衣'))
+  assert.deepEqual(getScriptVideoMissingVoices({ ...card, prompt: unknown }, voices), ['断腿小乞丐_补丁布衣'])
+})
+
+test('剧本造型名缺少对应资产时需要手动指定角色', () => {
+  const base = { id: 'child', name: '断腿小乞丐', kind: 'character', image: '/static/uploads/child.png', voiceMode: 'model' as const }
+  const variant = { ...base, id: 'costume', name: '断腿小乞丐_补丁布衣', voiceMode: 'reference' as const }
+  const card = { ...makeCard('断腿小乞丐_补丁布衣：“好。”'), assetIds: [base.id] }
+  assert.deepEqual(getScriptVideoMissingVoices(card, [base]), [variant.name])
+  const explicit = { ...card, prompt: card.prompt.replace(variant.name, `@${base.name} `) }
+  assert.deepEqual(getScriptVideoMissingVoices(explicit, [base]), [])
+  assert.deepEqual(getScriptVideoMissingVoices(card, [base, variant]), [variant.name])
+  const explicitPicture = { ...card, prompt: card.prompt.replace('@阿川把', `@${variant.name} 把`) }
+  assert.throws(() => buildScriptVideoDelivery(explicitPicture, [base]), /找不到素材 @断腿小乞丐_补丁布衣/u)
+  const chibi = { ...card, prompt: card.prompt.replace(variant.name, '断腿小乞丐_补丁布衣_3DQ版') }
+  assert.deepEqual(getScriptVideoMissingVoices(chibi, [base]), ['断腿小乞丐_补丁布衣_3DQ版'])
+})
+
 test('识别没有角色资产的发声人，忽略系统 OV、字幕及动作音效', () => {
   const card = makeCard('阿川：无对白；系统面板（OV）：“连接完成。”；字幕：“不要出门。”；巡夜人（OS）：“有人来过。”；音效：木门撞击。')
   assert.deepEqual(getScriptVideoMissingVoices(card, assets, options), ['巡夜人'])

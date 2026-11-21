@@ -37,7 +37,7 @@ import {
 import { getScriptVideoMissingVoices, getScriptVideoVoiceInputs } from '../services/script-video-delivery.js'
 import { isScriptVideoGenerationDuration } from '../services/script-video-capabilities.js'
 import { isSeedance25Model } from '../services/seedance-models.js'
-import { assertScriptVideoFormal, getScriptVideoContentWarnings, type ScriptVideoCard, type ScriptVideoInput } from '../services/script-video-types.js'
+import { assertScriptVideoFormal, getScriptVideoContentWarnings, ScriptVideoAIError, type ScriptVideoCard, type ScriptVideoInput } from '../services/script-video-types.js'
 import { hasScriptVideoPromptBody, SCRIPT_VIDEO_STYLE_PRESETS } from '../services/script-video-style.js'
 import {
   generateScriptVideoOutline,
@@ -692,11 +692,17 @@ export function createScriptVideoRoutes(
           throw new ScriptVideoStoreError('请先生成本段提示词和分镜脚本', 422, 'STORYBOARD_REQUIRED')
       }
       const cast = episode.production?.characters
+      const warnings = new Set<string>()
       if (hasSelection) {
         requireConfirmed(episode, 'revisions')
-        if (!card.manuallyAdded && !getScriptVideoMissingVoices(card, project.assets, { cast, stylePreset }).length) {
-          dependencies.assertScriptVideoFormal({             production: episode.production, script: episode.confirmedScript,
-            assets: project.assets, cards: [card], scope: 'card'           })
+        if (!card.manuallyAdded) {
+          try {
+            dependencies.assertScriptVideoFormal({ production: episode.production, script: episode.confirmedScript,
+              assets: project.assets, cards: [card], scope: 'card' })
+          } catch (error) {
+            if (!(error instanceof ScriptVideoAIError)) throw error
+            for (const message of error.issues.length ? error.issues.map(issue => issue.message) : [error.message]) warnings.add(message)
+          }
         }
       }
       const queued = queuedReferenceCards(id, episodeId)
@@ -709,13 +715,14 @@ export function createScriptVideoRoutes(
           : lightingPlan.some(range => range.pendingCardId) ? '同场上一段正在制作，出片后将自动补入光线参考图。' : undefined
       try {
         const lighting = await prepareScriptVideoLighting(lightingPlan)
-        const result = await previewScriptVideoPrompt({ ...input, projectId: id, episodeId, waitingForReference: !!pending,
+        const result = await previewScriptVideoPrompt({ ...input, projectId: id, episodeId,
           selection: hasSelection ? { configId: body.configId, model: body.model, aspectRatio: body.aspectRatio, resolution: body.resolution } : undefined,
           duration: body.duration,
           continuationSource: continuationSourceForPreview,
           lightingRanges: lighting.ranges.map(({ source, sceneKey, ...range }) => range),
         })
-        return success(c, { ...result, ...(pending && { pending }) })
+        for (const warning of result.warnings ?? []) warnings.add(warning)
+        return success(c, { ...result, ...(warnings.size && { warnings: [...warnings] }), ...(pending && { pending }) })
       } catch (error) {
         throw new ScriptVideoStoreError(safeTaskError(error), 422, 'VIDEO_PROMPT_PREVIEW')
       }
@@ -818,7 +825,7 @@ export function createScriptVideoRoutes(
           const referenceImages = await prepareScriptVideoArchiveImages(cards, project.assets, {
             model: episode.modelName, provider: episode.modelProvider, cast: episode.production?.characters,
             stylePreset: episode.production?.stylePreset || project.settings?.stylePreset,
-          }, episode.resolution || '720p')
+          }, episode.resolution || '480p')
           return success(c, { ok: true, warnings, referenceImages })
         } catch (error) {
           throw new ScriptVideoStoreError(error instanceof Error ? error.message : '交付参考图准备失败', 422, 'REFERENCE_IMAGE')

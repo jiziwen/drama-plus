@@ -1,6 +1,7 @@
 import { buildScriptVideoDelivery, type ScriptVideoContinuation, type ScriptVideoDeliveryOptions } from '../../../backend/src/services/script-video-delivery'
-import { annotateScriptVideoAssets } from '../../../backend/src/services/script-video-mentions'
+import { annotateScriptVideoAssets, type AssetMention } from '../../../backend/src/services/script-video-mentions'
 import { renderScriptVideoPrompt } from '../../../backend/src/services/script-video-format'
+import { scriptVideoShotHeadings } from '../../../backend/src/services/script-video-asset-scope'
 import { formatScriptVideoStylePreset, scriptVideoPromptStylePrefix, type ScriptVideoStylePreset } from '../../../backend/src/services/script-video-style'
 import type { ScriptVideoVoiceMode } from '../../../backend/src/services/script-video-types'
 import type { ScriptVideoVersion } from '../../../backend/src/services/script-video-versions'
@@ -174,16 +175,71 @@ export function buildCardPrompt(
   return renderScriptVideoPrompt(card, assets, production)
 }
 
-export function replacePreviewPrompt(card: PreviewCard, prompt: string): PreviewCard {
+type PromptEditReferences = {
+  before: readonly AssetMention[]
+  after: readonly AssetMention[]
+}
+
+function promptMaterialSections(prompt: string, mentions: readonly AssetMention[] = []) {
+  const text = prompt.replace(/\r\n?/gu, '\n')
+  const headings = scriptVideoShotHeadings(text)
+  const header = text.slice(0, headings[0]?.start)
+  const explicit = mentions.filter(hit => hit.explicit && hit.usage !== 'context')
+  const references = (usage: 'visual' | 'speaker', start: number, end: number) =>
+    new Set(explicit.filter(hit => hit.usage === usage && start <= hit.start && hit.end <= end).map(hit => hit.id))
+  const openingStart = header.search(/^[ \t]*(?:←承上|开场画面)[：:]/mu)
+  const openingText = openingStart < 0 ? '' : header.slice(openingStart)
+    .split(/^[ \t]*(?:场景|人物|角色设定|总时长|独立生成|本段事件)[：:]/mu, 1)[0]!
+  const opening = openingText ? {
+    text: openingText.trim(),
+    ids: references('visual', openingStart, openingStart + openingText.length),
+  } : undefined
+  const shots = new Map(headings.map(({ start, index }, position) => {
+    const block = text.slice(start, headings[position + 1]?.start)
+    const bodyStart = start + block.indexOf('\n') + 1
+    const body = text.slice(bodyStart, start + block.length)
+      .split(/^[ \t]*(?:→衔接(?:至[^：:\n]*)?|末镜停在)[：:]/mu, 1)[0]!
+    const sound = body.search(/^[ \t]*(?:对白\s*[/／]\s*音效|对白|台词|画外音|心声)[：:]/mu)
+    return [index, {
+      visual: {
+        text: (sound < 0 ? body : body.slice(0, sound)).trim(),
+        ids: references('visual', bodyStart, bodyStart + body.length),
+      },
+      speaker: {
+        text: sound < 0 ? '' : body.slice(sound).trim(),
+        ids: references('speaker', bodyStart, bodyStart + body.length),
+      },
+    }] as const
+  }))
+  return { opening, shots }
+}
+
+function keepsPromptMaterialSection(
+  before: { text: string; ids: ReadonlySet<string> } | undefined,
+  after: { text: string; ids: ReadonlySet<string> } | undefined,
+  declared: readonly string[] = [],
+) {
+  if (!before || !after) return false
+  const confirmedMarkers = declared.filter(id => before.ids.has(id))
+  return confirmedMarkers.length ? confirmedMarkers.every(id => after.ids.has(id)) : before.text === after.text
+}
+
+export function replacePreviewPrompt(card: PreviewCard, prompt: string, references?: PromptEditReferences): PreviewCard {
   if (prompt === card.prompt) return card
-  const shots = card.shots.map(shot => {
+  // Keep authoritative bindings through prose edits around unchanged explicit
+  // selections. Removing or replacing a marker only affects its own field.
+  const before = promptMaterialSections(card.prompt, references?.before)
+  const after = promptMaterialSections(prompt, references?.after)
+  const shots = card.shots.map((shot, index) => {
+    const previousSection = before.shots.get(index)
+    const nextSection = after.shots.get(index)
     const next = { ...shot }
-    delete next.visualAssetIds
-    delete next.speakerAssetIds
+    if (!keepsPromptMaterialSection(previousSection?.visual, nextSection?.visual, shot.visualAssetIds)) delete next.visualAssetIds
+    if (!keepsPromptMaterialSection(previousSection?.speaker, nextSection?.speaker, shot.speakerAssetIds)) delete next.speakerAssetIds
     return next
   })
   const next = { ...card, prompt, shots }
-  delete next.openingAssetIds
+  if (!keepsPromptMaterialSection(before.opening, after.opening, card.openingAssetIds)) delete next.openingAssetIds
   if (!/^前镜回顾[：:]/mu.test(prompt)) delete next.openingRecap
   return next
 }
@@ -212,6 +268,7 @@ export function rebindCardAssets(
   const source = generated ? buildCardPrompt(next, assets, production) : card.prompt
   const body = source.replace(/^(?:图1\s*=\s*@|参考图[：:])[^\r\n]*(?:\r?\n+|$)/u, '')
   const previous = annotateScriptVideoAssets(body, assets, card.assetIds, {
+    card,
     characters: card.characters, cast: production?.characters,
     protectedPrefix: production?.stylePreset && scriptVideoPromptStylePrefix(production.stylePreset),
   })

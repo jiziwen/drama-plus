@@ -1,8 +1,9 @@
 import { omitScriptVideoRecapQuotes, replaceScriptVideoPromptStyle } from './script-video-format.js'
-import { annotateScriptVideoInnerOs, SCRIPT_VIDEO_INNER_OS_DIRECTION } from './script-video-inner-os.js'
+import { annotateScriptVideoInnerOs, hasScriptVideoInnerOs, SCRIPT_VIDEO_INNER_OS_DIRECTION } from './script-video-inner-os.js'
+import { mapScriptVideoSoundLine, speechClosers, unquotedSpeaker } from './script-video-foley.js'
 import { annotateScriptVideoAssets, describeScriptVideoReferenceProblem, scriptVideoMaterialEvidenceText, scriptVideoMaterialIds, type AssetMention } from './script-video-mentions.js'
 import { scriptVideoOsFraming } from './script-video-os-framing.js'
-import { splitScriptVideoHandoff } from './script-video-asset-scope.js'
+import { scriptVideoShotHeadings, splitScriptVideoHandoff } from './script-video-asset-scope.js'
 import { declaredScriptVideoSceneName } from './script-video-scene-continuity.js'
 import { bindScriptVideoLighting, sceneGradedStyle, type ScriptVideoLightingRange, type ScriptVideoReferenceLimits } from './script-video-lighting-delivery.js'
 import { scriptVideoCapabilities } from './script-video-capabilities.js'
@@ -55,6 +56,8 @@ export interface ScriptVideoDeliveryOptions {
   lightingRanges?: readonly ScriptVideoLightingRange[]
   referenceLimits?: ScriptVideoReferenceLimits
   duration?: number
+  /** Show the available prompt and report unresolved materials without submitting. */
+  preview?: true
 }
 
 const pictureDuties: Record<string, string> = {
@@ -107,8 +110,9 @@ type SeedanceSoundContext = {
   audioOnlySpeakers: readonly string[]
   voiceTags: ReadonlyMap<string, string>
   hasMultipleCharacters: boolean
+  vocalizationShots: ReadonlySet<number>
 }
-type ShotSound = { innerSpeakers: string[]; onCameraSpeakers: Set<string>; hasOnScreenSpeech: boolean }
+type ShotSound = { innerSpeakers: string[]; onCameraSpeakers: Set<string>; hasOnScreenSpeech: boolean; hasVocalization: boolean }
 
 function seedanceShotText(body: string, duration: number, context: SeedanceSoundContext): string {
   const headings = [...body.matchAll(shotHeading)]
@@ -128,7 +132,7 @@ function seedanceShotText(body: string, duration: number, context: SeedanceSound
     const next = blocks[index + 1]
     const [nextSpeaker] = next?.sound.onCameraSpeakers || []
     if (context.hasMultipleCharacters && next?.sound.onCameraSpeakers.size === 1 &&
-        block.isShot && !block.sound.hasOnScreenSpeech && !block.sound.innerSpeakers.length && block.actionIndex >= 0) {
+        block.isShot && !block.hasVocalization && !block.sound.hasOnScreenSpeech && !block.sound.innerSpeakers.length && block.actionIndex >= 0) {
       const action = block.lines[block.actionIndex]
       if (action.split(nextSpeaker).slice(1).some(part => leadingMovement.test(part))) {
         block.lines[block.actionIndex] += ` ${nextSpeaker}是该动作的主体，沿用对应参考图的脸、发型和服装，由同一人接续下一镜。`
@@ -140,7 +144,10 @@ function seedanceShotText(body: string, duration: number, context: SeedanceSound
 
 function renderSeedanceShot(block: string, context: SeedanceSoundContext) {
   let inDialogue = false
-  const sound: ShotSound = { innerSpeakers: [], onCameraSpeakers: new Set(), hasOnScreenSpeech: false }
+  const shotNumber = /^镜头[ \t]*(\d+)/u.exec(block)?.[1]
+  const isShot = shotNumber !== undefined
+  const hasVocalization = isShot && context.vocalizationShots.has(Number(shotNumber))
+  const sound: ShotSound = { innerSpeakers: [], onCameraSpeakers: new Set(), hasOnScreenSpeech: false, hasVocalization }
   const lines = block.split(/\r?\n/u).map(line => {
     const heading = soundField.exec(line)
     if (heading) {
@@ -153,12 +160,11 @@ function renderSeedanceShot(block: string, context: SeedanceSoundContext) {
       attribution.includes(SCRIPT_VIDEO_INNER_OS_DIRECTION) || isAudioOnlySpeaker(attribution, context.audioOnlySpeakers)
     return inDialogue || handwritten ? soundText(line, context, sound) : line
   })
-  const onlyInnerSpeech = sound.innerSpeakers.length > 0 && !sound.hasOnScreenSpeech
+  const onlyInnerSpeech = sound.innerSpeakers.length > 0 && !sound.hasOnScreenSpeech && !hasVocalization
   if (onlyInnerSpeech) {
     const soundIndex = lines.findIndex(line => soundField.test(line))
     if (soundIndex >= 0) lines[soundIndex] = lines[soundIndex].replace(soundField, '声音：')
   }
-  const isShot = /^镜头[ \t]*\d+/u.test(block)
   const actionIndex = lines.findIndex(line => actionField.test(line))
   if (isShot) {
     const cameraIndex = lines.findIndex(line => cameraField.test(line))
@@ -179,10 +185,12 @@ function renderSeedanceShot(block: string, context: SeedanceSoundContext) {
     }
     if (context.hasMultipleCharacters && sound.onCameraSpeakers.size === 1 && actionIndex >= 0) {
       const [speaker] = sound.onCameraSpeakers
-      lines[actionIndex] += ` ${speaker}保持对应参考图的造型，是本镜画内发声者。其他在画人物按本镜安排动作，嘴唇闭合。`
+      lines[actionIndex] += hasVocalization
+        ? ` ${speaker}保持对应参考图的造型，说出本镜标注的台词。`
+        : ` ${speaker}保持对应参考图的造型，是本镜画内发声者。其他在画人物按本镜安排动作，嘴唇闭合。`
     }
   }
-  return { lines, sound, isShot, actionIndex }
+  return { lines, sound, isShot, hasVocalization, actionIndex }
 }
 
 function isAudioOnlySpeaker(attribution: string, names: readonly string[]) {
@@ -191,10 +199,34 @@ function isAudioOnlySpeaker(attribution: string, names: readonly string[]) {
 }
 
 function soundText(line: string, context: SeedanceSoundContext, sound: ShotSound): string {
+  return mapScriptVideoSoundLine(line, part => renderSpeech(part, context, sound), cue => {
+    const labelled = /^[\p{L}]+[ \t]*[：:][ \t]*(.*)$/u.exec(cue)
+    if (!labelled) return cue
+    const words = labelled[1]
+    const closer = speechClosers[words[0]] ?? (words.startsWith('<') ? '>' : undefined)
+    const content = closer && words.endsWith(closer) ? words.slice(1, -1) : words
+    return '<' + content + '>'
+  })
+}
+
+function renderSpeech(line: string, context: SeedanceSoundContext, sound: ShotSound): string {
   // Split cues only outside the quotation holding the original spoken words.
-  return line.replace(/(^|[;；][ \t]*|(?<=[”」』"}])[ \t]*)([^;；：:“”「」『』"{}]+?)[：:][ \t]*(?:“([^”]*)”|「([^」]*)」|『([^』]*)』|"([^"]*)"|\{([^}]*)\}|([^;；]+))/gu,
+  return line.replace(/(^|[;；][ \t]*|(?<=[”」』"}])[ \t，,。.!！？?]*)([^;；：:“”「」『』"{}]+?)[：:][ \t]*(?:“([^”]*)”|「([^」]*)」|『([^』]*)』|"([^"]*)"|\{([^}]*)\}|([^;；]+))/gu,
     (_match, sep: string, speaker: string, ...parts: string[]) => {
       const speech = parts.slice(0, 6).find(part => part !== undefined) || ''
+      // A bare sound direction can precede a real speaker on the same line.
+      // Preserve the direction, then format only the attributed speech.
+      if (sound.hasVocalization) {
+        for (const pause of speaker.matchAll(/[，,。.!！？?][ \t]*/gu)) {
+          const next = pause.index + pause[0].length
+          const label = speaker.slice(next)
+          if (!/^@图片\d+/u.test(label) && !isAudioOnlySpeaker(label, context.audioOnlySpeakers)) continue
+          if (!unquotedSpeaker.test(label + '：')) continue
+          sep += speaker.slice(0, next)
+          speaker = hasScriptVideoInnerOs(label) ? annotateScriptVideoInnerOs(label + '：').slice(0, -1) : label
+          break
+        }
+      }
       if (soundEffect.test(speaker.trim())) return sep + '<' + speech.replace(/^<(.*)>$/u, '$1') + '>'
       if (speaker.includes(SCRIPT_VIDEO_INNER_OS_DIRECTION)) {
         const label = speaker.replace(SCRIPT_VIDEO_INNER_OS_DIRECTION, '').replace(/（音色参考@音频\d+）/gu, '').trim()
@@ -202,15 +234,18 @@ function soundText(line: string, context: SeedanceSoundContext, sound: ShotSound
         const actor = label.replace(/^@图片\d+[ \t]*/u, '')
         const audio = context.voiceTags.get(speakerName)
         sound.innerSpeakers.push(speakerName)
-        return `${sep}画外心声（V.O.，${actor}${audio ? `，音色参考${audio}` : ''}，仅声音，画内闭口不对口型）：{${speech}}`
+        return `${sep}${actor}${audio ? `（音色参考${audio}）` : ''}${SCRIPT_VIDEO_INNER_OS_DIRECTION}：{${speech}}`
       }
-      const offscreen = /(?:V\.?O\.?|O\.?V\.?)[）)】\]]|画外|旁白|只闻其声/iu.test(speaker) ||
-        isAudioOnlySpeaker(speaker, context.audioOnlySpeakers)
-      if (!offscreen) sound.hasOnScreenSpeech = true
-      const onCamera = /^\s*(@图片\d+[^【（(\[]+)/u.exec(speaker)?.[1].trimEnd()
-      if (onCamera && !offscreen) sound.onCameraSpeakers.add(onCamera)
+      const offscreen = /(?:V\.?O\.?|O\.?V\.?)[）)】\]]|画外|旁白|只闻其声/iu.test(speaker)
+      const labels = speaker.replace(/（音色参考@音频\d+）/gu, '').split(/[【（(\[]/u, 1)[0].split('、')
+      for (const label of labels) {
+        if (offscreen || isAudioOnlySpeaker(label.trimEnd(), context.audioOnlySpeakers)) continue
+        sound.hasOnScreenSpeech = true
+        const onCamera = /^\s*(@图片\d+.+)/u.exec(label)?.[1].trimEnd()
+        if (onCamera) sound.onCameraSpeakers.add(onCamera)
+      }
       if (!/^\s*(?:@图片\d+|旁白|画外音|心声)/u.test(speaker) &&
-        !isAudioOnlySpeaker(speaker, context.audioOnlySpeakers)) return _match
+        !labels.some(label => isAudioOnlySpeaker(label.trimEnd(), context.audioOnlySpeakers))) return _match
       return sep + speaker + '：{' + speech + '}'
     })
 }
@@ -251,7 +286,7 @@ function inspectScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(
       ...(options.cast?.map(role => role.name) ?? [])],
   })
   const scanOptions = {
-    autoBind: true, characters: card.characters, cast: options.cast, excludedIds: card.excludedAssetIds,
+    card, autoBind: true, characters: card.characters, cast: options.cast, excludedIds: card.excludedAssetIds,
     detectUnboundSpeakers: true,
   }
   const scan = annotateScriptVideoAssets(body, assets, assetIds, scanOptions)
@@ -379,15 +414,35 @@ export function buildScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(
   const model = options.model || ''
   const { aicostSeedance20, seedance25, minimax, imageTag, audioTag } = scriptVideoDeliveryTags(options)
   const { byId, body, style, scan, talking, imageIds, missingVoices } = inspectScriptVideoDelivery(card, assets, options)
+  const warnings = new Set<string>()
+  const unavailable = new Set<string>()
+  const activeImages = new Set(imageIds)
+  function referenceIssue(message: string) {
+    if (!options.preview) throw new Error(message)
+    warnings.add(message)
+  }
+  if (options.preview) for (const id of card.assetIds || []) {
+    if (!byId.has(id)) warnings.add('分镜绑定的资产已不存在：' + id)
+  }
   if (!card.manuallyAdded) {
-    if (scan.problems.length) throw new Error(describeScriptVideoReferenceProblem(body, scan.problems[0]))
+    for (const problem of scan.problems) referenceIssue(describeScriptVideoReferenceProblem(body, problem))
     const boundIds = new Set(card.assetIds)
     for (const m of scan.mentions) {
-      if (m.explicit && (m.usage === 'visual' && imageIds.includes(m.id) || m.usage === 'speaker' && talking.has(m.id)) && !boundIds.has(m.id))
-        throw new Error(`@${m.name} 尚未绑定该卡素材`)
+      if (m.explicit && (m.usage === 'visual' && activeImages.has(m.id) || m.usage === 'speaker' && talking.has(m.id)) && !boundIds.has(m.id)) {
+        referenceIssue('@' + m.name + ' 尚未绑定该卡素材')
+        unavailable.add(m.id)
+        activeImages.delete(m.id)
+        talking.delete(m.id)
+      }
     }
   }
-  const activeImages = new Set(imageIds)
+  for (const id of activeImages) {
+    if (!byId.get(id)?.image) {
+      referenceIssue('找不到分镜绑定的资产或图片：' + (byId.get(id)?.name || id))
+      unavailable.add(id)
+      activeImages.delete(id)
+    }
+  }
   const visual = scan.mentions.filter(mention => mention.usage === 'visual' && activeImages.has(mention.id))
   const orderedIds = orderedVisualIds(card, body, visual, activeImages, seedance25)
   const voices = groupReferenceVoices(card, body, talking, orderedIds, byId, seedance25)
@@ -397,12 +452,14 @@ export function buildScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(
   if (!orderedIds.length && voices.length && (minimax || options.provider === 'volcengine' && seedanceModelLimits(model)?.version === '2.0')) {
     orderedIds.push(voices[0].asset.id)
   }
-  const ordered = orderedIds.map(id => {
+  const ordered = orderedIds.flatMap(id => {
     const asset = byId.get(id)
-    if (!asset?.image) throw new Error(`找不到分镜绑定的资产或图片：${id}`)
-    return asset
+    if (asset?.image) return [asset]
+    referenceIssue('找不到分镜绑定的资产或图片：' + (asset?.name || id))
+    unavailable.add(id)
+    return []
   })
-  const includedImageIds = new Set(orderedIds)
+  const includedImageIds = new Set(ordered.map(asset => asset.id))
   const images: A[] = []
   const indexByImage = new Map<string, number>()
   for (const asset of ordered) {
@@ -414,16 +471,26 @@ export function buildScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(
   let cursor = 0, output = ''
   const audioOnlySpeakers = new Set<string>()
   const voiceTags = new Map<string, string>()
+  const vocalizations = scan.mentions.filter(mention => mention.vocalization)
+  const vocalizingRoles = new Set(vocalizations.map(mention => mention.id))
+  const vocalizationShots = new Set<number>()
+  if (seedance25 && vocalizations.length) {
+    const headings = scriptVideoShotHeadings(body).reverse()
+    for (const mention of vocalizations) {
+      const shot = headings.find(heading => heading.start <= mention.start)
+      if (shot) vocalizationShots.add(shot.index + 1)
+    }
+  }
   for (const mention of scan.mentions) {
-    const { start, end, id, spoken, usage } = mention
+    const { start, end, id, spoken, usage, vocalization } = mention
     const asset = byId.get(id)!
     const surface = body.slice(start, end).replace(/^@/u, '')
     const imageIndex = includedImageIds.has(id) ? indexByImage.get(asset.image) : undefined
-    if (usage === 'speaker' && !imageIndex) audioOnlySpeakers.add(surface)
-    const rendered = spoken ? body.slice(start, end) : usage !== 'context' && imageIndex ? imageTag(imageIndex) + surface : surface
+    if (usage === 'speaker' && !vocalization && !imageIndex) audioOnlySpeakers.add(surface)
+    const rendered = spoken || unavailable.has(id) ? body.slice(start, end) : usage !== 'context' && imageIndex ? imageTag(imageIndex) + surface : surface
     const voiceTag = audioByAssetId.get(id)
-    const inlineVoice = usage === 'speaker' && voiceTag && !spoken ? `（音色参考${voiceTag}）` : ''
-    if (inlineVoice && voiceTag) voiceTags.set(rendered, voiceTag)
+    const inlineVoice = usage === 'speaker' && voiceTag && (!spoken || vocalization) ? `（音色参考${voiceTag}）` : ''
+    if (inlineVoice && voiceTag && !vocalization) voiceTags.set(rendered, voiceTag)
     output += body.slice(cursor, start) + rendered + inlineVoice
     cursor = end
   }
@@ -444,7 +511,7 @@ export function buildScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(
     return index ? imageTag(index) + asset.name : asset.name
   }
   const referenceVoiceText = voices.flatMap(({ roles }, i) => roles.map(asset =>
-    `${voiceLabel(asset)}的${hasInnerVoice ? '角色' : '对白'}音色参考${audioTag(i + 1)}，只参考音色，不照搬音频中的内容。`,
+    `${voiceLabel(asset)}的${hasInnerVoice || vocalizingRoles.has(asset.id) ? '角色' : '对白'}音色参考${audioTag(i + 1)}，只参考音色，不照搬音频中的内容。`,
   ))
   const modelVoiceText: string[] = []
   for (const id of talking) {
@@ -456,7 +523,7 @@ export function buildScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(
   const voiceText = [...referenceVoiceText, ...modelVoiceText].join('\n')
   const duration = options.duration ?? card.duration
   if (!card.manuallyAdded && duration !== card.duration) output = retimeShotText(output, card, duration)
-  if (seedance25) output = seedanceShotText(output, duration, { audioOnlySpeakers: [...audioOnlySpeakers], voiceTags, hasMultipleCharacters })
+  if (seedance25) output = seedanceShotText(output, duration, { audioOnlySpeakers: [...audioOnlySpeakers], voiceTags, hasMultipleCharacters, vocalizationShots })
   else if (aicostSeedance20 || seedanceModelLimits(model)?.version === '2.0') output = output.replace(shotHeading, '镜头$1')
   if (voiceText) {
     const firstShot = output.search(shotBoundary)
@@ -493,5 +560,6 @@ export function buildScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(
     .filter(Boolean).join('\n\n').trim()
   const imageBindings = ordered.map(asset => ({ assetId: asset.id, index: indexByImage.get(asset.image)! }))
   return { prompt, images, voices, missingVoices, imageBindings, openingFrame,
+    ...(warnings.size && { warnings: [...warnings] }),
     lightingImages: lighting.lightingImages, lightingRanges: lighting.lightingRanges }
 }

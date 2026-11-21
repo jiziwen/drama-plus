@@ -661,11 +661,12 @@ const actionWarnings = computed(() => {
 })
 const advisoryWarnings = computed(() => analyzedPrompt.value.warnings.map(issue => issue.message))
 function updatePrompt(prompt: string): PreviewCard {
-  const assetIds = new Set(analyzePrompt(prompt).mentions
+  const { mentions } = analyzePrompt(prompt)
+  const assetIds = new Set(mentions
     .filter(hit => hit.explicit && hit.usage !== 'context')
     .map(hit => hit.id))
   const next = {
-    ...replacePreviewPrompt(props.card, prompt),
+    ...replacePreviewPrompt(props.card, prompt, { before: savedPrompt.value.analyzed.mentions, after: mentions }),
     assetIds: [...new Set([...props.card.assetIds, ...assetIds])],
   }
   if (next.excludedAssetIds) {
@@ -682,14 +683,19 @@ function finishPromptEdit(text: string, blurred = false) {
   const source = text === view.text ? view.source : lastEdit?.display === text ? lastEdit.source
     : editScriptVideoPromptVoiceView(view, text, text.length, text.length).text
   if (blurred) clearPromptEdit()
-  const result = analyzePrompt(joinPrompt(prefix, source))
+  const authoredPrompt = joinPrompt(prefix, source)
+  const result = analyzePrompt(authoredPrompt)
   const ids = [...new Set([...props.card.assetIds, ...result.assetIds])]
   // Changes already accepted by autosave can now appear in the editor. Do not
   // overwrite those changes with the focused copy if commit had nothing to add.
   const currentText = textareaText(props.card.prompt)
   const prompt = (blurred && result.text === prefix + view.source) || result.text === currentText ? props.card.prompt : result.text
   if (prompt === props.card.prompt && ids.length === props.card.assetIds.length) return
-  emit('update', checkedPromptUpdate({ ...replacePreviewPrompt(props.card, prompt), assetIds: ids }))
+  const after = prompt === authoredPrompt ? result.mentions : analyzePrompt(textareaText(prompt)).mentions
+  emit('update', checkedPromptUpdate({
+    ...replacePreviewPrompt(props.card, prompt, { before: savedPrompt.value.analyzed.mentions, after }),
+    assetIds: ids,
+  }))
 }
 function checkedPromptUpdate(next: PreviewCard): PreviewCard {
   if (props.card.manuallyAdded) return { ...next, promptNeedsSync: false }

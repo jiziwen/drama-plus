@@ -121,6 +121,32 @@ test('自然语言与明确 @ 引用的场景歧义均提示，供进入分镜�
   assert.match(issue?.message || '', /镜头 09.*御书房.*皇宫-御书房、别院-御书房/u)
 })
 
+test('逐镜素材已确定时，画外对象、道具归属和前情中的同名角色不会触发预览歧义', () => {
+  const image = 'blob:preview'
+  const assets: PreviewAsset[] = [
+    { id: 'xiao', kind: 'character', name: '老萧', image },
+    { id: 'plain', kind: 'character', name: '赵峰', image },
+    { id: 'casual', kind: 'character', name: '赵峰_微服便装', image },
+    { id: 'wounded', kind: 'character', name: '赵峰_飞鱼服_断指染血', image },
+    { id: 'badge', kind: 'prop', name: '腰牌', image },
+  ]
+  const card = { ...sampleCards()[0]!, assetIds: ['xiao', 'badge'],
+    opening: '老萧回想赵峰到访一事。', openingAssetIds: ['xiao'],
+    characters: '老萧在厅中。赵峰在话中被提及，不入画、不发声。',
+    shots: [{ id: 'shot', duration: 30, camera: '赵峰视角，只拍老萧。',
+      action: '老萧拿起赵峰留下的腰牌，望向门外的赵峰。', dialogue: '老萧：“赵峰赵大人来了。”',
+      visualAssetIds: ['xiao', 'badge'], speakerAssetIds: ['xiao'] }],
+    ending: '老萧仍握着腰牌。下一段才见到赵峰。',
+  }
+  card.prompt = buildCardPrompt(card, assets)
+  const result = inspectPreviewCardAssets(card, assets)
+  assert.deepEqual(result.problems, [])
+  assert.deepEqual(result.materialUse.imageIds, ['xiao', 'badge'])
+  assert.deepEqual(result.materialUse.speakerIds, ['xiao'])
+  assert.match(result.text, /“赵峰赵大人来了。”/u)
+  assert.doesNotMatch(result.text, /@赵峰/u)
+})
+
 test('镜头素材引用的类型、绑定和配图问题均作为可修改的提醒', () => {
   const card = { ...sampleCards()[0]!, assetIds: [] as string[], prompt: '镜头 01\n画面与动作：小皇帝站在庭院。' }
   const lead = seedAssets.find(asset => asset.id === 'emperor')!

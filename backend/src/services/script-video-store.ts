@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { isDeepStrictEqual } from 'node:util'
 import 'dotenv/config'
 import { scriptVideoPromptStylePrefix, isScriptVideoStylePreset, styleVisualSpecs, type ScriptVideoStylePreset } from './script-video-style.js'
-import { annotateScriptVideoAssets, type MentionAsset } from './script-video-mentions.js'
+import { annotateScriptVideoAssets, scriptVideoMaterialIds, type MentionAsset } from './script-video-mentions.js'
 import { annotateScriptVideoInnerOs } from './script-video-inner-os.js'
 import { hasScriptVideoShotHeadings } from './script-video-asset-scope.js'
 import { replaceScriptVideoPromptStyle } from './script-video-format.js'
@@ -186,6 +186,44 @@ function changedVoiceAssetIds(before: ScriptVideoDeliveryAsset[], after: ScriptV
   const previousAudio = new Map(before.map(asset => [asset.id, scriptVideoVoiceSource(asset)]))
   return after.filter(asset => previousAudio.has(asset.id) && previousAudio.get(asset.id) !== scriptVideoVoiceSource(asset)).map(asset => asset.id)
 }
+
+function scanCardReferences(card: ScriptVideoDeliveryCard, prompt: string, assets: MentionAsset[], cast?: { name: string }[], protectedPrefix?: string) {
+  return annotateScriptVideoAssets(prompt, assets, card.assetIds, {
+    card, characters: card.characters, cast, excludedIds: card.excludedAssetIds, protectedPrefix, autoBind: true,
+  })
+}
+
+function missingExplicitCardAssets(card: ScriptVideoDeliveryCard, prompt: string, scan: ReturnType<typeof scanCardReferences>) {
+  const bound = new Set(card.assetIds)
+  const excluded = new Set(card.excludedAssetIds)
+  const explicit = new Set(scan.mentions.filter(hit => hit.explicit && hit.usage !== 'context' &&
+    !bound.has(hit.id) && !excluded.has(hit.id)).map(hit => hit.id))
+  if (!explicit.size) return []
+  const { imageIds, speakerIds } = scriptVideoMaterialIds({
+    ...card, shots: Array.isArray(card.shots) ? card.shots : [],
+  }, prompt, scan)
+  return [...new Set([...imageIds, ...speakerIds])].filter(id => explicit.has(id))
+}
+
+// Old drafts can already contain a valid @ token that was saved without its
+// binding. Expose the same effective bindings to reads and edits.
+function restoreSavedPromptReferences(project: ScriptVideoProject, episodes = project.episodes) {
+  if (!project.assets.length) return
+  for (const episode of episodes) {
+    const style = episode.production?.stylePreset || project.settings?.stylePreset
+    const prefix = validStyle(style) ? scriptVideoPromptStylePrefix(style) : undefined
+    for (const card of episode.cards || []) {
+      const { prompt, assetIds } = card
+      if (typeof prompt !== 'string' || !prompt.includes('@') || !Array.isArray(assetIds)) continue
+      const bound = new Set(assetIds)
+      if (!project.assets.some(asset => asset.name && !bound.has(asset.id) && prompt.includes('@' + asset.name))) continue
+      const scan = scanCardReferences(card, prompt, project.assets, episode.production?.characters, prefix)
+      const missing = missingExplicitCardAssets(card, prompt, scan)
+      if (missing.length) card.assetIds = [...assetIds, ...missing]
+    }
+  }
+}
+
 // A stored, edited prompt is authoritative. Add identity markers in place so
 // opening a legacy project never regenerates its shots or overwrites revisions.
 function cardReferences(card: any, assets: MentionAsset[], production: any, style?: ScriptVideoStylePreset) {
@@ -197,17 +235,16 @@ function cardReferences(card: any, assets: MentionAsset[], production: any, styl
       ...(production?.characters?.map((role: { name: string }) => role.name) ?? [])],
   })
   if (!assets.length) return { ...card, prompt }
-  const result = annotateScriptVideoAssets(prompt, assets, card.assetIds, {
-    characters: card.characters, cast: production?.characters, excludedIds: card.excludedAssetIds,
-    protectedPrefix, autoBind: true,
-  })
-  const implicit = result.mentions.filter(mention => !mention.explicit && mention.usage !== 'context').map(mention => mention.id)
+  const result = scanCardReferences(card, prompt, assets, production?.characters, protectedPrefix)
+  const explicit = new Set(missingExplicitCardAssets(card, prompt, result))
+  const references = result.mentions.filter(mention => mention.usage !== 'context' &&
+    (!mention.explicit || explicit.has(mention.id))).map(mention => mention.id)
   const used = new Set(result.assetIds)
   const contextual = new Set(result.contextAssetIds)
   const assigned = hasScriptVideoShotHeadings(prompt)
     ? card.assetIds
     : card.assetIds.filter((id: string) => !contextual.has(id) || used.has(id))
-  return { ...card, prompt: result.text, assetIds: [...new Set([...assigned, ...implicit])] }
+  return { ...card, prompt: result.text, assetIds: [...new Set([...assigned, ...references])] }
 }
 
 function sanitizeProject(
@@ -441,7 +478,7 @@ function makeEpisode() {
     modelLabel: '',
     modelMaxDuration: 15,
     aspectRatio: '16:9',
-    resolution: '720P',
+    resolution: '480P',
   }
 }
 export function defaultScriptVideoStoreDirectory() {
@@ -549,8 +586,9 @@ export class ScriptVideoStore {
       episodeRevision = episode.episodeRevision
       project.episodes = [episode.episode]
     } else project.episodes = this.catalog.allEpisodes(row)
-    return {       project, jobs: this.catalog.jobs(id, scope), storageVersion: row.version, scope, episodeRevision,
-      originalEpisodes: trackChanges ? new Map(project.episodes.map(episode => [episode.id, JSON.stringify(episode)])) : undefined     }
+    const originalEpisodes = trackChanges ? new Map(project.episodes.map(episode => [episode.id, JSON.stringify(episode)])) : undefined
+    restoreSavedPromptReferences(project)
+    return { project, jobs: this.catalog.jobs(id, scope), storageVersion: row.version, scope, episodeRevision, originalEpisodes }
   }
 
   private normalizeRecord(record: RecordFile, episodes: ScriptVideoProject['episodes']) {
@@ -647,7 +685,9 @@ export class ScriptVideoStore {
   }
   private readProject(id: string) {
     const row = this.projectRow(id)
-    return { ...this.catalog.shared(row), episodes: this.catalog.allEpisodes(row) }
+    const project = { ...this.catalog.shared(row), episodes: this.catalog.allEpisodes(row) }
+    restoreSavedPromptReferences(project)
+    return project
   }
   async close() {
     await this.init
@@ -672,9 +712,12 @@ export class ScriptVideoStore {
     await this.init
     assertId(episodeId)
     assertId(id)
-    const result = this.catalog.episode(id, episodeId)
-    if (!result) throw new ScriptVideoStoreError('分集不存在', 404, 'NOT_FOUND')
-    return result
+    return this.catalog.db.transaction(() => {
+      const result = this.catalog.episode(id, episodeId)
+      if (!result) throw new ScriptVideoStoreError('分集不存在', 404, 'NOT_FOUND')
+      restoreSavedPromptReferences(this.catalog.shared(this.projectRow(id)), [result.episode])
+      return result
+    })()
   }
   async activity(id: string, episodeId: string) {
     await this.init
@@ -834,6 +877,7 @@ export class ScriptVideoStore {
               field === 'settings' || field === 'settings.stylePreset' || field.startsWith('settings.stylePreset.')))
           before.episodes = whole ? this.catalog.allEpisodes(row)
             : [...edits].map(eid => this.catalog.episode(id, eid)?.episode).filter(Boolean)
+          restoreSavedPromptReferences(before)
           let next: ScriptVideoProject
           try { next = applyScriptVideoChanges(before, changes) }
           catch (error) { throw new ScriptVideoStoreError((error as Error).message, 409, 'CHANGE_CONFLICT') }
@@ -884,7 +928,9 @@ export class ScriptVideoStore {
         if (fresh) db.prepare('INSERT INTO client_writes VALUES(?,?,?) ON CONFLICT(project_id,client_id) DO UPDATE SET sequence=excluded.sequence')
           .run(id, client, sequence)
         const project = this.catalog.summary(this.projectRow(id))
-        return { project, episodes: [...requested].map(eid => this.catalog.episode(id, eid)?.episode).filter(Boolean), revision: project.revision, sequence }
+        const episodes = [...requested].map(eid => this.catalog.episode(id, eid)?.episode).filter(Boolean)
+        restoreSavedPromptReferences(project, episodes)
+        return { project, episodes, revision: project.revision, sequence }
       }).immediate()
       if (assetsChanged) this.media.scheduleCleanup()
       return result

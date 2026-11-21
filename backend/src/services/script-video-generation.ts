@@ -8,7 +8,7 @@ import { db, schema } from '../db/index.js'
 import { getAbsolutePath } from '../utils/storage.js'
 import { STORAGE_ROOT } from '../utils/paths.js'
 import { scheduleRetiredUploadCleanup } from './script-video-media-retention.js'
-import { generateVideo, validateVideoSubmissionRequest, VIDEO_REQUEST_NOT_SENT_MESSAGE, type VideoSubmissionControl } from './generation.js'
+import { generateVideo, VIDEO_REQUEST_NOT_SENT_MESSAGE, type VideoSubmissionControl } from './generation.js'
 import { publicMediaBaseUrl } from './public-media.js'
 import { ffmpeg } from '../utils/ffmpeg.js'
 import { isPreTlsConnectionReset } from '../utils/network-error.js'
@@ -16,7 +16,7 @@ import { extractVideoTailFrame } from '../utils/video-poster.js'
 import type { TailShotRange } from '../utils/video-tail-frame.js'
 import { resolveMediaConfig } from './media-selection.js'
 import { isScriptVideoGenerationDuration, scriptVideoCapabilities, type ScriptVideoCapabilities } from './script-video-capabilities.js'
-import { buildScriptVideoDelivery, getScriptVideoMissingVoices, scriptVideoDeliveryTags, type ScriptVideoContinuation, type ScriptVideoDeliveryAsset, type ScriptVideoDeliveryCard, type ScriptVideoDeliveryOptions, type ScriptVideoLightingRange } from './script-video-delivery.js'
+import { buildScriptVideoDelivery, scriptVideoDeliveryTags, type ScriptVideoContinuation, type ScriptVideoDeliveryAsset, type ScriptVideoDeliveryCard, type ScriptVideoDeliveryOptions, type ScriptVideoLightingRange } from './script-video-delivery.js'
 import { safeTaskError } from './video-download.js'
 import { aicostVideoSubmissionRejection } from './adapters/aicost-video.js'
 import { aliyunWanVideoPrompt } from './adapters/aliyun-wan-video.js'
@@ -65,7 +65,7 @@ export function scriptVideoMissingVoicesMessage(speakers: readonly string[]) {
   return `请为${speakers.map(name => `「${name}」`).join('、')}上传角色参考音频，或在「项目资产」允许模型配音`
 }
 
-async function checkedReference(asset: Pick<Asset, 'name' | 'image'>, provider: string, model: string, resolution: string): Promise<string> {
+async function checkedImageSource(asset: Pick<Asset, 'name' | 'image'>, provider: string): Promise<string> {
   if (typeof asset.image !== 'string' || !asset.image.startsWith('/static/') ||
       /[?#%\\\0]/u.test(asset.image) || asset.image.split('/').some(part => part === '.' || part === '..')) {
     throw new Error(`@${asset.name} 需要已上传到本项目的参考图`)
@@ -83,6 +83,11 @@ async function checkedReference(asset: Pick<Asset, 'name' | 'image'>, provider: 
   } catch {
     throw new Error(`@${asset.name} 的图片不存在或无法读取，请重新上传`)
   }
+  return local
+}
+
+async function checkedReference(asset: Pick<Asset, 'name' | 'image'>, provider: string, model: string, resolution: string): Promise<string> {
+  const local = await checkedImageSource(asset, provider)
   if (provider === 'volcengine' && isSeedance25Model(model)) {
     try { return await prepareSeedanceReferenceImage(local, asset.image, resolution) }
     catch (err) { throw new Error(`@${asset.name} 的参考图处理失败：${(err as Error).message}`) }
@@ -108,7 +113,7 @@ export async function prepareScriptVideoArchiveImages(
   return urls
 }
 
-async function checkedVoiceAudio(asset: Asset): Promise<{ url: string; duration: number }> {
+async function checkedVoiceSource(asset: Asset) {
   const voice = asset.voiceAudio
   if (!voice || typeof voice.url !== 'string' || !/^\/static\/uploads\/[a-z0-9_-]+\.(?:mp3|wav)$/iu.test(voice.url)) throw new Error(`@${asset.name} 的声音参考须是已上传的 MP3 或 WAV`)
   const ext = path.extname(voice.url).toLowerCase()
@@ -120,6 +125,11 @@ async function checkedVoiceAudio(asset: Asset): Promise<{ url: string; duration:
     const stat = await fs.stat(local)
     if (!stat.isFile() || stat.size <= 0 || stat.size > 15 * 1024 * 1024) throw new Error()
   } catch { throw new Error(`@${asset.name} 的声音文件不存在、超出 15MB 或无法读取`) }
+  return { local, ext, voice }
+}
+
+async function checkedVoiceAudio(asset: Asset): Promise<{ url: string; duration: number }> {
+  const { local, ext, voice } = await checkedVoiceSource(asset)
   const metadata = await new Promise<any>((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error('声音文件检测超时')), 10_000)
     ffmpeg.ffprobe(local, (error, result) => {
@@ -192,12 +202,16 @@ async function prepareCardDelivery(
     requireVoices?: boolean
   },
   source?: ScriptVideoContinuationSource,
+  baseline = buildScriptVideoDelivery(card, assets, options),
 ) {
-  const baseline = buildScriptVideoDelivery(card, assets, options)
   if (options.requireVoices && baseline.missingVoices.length) throw new Error(scriptVideoMissingVoicesMessage(baseline.missingVoices))
   // Optional grade images must not downgrade an exact same-camera first frame.
   const continuation = source && await prepareOpeningFrame(source, options.provider || '', options.model || '',
-    !!(baseline.images.length || baseline.voices.length))
+    !!(baseline.images.length || baseline.voices.length)).catch(error => {
+    if (!options.preview) throw error
+    baseline.warnings = [...(baseline.warnings ?? []), safeTaskError(error)]
+    return undefined
+  })
   return { delivery: continuation ? buildScriptVideoDelivery(card, assets, { ...options, continuation }) : baseline, continuation }
 }
 
@@ -252,7 +266,6 @@ function formatScriptVideoPrompt(
 
 type PromptPreviewInput = Omit<ScriptVideoGenerationInput, 'configId' | 'model' | 'resolution' | 'aspectRatio'> & {
   selection?: Pick<ScriptVideoGenerationInput, 'configId' | 'model' | 'resolution' | 'aspectRatio'>
-  waitingForReference?: boolean
 }
 
 function resolveGenerationDuration(input: Pick<ScriptVideoGenerationInput, 'card' | 'duration'>, limits?: ScriptVideoCapabilities) {
@@ -269,27 +282,60 @@ function resolveGenerationDuration(input: Pick<ScriptVideoGenerationInput, 'card
   return duration
 }
 
-export async function previewScriptVideoPrompt(input: PromptPreviewInput) {
-  const { card, assets, selection, cast, stylePreset, continuationSource, lightingRanges } = input
-  const missingVoices = getScriptVideoMissingVoices(card, assets, { cast, stylePreset })
-  if (selection && !input.waitingForReference && !missingVoices.length) {
-    const { params, config, references, lightingRanges: ranges } = await prepareSubmission({ ...input, ...selection })
-    await validateVideoSubmissionRequest(config, params)
-    const images = params.referenceImageUrls.map((url, i) => promptReference(url, references.images[i].name))
-    const audios = params.referenceAudioUrls.map((url, i) => promptReference(url, references.audios[i].name))
-    return { ...formatScriptVideoPrompt(params.prompt, config, images, audios, params.firstFrameUrl, stylePreset, ranges),
-      missingVoices, source: 'preview' as const }
+function referenceLimitWarnings(limits: ScriptVideoCapabilities, images: number, audios: number, tail: boolean) {
+  const messages: string[] = []
+  if (limits.maxReferences !== null && images > limits.maxReferences) {
+    messages.push(`所选模型最多支持 ${limits.maxReferences} 张参考图${tail ? '（含上一段尾帧）' : ''}，请调整本段资产`)
   }
-  // Missing inputs still allow the available prompt and media to be examined.
+  if (audios && limits.maxAudioReferences === 0) messages.push('当前视频模型或工作流不支持声音参考，请选择支持声音参考的模型')
+  else if (limits.maxAudioReferences !== null && audios > limits.maxAudioReferences) messages.push(`所选模型最多支持 ${limits.maxAudioReferences} 段参考音频`)
+  if (limits.maxTotalReferences !== null && images + audios > limits.maxTotalReferences) messages.push(`所选模型最多支持 ${limits.maxTotalReferences} 项图片与音频参考素材`)
+  return messages
+}
+
+export async function previewScriptVideoPrompt(input: PromptPreviewInput) {
+  const { card, selection, cast, stylePreset, continuationSource, lightingRanges } = input
   const config = selection && await resolveMediaConfig('video', selection)
-  const referenceLimits = config && scriptVideoCapabilities(config.provider, config.model, config.comfyui)
-  const options = { provider: config?.provider, model: config?.model, cast, stylePreset, lightingRanges,
-    referenceLimits: referenceLimits ?? undefined, duration: input.duration === undefined ? undefined : resolveGenerationDuration(input, referenceLimits ?? undefined) }
-  const { delivery } = await prepareCardDelivery(card, assets, options, continuationSource)
+  const limits = config && scriptVideoCapabilities(config.provider, config.model, config.comfyui)
+  const options: ScriptVideoDeliveryOptions = { preview: true, provider: config?.provider, model: config?.model, cast, stylePreset, lightingRanges,
+    referenceLimits: limits ?? undefined, duration: input.duration === undefined ? undefined : resolveGenerationDuration(input, limits ?? undefined) }
+
+  let assets = input.assets
+  let baseline = buildScriptVideoDelivery(card, assets, options)
+  const warnings = new Set(baseline.warnings)
+  const invalidImages = new Set<string>(), invalidAudios = new Set<string>()
+  // Check only files used by this card. Image conversion, audio decoding and
+  // provider request validation are submission work and cannot gate reading.
+  const [imageFiles, voiceFiles] = await Promise.all([
+    Promise.allSettled(baseline.images.map(asset => checkedImageSource(asset, config?.provider || 'comfyui'))),
+    Promise.allSettled(baseline.voices.map(({ asset }) => checkedVoiceSource(asset))),
+  ])
+  imageFiles.forEach((file, index) => {
+    if (file.status === 'rejected') {
+      invalidImages.add(baseline.images[index].image)
+      warnings.add(safeTaskError(file.reason))
+    }
+  })
+  voiceFiles.forEach((file, index) => {
+    if (file.status === 'rejected') {
+      invalidAudios.add(baseline.voices[index].asset.voiceAudio!.url)
+      warnings.add(safeTaskError(file.reason))
+    }
+  })
+  if (invalidImages.size || invalidAudios.size) {
+    assets = assets.map(asset => invalidImages.has(asset.image) || invalidAudios.has(asset.voiceAudio?.url ?? '') ? {
+      ...asset, ...(invalidImages.has(asset.image) && { image: '' }),
+      ...(invalidAudios.has(asset.voiceAudio?.url ?? '') && { voiceAudio: undefined, voiceMode: 'reference' as const }),
+    } : asset)
+    baseline = buildScriptVideoDelivery(card, assets, options)
+  }
+  const { delivery } = await prepareCardDelivery(card, assets, options, continuationSource, baseline)
+  for (const warning of delivery.warnings ?? []) warnings.add(warning)
   const { images, audios } = deliveryReferences(delivery)
   const firstFrame = delivery.openingFrame?.mode === 'first-frame' ? delivery.openingFrame.imageUrl : undefined
+  if (limits) for (const message of referenceLimitWarnings(limits, images.length, audios.length, !!delivery.openingFrame?.imageIndex)) warnings.add(message)
   return { ...formatScriptVideoPrompt(delivery.prompt, options, images, audios, firstFrame, stylePreset, delivery.lightingRanges),
-    missingVoices: delivery.missingVoices, source: 'preview' as const }
+    missingVoices: delivery.missingVoices, source: 'preview' as const, ...(warnings.size && { warnings: [...warnings] }) }
 }
 
 /** The route resolves taskId using the server-owned job in the requested project and episode. */
@@ -363,13 +409,8 @@ async function prepareSubmission(input: ScriptVideoGenerationInput) {
   const firstFrameUrl = continuation?.mode === 'first-frame' ? continuation.imageUrl : undefined
   const tailReference = continuation?.mode === 'reference' ? continuation.imageUrl : undefined
   const imageCount = delivery.images.length + Number(!!tailReference) + delivery.lightingImages.length
-  if (capabilities.maxReferences !== null && imageCount > capabilities.maxReferences) {
-    const addition = tailReference ? '（含上一段尾帧）' : ''
-    throw new Error(`所选模型最多支持 ${capabilities.maxReferences} 张参考图${addition}，请调整本段资产`)
-  }
-  if (delivery.voices.length && capabilities.maxAudioReferences === 0) throw new Error('当前视频模型或工作流不支持声音参考，请选择支持声音参考的模型')
-  if (capabilities.maxAudioReferences !== null && delivery.voices.length > capabilities.maxAudioReferences) throw new Error(`所选模型最多支持 ${capabilities.maxAudioReferences} 段参考音频`)
-  if (capabilities.maxTotalReferences !== null && imageCount + delivery.voices.length > capabilities.maxTotalReferences) throw new Error(`所选模型最多支持 ${capabilities.maxTotalReferences} 项图片与音频参考素材`)
+  const limitIssue = referenceLimitWarnings(capabilities, imageCount, delivery.voices.length, !!tailReference)[0]
+  if (limitIssue) throw new Error(limitIssue)
   const urls = await Promise.all(delivery.images.map(asset => checkedReference(asset, config.provider, config.model, size)))
   const sourceUploadUrls = delivery.images.flatMap((asset, i) => asset.image !== urls[i] ? [asset.image] : [])
   if (tailReference) urls.push(tailReference)

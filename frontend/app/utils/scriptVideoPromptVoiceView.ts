@@ -10,7 +10,7 @@ export function scriptVideoPromptVoiceView(source: string, mentions: readonly As
   const cues: VoiceCue[] = []
   for (const hit of mentions) {
     const index = audioIndexByRole.get(hit.id)
-    if (!index || hit.usage !== 'speaker' || hit.spoken) continue
+    if (!index || hit.usage !== 'speaker' || (hit.spoken && !hit.vocalization)) continue
     const label = `@音频${index}`
     const prefix = '（音色参考'
     text += source.slice(cursor, hit.end)

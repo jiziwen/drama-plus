@@ -355,8 +355,9 @@ function taskInstructions(stage: ScriptVideoStage) {
       speakerIdentityDirection,
       innerVoiceDirection,
       '原台词和内心 OS 逐字写在实际发生的镜头里。承上、独立生成和衔接只交代事件或声画状态，省去其他镜头台词的摘录。',
-      '本段实际出镜的已绑定资产，在承上、场景、人物、独立生成或镜头画面中的对应位置写清单里的完整显示名，原台词逐字保留。未出镜的候选从 assetIds 中移除。不要用额外参考图列表替代正文引用，或为了保留绑定编造出镜。系统会从上述正式正文、每一镜的机位动作与完整对白／音效逐项渲染带时码和 @配图 的中文视频提示词。无需另交一份概括，以免丢失细节。',
-      '资产以本段实际拍到的场景、角色、道具、生物以及实际发声的角色为准。为需要的素材返回具体 assetId，在出现的镜头写完整素材名。对白原文、音效来源、未发生的提议和下一段事件保留原意，其中提到但未使用的素材无需绑定。听到画外声音时注明实际说话人，只有听到的场景不配图。',
+      '本段实际出镜的已绑定资产，在承上、场景、人物、独立生成或镜头画面中的对应位置写清单里的完整显示名，原台词逐字保留。既未入画也未实际发声的候选从 assetIds 中移除。不要用额外参考图列表替代正文引用，或为了保留绑定编造出镜。系统会从上述正式正文、每一镜的机位动作与完整对白／音效逐项渲染带时码和 @配图 的中文视频提示词。无需另交一份概括，以免丢失细节。',
+      '对白原文、前情与下段预告、画外视线目标、正在寻找或等待的对象、尚未发生的计划、未拍成画面的回忆、道具归属、信件署名、环境声来源中仅被提到的对象保留原文，无需绑定。实际拍到闪回、转场或找到的道具时，按该镜画面填 visualAssetIds。',
+      '例如，本镜只拍厅里的老萧报信，原台词提到赵峰，则 visualAssetIds 填老萧和厅内场景，speakerAssetIds 填老萧，台词里的赵峰照录。后续镜头若只听见赵峰在门外说话，赵峰只列入该镜的 speakerAssetIds；拍到他时才把对应造型加入 visualAssetIds。',
     )
     if (stage === 'storyboard')
       shared.push(
@@ -472,7 +473,7 @@ function buildTask(input: ScriptVideoInput, task: Task) {
                     card, input.assets, { ...task.production, stylePreset: undefined },
                   ).prompt.replace(/\r\n?/gu, '\n').trim()
                   const { mentions } = annotateScriptVideoAssets(body, input.assets, card.assetIds, {
-                    characters: card.characters, cast: task.production.characters, excludedIds: card.excludedAssetIds,
+                    card, characters: card.characters, cast: task.production.characters, excludedIds: card.excludedAssetIds,
                   })
                   const references = new Map(mentions.filter(hit => hit.usage !== 'context').map(({ id, name }) => [id, { id, name }]))
                   return {

@@ -1,5 +1,7 @@
+import { scriptVideoFoleyCues, scriptVideoNextTurnStart, scriptVideoSpeechQuote, speechClosers, unquotedSpeaker } from './script-video-foley.js'
 import { isScriptVideoChibiAppearance, scriptVideoCharacterBase, scriptVideoCharacterName } from './script-video-asset-identity.js'
 import { hasScriptVideoInnerOs } from './script-video-inner-os.js'
+import { scriptVideoVocalSubjects } from './script-video-vocal-subjects.js'
 import { isScriptVideoNonvisualMention, scriptVideoAssetScopeRanges, scriptVideoShotHeadings } from './script-video-asset-scope.js'
 
 export type MentionAsset = {
@@ -18,8 +20,13 @@ export type AssetMention = {
   literal: boolean
   explicit: boolean
   usage: 'visual' | 'speaker' | 'context'
+  vocalization?: true
 }
 export type ScriptVideoReferenceProblem = { type: 'unknown' | 'ambiguous'; name: string; start: number; candidates?: string[] }
+type CardReferences = {
+  openingAssetIds?: readonly string[]
+  shots: ReadonlyArray<{ dialogue?: string; visualAssetIds?: readonly string[]; speakerAssetIds?: readonly string[] }>
+}
 type Options = {
   dialogue?: boolean
   protectedPrefix?: string
@@ -28,13 +35,13 @@ type Options = {
   characters?: string
   cast?: ReadonlyArray<{ name: string }>
   detectUnboundSpeakers?: boolean
+  card?: CardReferences
 }
 
 const wordEnd = /[A-Za-z0-9_-]/u
 const unknownName = /^[^\s@，。、；：！？“”‘’「」()（）\[\]【】=,.!?;:]+/u
 const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 const soundHeading = /^\s*(?:对白\s*[/／]\s*音效|对白|台词|画外音|心声)\s*[:：]\s*/u
-const unquotedSpeaker = /^\s*@?[\p{L}\p{N}·・、_ /-]+(?:\s*(?:（[^）]*）|\([^)]*\)|【[^】]*】|\[[^\]]*\]))*\s*[:：]\s*/u
 // Build short forms only from identities actually selected for this segment.
 const chineseWords = new Intl.Segmenter('zh', { granularity: 'word' })
 const collectiveRole = /(?:兵|卫|士|军|卒|众|队|臣|官|民|百姓|侍从)$/u
@@ -42,43 +49,83 @@ const individualRole = /(?:小旗|侍卫长|指挥使|太医)$/u
 const qQualifier = /(?:3D)?Q版[ \t]*小?[ \t]*$/iu
 const foley = /^\s*(?:音效|环境音|环境声|拟音|音乐|配乐|BGM|SFX)\s*[:：]/iu
 const visualField = /^[ \t]*(?:←承上|→衔接|末镜停在|开场画面|场景(?:[一二三四五六七八九十\d]+)?|人物|角色设定|景别[^：:\n]*|画面与动作)[ \t]*[:：]/u
+const visualDirection = /^[ \t]*补充(?:镜头指示|画面(?:说明|指示)?|动作)[ \t]*[:：]/u
 const shotTitle = /^[ \t]*镜头[ \t]*\d/u
 const otherField = /^[ \t]*(?:总时长|独立生成|本段事件|(?:编辑|制作|导演|手写)?备注|后续(?:计划|说明)|校验说明)[ \t]*[:：]/u
-const storyboardField = (text: string) => visualField.test(text) || shotTitle.test(text) || otherField.test(text)
+const cardSection = /^[ \t]*(?:(←承上|开场画面)|(场景(?:[一二三四五六七八九十\d]+)?)|(独立生成|本段事件|→衔接|末镜停在)|前镜回顾|(人物|角色设定)|总时长)[ \t]*[：:]/gmu
+const storyboardField = (text: string) => visualField.test(text) || visualDirection.test(text) || shotTitle.test(text) || otherField.test(text)
 const speakerCue = /^(?<cue>(?:[ \t]*(?:[（(【\[][^\n）)】\]]+[）)】\]]|心声|内心独白|内心|画外音|旁白|说|问|道|答))*)[ \t]*[：:][ \t]*(?<words>.+)/u
-const attributionLabel = /^[ \t]*(?<label>@?[\p{L}\p{N}·・、_. /／-]{1,120}?)(?=[ \t]*(?:[（(【\[]|[：:]))/u
+const attributionLabel = /^[ \t]*(?<label>@?[\p{L}\p{N}·・_. /／-]{1,120}?(?:、[ \t]*@?[\p{L}\p{N}·・_. /／-]{1,120}?)*)(?=[ \t]*(?:[（(【\[]|[：:]))/u
 const genericSoundLabel = /^(?:音效|拟音|(?:物理|背景)音效|环境(?:音|声)|(?:动作|背景)音|音乐|配乐|BGM|SFX|旁白|画外音|心声|O\.?[SV]\.?|V\.?O\.?|系统(?:面板|界面|播报|提示音|提示|音)?|广播(?:音|声)?|录音|字幕|音色|(?:屏幕|牌匾)(?:显示|文字|字样)?|对白|台词|无台词|无对白|无声|静默|沉默)$/iu
 const silentWords = /^(?:(?:[（(【\[]\s*)?(?:无台词|无对白|无对话|无声|沉默|静默|不说话)(?:\s*[）)】\]])?|[-—/]+|“\s*”|「\s*」|『\s*』|"\s*"|\{\s*\})\s*(?:[。，；;]|$)/u
-const speechClosers: Record<string, string> = { '“': '”', '「': '」', '『': '』', '"': '"', '{': '}' }
+type PromptLine = {
+  value: string; start: number; end: number; inDialogue: boolean; inVisual: boolean; headingLength: number
+  foleyCues: ReturnType<typeof scriptVideoFoleyCues>
+}
 
-type PromptLine = { value: string; start: number; end: number; inDialogue: boolean; inVisual: boolean; headingLength: number }
+function isSoundContinuation(value: string, byName: ReadonlyMap<string, MentionAsset[]>) {
+  if (foley.test(value) || scriptVideoFoleyCues(value.trimStart())[0]?.start === 0 || scriptVideoVocalSubjects(value, byName).length) return true
+  const attribution = attributionLabel.exec(value)
+  const label = attribution?.groups?.label?.trim()
+  if (!attribution || !label) return false
+  return label.startsWith('@') || genericSoundLabel.test(label) ||
+    byName.get(label)?.some(asset => !asset.kind || asset.kind === 'character') ||
+    /^[：:][ \t]*[“「『"{]/u.test(value.slice(attribution[0].length))
+}
 
-function promptLines(text: string, dialogue: boolean): PromptLine[] {
+function promptLines(text: string, dialogue: boolean, byName: ReadonlyMap<string, MentionAsset[]>): PromptLine[] {
   const matches = [...text.matchAll(/[^\r\n]+/gu)]
   const structured = matches.some(match => storyboardField(match[0]))
   const lines: PromptLine[] = []
   let inDialogue = dialogue, inVisual = !structured && !dialogue, previousEnd = 0
+  let completedDialogueLine = false
   for (const match of matches) {
-    const value = match[0], start = match.index!, end = start + value.length
+    let value = match[0], start = match.index!
+    const end = start + value.length
     const headingLength = soundHeading.exec(value)?.[0].length || 0
     const separated = !value.trim() || /(?:\r?\n){2}/u.test(text.slice(previousEnd, start))
     if (headingLength) {
       inDialogue = true
       inVisual = false
-    } else if (!dialogue && (storyboardField(value) || separated)) {
+    } else if (!dialogue && (storyboardField(value) || separated || completedDialogueLine && !isSoundContinuation(value, byName))) {
       inDialogue = false
-      inVisual = visualField.test(value) || shotTitle.test(value) || !structured
+      inVisual = visualField.test(value) || visualDirection.test(value) || shotTitle.test(value) || !structured
     }
-    lines.push({ value, start, end, inDialogue, inVisual, headingLength })
+    let foleyCues = inDialogue ? scriptVideoFoleyCues(value.slice(headingLength)) : []
+    // A manually entered visual column can follow dialogue on the same line.
+    if (inDialogue && !dialogue) {
+      const spans = quotedRanges(value)
+      for (const cue of foleyCues) spans.push([headingLength + cue.start, headingLength + cue.end])
+      const visual = [...value.matchAll(/[;；][ \t]*/gu)].find(separator => {
+        const offset = separator.index! + separator[0].length
+        const rest = value.slice(offset)
+        return (visualField.test(rest) || visualDirection.test(rest)) &&
+          !spans.some(([from, to]) => from <= separator.index! && separator.index! < to)
+      })
+      if (visual) {
+        const offset = visual.index! + visual[0].length
+        lines.push({ value: value.slice(0, offset), start, end: start + offset, inDialogue, inVisual, headingLength,
+          foleyCues: foleyCues.filter(cue => headingLength + cue.end <= offset) })
+        value = value.slice(offset)
+        start += offset
+        inDialogue = false
+        inVisual = true
+        foleyCues = []
+      }
+    }
+    const activeHeading = start === match.index ? headingLength : 0
+    lines.push({ value, start, end, inDialogue, inVisual, headingLength: activeHeading, foleyCues })
+    const speech = value.slice(activeHeading).trimEnd()
+    completedDialogueLine = inDialogue && (/[”」』"}][。！？.!?]?$/u.test(speech) || /^无[。！？.!?]?$/u.test(speech) || silentWords.test(speech))
     previousEnd = end
   }
   return lines
 }
 
-function isSpeakerAt(text: string, start: number, end: number, line: PromptLine, quoteEnds: ReadonlySet<number>) {
+function isSpeakerAt(text: string, start: number, end: number, line: PromptLine, turnEnds: ReadonlySet<number>) {
   const lineBodyStart = line.start + line.headingLength
   const before = text.slice(lineBodyStart, start).trimEnd()
-  if (before && (!line.inDialogue || !/[；;]$/u.test(before) && !quoteEnds.has(lineBodyStart + before.length))) return false
+  if (before && (!line.inDialogue || !/[；;]$/u.test(before) && !turnEnds.has(start) && !turnEnds.has(lineBodyStart + before.length))) return false
   if (foley.test(line.value.slice(line.headingLength)) && !before.trim()) return false
   const cue = speakerCue.exec(text.slice(end, line.end))?.groups
   if (!cue || silentWords.test(cue.words)) return false
@@ -87,29 +134,36 @@ function isSpeakerAt(text: string, start: number, end: number, line: PromptLine,
   return line.inDialogue || !storyboardField(line.value) && (innerOs || /^[“「『"{]/u.test(cue.words))
 }
 
-function unboundSpeakers(
+function speakerLabels(
   text: string,
   lines: readonly PromptLine[],
   scopes: ReturnType<typeof scriptVideoAssetScopeRanges>,
   protectedText: ReadonlyArray<[number, number]>,
-  quoteEnds: ReadonlySet<number>,
-  mentions: readonly AssetMention[],
-  problems: readonly ScriptVideoReferenceProblem[],
+  turnEnds: Set<number>,
+  byName: ReadonlyMap<string, MentionAsset[]>,
 ) {
-  const resolved = new Set(mentions.filter(mention => mention.usage === 'speaker').map(mention => mention.start))
-  const ambiguous = new Set(problems.filter(problem => problem.type === 'ambiguous').map(problem => problem.name))
-  const names = new Set<string>()
+  const labels = new Map<number, { name: string; end: number; vocalization?: true }>()
   for (const line of lines) {
     if (storyboardField(line.value) && !line.headingLength) continue
     const body = line.value.slice(line.headingLength)
     const start = line.start + line.headingLength
     const offsets = [0]
     if (line.inDialogue) {
+      for (const actor of scriptVideoVocalSubjects(body, byName)) {
+        const from = start + actor.start
+        if (scopes.some(scope => scope.kind !== 'sound' && scope.start <= from && from < scope.end)) continue
+        const inEffect = line.foleyCues.some(cue => cue.start <= actor.start && actor.start < cue.end)
+        if (!inEffect && protectedText.some(([a, b]) => a <= from && from < b)) continue
+        const candidates = byName.get(actor.name)
+        if (candidates && !candidates.some(asset => !asset.kind || asset.kind === 'character')) continue
+        labels.set(from, { name: actor.name, end: start + actor.end, vocalization: true })
+        if (actor.nextTurn !== undefined) turnEnds.add(start + actor.nextTurn)
+      }
       for (const separator of body.matchAll(/[；;]/gu)) {
         const offset = separator.index!
         if (!protectedText.some(([from, to]) => from <= start + offset && start + offset < to)) offsets.push(offset + 1)
       }
-      for (const end of quoteEnds) {
+      for (const end of turnEnds) {
         if (end > start && end < line.end && !protectedText.some(([from, to]) => from <= end && end < to)) offsets.push(end - start)
       }
     }
@@ -117,44 +171,62 @@ function unboundSpeakers(
       const match = attributionLabel.exec(body.slice(offset))
       const label = match?.groups?.label?.trimEnd()
       if (!label) continue
-      const name = label.replace(/^@/u, '')
       const position = start + offset + match![0].indexOf(label)
-      if (resolved.has(position) || ambiguous.has(name) || !isSpeakerAt(text, position, position + label.length, line, quoteEnds)) continue
+      if (!isSpeakerAt(text, position, position + label.length, line, turnEnds)) continue
       if (scopes.some(scope => scope.start <= position && position < scope.end)) continue
-      if (!name.split(/[／/]/u).every(part => genericSoundLabel.test(part.trim()))) names.add(name)
+      // A list shares one performance cue and one utterance, but every member
+      // still has its own image and voice settings. Preserve named assets that contain 、.
+      const wholeName = label.replace(/^@/u, '')
+      const parts = byName.has(wholeName) ? [{ text: label, offset: 0 }]
+        : Array.from(label.matchAll(/[^、]+/gu), part => ({ text: part[0], offset: part.index! }))
+      for (const part of parts) {
+        const raw = part.text.trim()
+        const name = raw.replace(/^@/u, '')
+        if (name.split(/[／/]/u).every(piece => genericSoundLabel.test(piece.trim()))) continue
+        const from = position + part.offset + part.text.indexOf(raw)
+        labels.set(from, { name, end: from + raw.length })
+      }
     }
   }
-  return [...names]
+  return labels
 }
 
 /** Bounds use offsets in the original text, so editing, hover hit-testing and
  * the provider formatter can all address the same occurrence. */
+const quotedSpeech = new RegExp(scriptVideoSpeechQuote.source, 'gu')
+const dialogueClauses = new RegExp('(?:' + scriptVideoSpeechQuote.source + '|' + /[^；;“「『"{]/u.source + ')+', 'gu')
+
 function quotedRanges(text: string): Array<[number, number]> {
   // Quoted speech and verbatim text on a prop or screen stay byte-for-byte
   // intact. This also covers quoted lines embedded in action descriptions.
-  return Array.from(text.matchAll(/“[^”\n]*[”\n]?|「[^」\n]*[」\n]?|『[^』\n]*[』\n]?|"[^"\n]*["\n]?|\{[^}\n]*[}\n]?/gu),
+  return Array.from(text.matchAll(quotedSpeech),
     m => [m.index!, m.index! + m[0].length])
 }
 
 function literalRanges(lines: PromptLine[], quoted: Array<[number, number]>) {
   const ranges = [...quoted]
-  for (const { value, start, inDialogue, headingLength } of lines) {
+  for (const { value, start, inDialogue, headingLength, foleyCues } of lines) {
     if (!inDialogue) continue
     const body = value.slice(headingLength)
     const origin = start + headingLength
-    let continuingSpeech = false
-    for (const piece of body.matchAll(/[^；;]+/gu)) {
-      if (foley.test(piece[0])) {
-        continuingSpeech = false
-        continue
+    let from = 0
+    for (const cue of [...foleyCues, { start: body.length, end: body.length, next: body.length }]) {
+      let continuingSpeech = false
+      for (const piece of body.slice(from, cue.start).matchAll(dialogueClauses)) {
+        if (foley.test(piece[0])) {
+          continuingSpeech = false
+          continue
+        }
+        const labelLength = unquotedSpeaker.exec(piece[0])?.[0].length || 0
+        const speech = piece[0].slice(labelLength)
+        if (labelLength) continuingSpeech = !/^[“「『"{]/u.test(speech)
+        if (continuingSpeech) {
+          const start = origin + from + piece.index! + labelLength
+          ranges.push([start, start + speech.length])
+        }
       }
-      const labelLength = unquotedSpeaker.exec(piece[0])?.[0].length || 0
-      const speech = piece[0].slice(labelLength)
-      if (labelLength) continuingSpeech = !/^[“「『"{]/u.test(speech)
-      if (continuingSpeech) {
-        const start = origin + piece.index! + labelLength
-        ranges.push([start, start + speech.length])
-      }
+      if (cue.end > cue.start) ranges.push([origin + cue.start, origin + cue.end])
+      from = cue.next
     }
   }
   return ranges.sort((a, b) => a[0] - b[0])
@@ -275,7 +347,40 @@ export function annotateScriptVideoAssets(
     }
   }
   addCastAliases(options, byName, register)
-  const names = [...byName.keys()].sort((a, b) => b.length - a.length)
+  // A shot may call its foreground lead “家丁” while the household servants
+  // laugh together. The crowd shorthand belongs only to a sound attribution.
+  const servants = boundCrowds.filter(asset => scriptVideoCharacterBase(asset).endsWith('家丁/群体'))
+  const speakerNames = servants.length && !byName.has('家丁') ? new Map(byName).set('家丁', servants) : byName
+  const lines = promptLines(text, options.dialogue || false, speakerNames)
+  const quoted = quotedRanges(text)
+  const turnEnds = new Set(quoted.filter(([from, to]) => to - from > 1 && text[to - 1] === speechClosers[text[from]])
+    .flatMap(([, to]) => [to, scriptVideoNextTurnStart(text, to)]))
+  const cueEnds = new Map<number, number>()
+  for (const line of lines) {
+    const origin = line.start + line.headingLength
+    for (const cue of line.foleyCues) {
+      turnEnds.add(origin + cue.end)
+      turnEnds.add(origin + cue.next)
+      cueEnds.set(origin + cue.start, origin + cue.end)
+    }
+  }
+  const protectedText = literalRanges(lines, quoted)
+  const scopes = scriptVideoAssetScopeRanges(text, options.dialogue).map(scope => {
+    if (scope.kind !== 'sound') return scope
+    // A generic sound-field scope can include the following speaker when
+    // a bracketed effect and an utterance share a line without punctuation.
+    const start = scope.start + /^[ \t]*/u.exec(text.slice(scope.start, scope.end))![0].length
+    const end = cueEnds.get(start)
+    return end !== undefined && end < scope.end ? { ...scope, end } : scope
+  })
+  const labels = speakerLabels(text, lines, scopes, protectedText, turnEnds, speakerNames)
+  const speakerAliases = new Map<string, MentionAsset[]>()
+  for (const { name } of labels.values()) {
+    if (byName.has(name) || speakerAliases.has(name)) continue
+    const known = speakerNames.get(name.replaceAll('／', '/'))
+    if (known) speakerAliases.set(name, known)
+  }
+  const names = [...byName.keys(), ...speakerAliases.keys()].sort((a, b) => b.length - a.length)
   // Include bare @ in the same scan: an unknown explicit name cannot fall back
   // to a valid substring later in the token.
   const matcher = new RegExp(names.length ? '@?(' + names.map(escaped).join('|') + ')|@' : '@', 'gu')
@@ -287,36 +392,42 @@ export function annotateScriptVideoAssets(
   const assetIds = new Set<string>()
   const contextAssetIds = new Set<string>()
   const problems: ScriptVideoReferenceProblem[] = []
-  const lines = promptLines(text, options.dialogue || false)
-  const quoted = quotedRanges(text)
-  const quoteEnds = new Set(quoted.filter(([from, to]) => to - from > 1 && text[to - 1] === speechClosers[text[from]])
-    .map(([, to]) => to))
-  const protectedText = literalRanges(lines, quoted)
-  const scopes = scriptVideoAssetScopeRanges(text, options.dialogue)
+  const card = options.card
+  const shots = card && Array.isArray(card.shots) ? card.shots as CardReferences['shots'] : []
+  const headings = shots.length ? scriptVideoShotHeadings(text) : []
+  const sections = headings.length ? [...text.matchAll(cardSection)] : []
+  const visibleIds = [...new Set([...(card?.openingAssetIds || []), ...shots.flatMap(shot => shot?.visualAssetIds || [])])]
+  const hasCompleteVisuals = shots.length > 0 && shots.every(shot => Array.isArray(shot?.visualAssetIds))
   const prefix = options.protectedPrefix?.trim().replace(/\r\n?/gu, '\n')
   if (prefix) {
     const match = new RegExp('^' + prefix.split('\n').map(escaped).join('(?:\\r\\n|\\r|\\n)')).exec(text)
     matcher.lastIndex = match?.[0].length || 0
   }
-  let output = '', previous = 0, range = 0, scopeIndex = 0, lineIndex = 0
+  let output = '', previous = 0, range = 0, scopeIndex = 0, lineIndex = 0, shotIndex = -1, sectionIndex = -1
   for (let match; (match = matcher.exec(text));) {
     const start = match.index, end = matcher.lastIndex
     const name = match[1]
+    const label = labels.get(start)
+    const namedCandidates = byName.get(name) ?? (label?.name === name ? speakerAliases.get(name) : undefined)
     const explicit = text[start] === '@'
     while (protectedText[range] && protectedText[range][1] <= start) range++
-    const spoken = !!protectedText[range] && protectedText[range][0] <= start
+    const vocalization = label?.vocalization && label.end === end
+    const spoken = !!vocalization || !!protectedText[range] && protectedText[range][0] <= start
     while (scopes[scopeIndex] && scopes[scopeIndex].end <= start) scopeIndex++
     while (lines[lineIndex] && lines[lineIndex].end <= start) lineIndex++
     const activeScope = scopes[scopeIndex]
     const scope = activeScope && activeScope.start <= start ? activeScope.kind : undefined
     const line = lines[lineIndex]
     const invalidEnd = wordEnd.test(text[end] || '')
-    const token = explicit && (!name || invalidEnd) ? unknownName.exec(text.slice(start + 1))?.[0] || '' : ''
+    const token = explicit && (!namedCandidates || invalidEnd) ? unknownName.exec(text.slice(start + 1))?.[0] || '' : ''
     const referenceEnd = token ? start + token.length + 1 : end
-    const attribution = line && isSpeakerAt(text, start, referenceEnd, line, quoteEnds)
-    const contextual = spoken || scope === 'handoff' || scope === 'sound' || scope === 'summary' && !explicit ||
-      line && !attribution && (line.inDialogue || !explicit && !line.inVisual) || isScriptVideoNonvisualMention(text, start, referenceEnd)
-    if (!name || invalidEnd) {
+    const attribution = label?.end === referenceEnd || line && isSpeakerAt(text, start, referenceEnd, line, turnEnds)
+    // In a full prompt an explicit @ can add an image even on a sound line.
+    // Actual speech and sound effects have their own protected spans.
+    let contextual = !vocalization && (spoken || scope === 'handoff' || scope === 'sound' || scope === 'summary' && !explicit ||
+      line && !attribution && (options.dialogue || !explicit && (line.inDialogue || !line.inVisual)) ||
+      isScriptVideoNonvisualMention(text, start, referenceEnd))
+    if (!namedCandidates || invalidEnd) {
       if (explicit) {
         if (!contextual && !unknown.has('@' + token)) {
           unknown.add('@' + token)
@@ -332,19 +443,47 @@ export function annotateScriptVideoAssets(
     // The bare category may denote the single group in this card. Never
     // select a project-wide 群体.png from this generic word alone.
     if (!explicit && name === '群体' && boundCrowds.length !== 1) continue
-    const namedCandidates = byName.get(name)!
+    while ((headings[shotIndex + 1]?.start ?? Infinity) <= start) shotIndex++
+    while ((sections[sectionIndex + 1]?.index ?? Infinity) <= start) sectionIndex++
+    const heading = headings[shotIndex]
+    const section = sections[sectionIndex]
+    const shot = heading && heading.start > (section?.index ?? -1) ? shots[heading.index] : undefined
     const speakers = !contextual && attribution ? namedCandidates.filter(asset => !asset.kind || asset.kind === 'character') : []
+    let candidates = speakers.length ? speakers : namedCandidates
+    let scoped: MentionAsset[] | undefined
+    if (!contextual && !explicit) {
+      if (speakers.length) {
+        const ids = shot?.speakerAssetIds
+        const sameShot = ids?.length ? speakers.filter(asset => ids.includes(asset.id) && !excluded.has(asset.id)) : []
+        if (sameShot.length) scoped = sameShot
+      } else if (!attribution) {
+        const castHeader = !shot && !!section?.[4]
+        const ids = shot ? shot.visualAssetIds
+          : castHeader ? hasCompleteVisuals ? visibleIds : [...visibleIds, ...bound]
+          : section?.[1] ? card?.openingAssetIds ?? shots[0]?.visualAssetIds
+          : section?.[2] && hasCompleteVisuals ? visibleIds
+          : section?.[3] && /^(?:→衔接|末镜停在)$/u.test(section[3]) ? shots.at(-1)?.visualAssetIds
+          : undefined
+        if (Array.isArray(ids)) {
+          const visible = candidates.filter(asset => ids.includes(asset.id) && !excluded.has(asset.id))
+          // Descriptive cast headers can cover several different costumes. The
+          // executable references belong to the individual shots.
+          if (!visible.length || castHeader && visible.length > 1) contextual = true
+          else scoped = visible
+        }
+      }
+    }
     const usage = contextual || attribution && !speakers.length ? 'context' : speakers.length ? 'speaker' : 'visual'
-    const candidates = speakers.length ? speakers : namedCandidates
+    if (scoped) candidates = scoped
     const exact = candidates.filter(a => a.name === name)
     const selected = candidates.filter(a => bound.has(a.id))
     if (usage === 'context') for (const asset of selected) contextAssetIds.add(asset.id)
     if (!explicit && exact.some(a => excluded.has(a.id)) && !exact.some(a => bound.has(a.id))) continue
-    let available = selected.length ? selected : (explicit || options.autoBind || usage === 'context' ? candidates.filter(a => !excluded.has(a.id)) : [])
+    let available = scoped ?? (selected.length ? selected : (explicit || options.autoBind || usage === 'context' ? candidates.filter(a => !excluded.has(a.id)) : []))
     // Explicit @ names are deliberate asset choices. Bare character names
     // stand for the on-camera costume if it is already bound to this card.
     if (explicit && exact.length === 1) available = exact
-    else if (selected.length > 1) {
+    else if (!scoped && selected.length > 1) {
       const named = selected.filter(a => a.name === name)
       if (named.length === 1) available = named
     }
@@ -363,16 +502,19 @@ export function annotateScriptVideoAssets(
     const prior = mentions.at(-1)
     const declaredAlias = prior?.id === asset.id && !explicit
       && /^[（(]$/u.test(text.slice(prior.end, start)) && /^[）)]/u.test(text.slice(end))
-    const literal = usage === 'context' || declaredAlias
-    mentions.push({ id: asset.id, name: asset.name, start, end, explicit, spoken, literal, usage })
+    const literal = !!vocalization || usage === 'context' || declaredAlias
+    mentions.push({ id: asset.id, name: asset.name, start, end, explicit, spoken, literal, usage,
+      ...(vocalization && { vocalization: true }) })
     if (usage !== 'context') assetIds.add(asset.id)
     else contextAssetIds.add(asset.id)
     if (literal) continue
     output += text.slice(previous, start) + '@' + asset.name
     previous = end
   }
+  const resolvedSpeakers = new Set(mentions.filter(mention => mention.usage === 'speaker').map(mention => mention.start))
   return { text: output + text.slice(previous), mentions, assetIds: [...assetIds], contextAssetIds: [...contextAssetIds],
-    unboundSpeakers: options.detectUnboundSpeakers ? unboundSpeakers(text, lines, scopes, protectedText, quoteEnds, mentions, problems) : [],
+    unboundSpeakers: options.detectUnboundSpeakers ? [...new Set([...labels].filter(([start, { name }]) =>
+      !resolvedSpeakers.has(start) && !ambiguous.has(name)).map(([, { name }]) => name))] : [],
     problems, ambiguous: [...ambiguous], unknown: [...unknown] }
 }
 
@@ -385,8 +527,6 @@ export function scriptVideoVisualAssetIds(
   const contextual = new Set([...scan.contextAssetIds, ...scan.mentions.filter(hit => hit.usage === 'speaker').map(hit => hit.id)])
   return [...new Set([...boundIds.filter(id => !contextual.has(id) || visual.has(id)), ...visual])]
 }
-
-const cardSection = /^[ \t]*(?:(←承上|开场画面)|(场景(?:[一二三四五六七八九十\d]+)?)|前镜回顾|人物|角色设定|总时长|独立生成|本段事件|→衔接|末镜停在)[ \t]*[：:]/gmu
 
 /** Older prompts sometimes omit their structured camera/action fields. Use the
  * missing fields to determine materials while preserving the authored prompt. */
@@ -447,8 +587,9 @@ export function scriptVideoMaterialIds(
     const inShot = shot && shot.start > (section?.index ?? -1)
     if (inShot) {
       if (hit.usage === 'speaker') speakers.add(hit.id)
-      else if (!card.shots[shot.index]?.visualAssetIds) pictures.add(hit.id)
-    } else if (hit.usage === 'visual' && (section?.[2] || section?.[1] && !card.openingAssetIds)) {
+      else if (hit.explicit || !card.shots[shot.index]?.visualAssetIds) pictures.add(hit.id)
+    } else if (hit.usage === 'visual' && (section?.[2] || section?.[1] && (hit.explicit || !card.openingAssetIds) ||
+      hit.explicit && (!section || section[3]))) {
       pictures.add(hit.id)
     }
   }

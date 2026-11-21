@@ -105,6 +105,35 @@ const assets = [
   { id: 'a', name: '侍卫', image: '/static/uploads/a.png' },
   { id: 'b', name: '长剑', image: '/static/uploads/b.png' },
 ]
+
+test('有未知、未绑定、歧义或丢失素材时可查看正文，仅有效文件参加编号', async () => {
+  const catalog = [
+    { ...assets[0], kind: 'character', voiceAudio: { url: '/static/uploads/missing.wav', name: '失效参考.wav' } },
+    { ...assets[1], kind: 'prop' },
+    { ...assets[0], id: 'broken', name: '营帐', kind: 'scene', image: '/static/uploads/missing.png' },
+    { ...assets[0], id: 'flag', name: '旗帜', kind: 'prop' },
+    { ...assets[0], id: 'red', name: '来客_红衣', kind: 'character' },
+    { ...assets[1], id: 'blue', name: '来客_蓝衣', kind: 'character' },
+  ]
+  const card = { id: 'preview', duration: 4, assetIds: ['broken', 'deleted', 'a', 'b'],
+    prompt: '镜头 01（0–4秒）\n画面与动作：@未知道具 在 @营帐 旁；@长剑 放在 @旗帜 边，@来客 站在帐外。\n对白／音效：侍卫：“小心！”',
+    shots: [{ duration: 4, dialogue: '侍卫：“小心！”', visualAssetIds: ['broken', 'deleted', 'b'] }] }
+  const args = { ...input, card, assets: catalog }
+  const count = db.select().from(schema.sysTask).all().length
+  const preview = await previewScriptVideoPrompt({ ...args, selection: args })
+  assert.match(preview.prompt, /@未知道具/u)
+  assert.match(preview.prompt, /@营帐/u)
+  assert.match(preview.prompt, /@旗帜/u)
+  assert.match(preview.prompt, /@来客/u)
+  assert.ok(!preview.prompt.includes('undefined'))
+  assert.deepEqual(preview.images.map(image => [image.index, image.name]), [[1, '长剑']])
+  assert.deepEqual(preview.audios, [])
+  for (const warning of ['未知道具', '来客', '旗帜', '营帐', 'deleted', '声音文件不存在']) {
+    assert.ok(preview.warnings?.some(message => message.includes(warning)), warning)
+  }
+  await assert.rejects(() => startScriptVideoGeneration(args), /找不到素材|多个匹配|尚未绑定/u)
+  assert.equal(db.select().from(schema.sysTask).all().length, count)
+})
 const input: ScriptVideoGenerationInput = {
   projectId: 'new-project', episodeId: 'new-episode', configId, model, aspectRatio: '9:16', resolution: '480p', assets,
   card: { id: 'new-card', duration: 5, shots: [{duration: 2}, {duration: 3}], assetIds: ['b','a'],

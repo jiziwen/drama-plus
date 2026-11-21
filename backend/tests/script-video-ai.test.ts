@@ -1298,6 +1298,9 @@ test('style replacement removes the legacy generated headers while preserving cu
   assert.equal(updated, scriptVideoPromptStylePrefix(cool) + '\n\n' + custom + body)
   assert.equal(replaceScriptVideoPromptStyle(updated, cool, cool, prod), updated)
   assert.equal(replaceScriptVideoPromptStyle(updated, undefined, cool), custom + body)
+  const authoredReference = '参考图：@麻雀 \r\n' + body
+  assert.equal(replaceScriptVideoPromptStyle(authoredReference, cool, warm, prod),
+    scriptVideoPromptStylePrefix(cool) + '\n\n' + authoredReference)
   const plain = '作者自写一个整段。\r\n空格和换行也保留。\r\n'
   assert.equal(
     replaceScriptVideoPromptStyle(plain, cool),

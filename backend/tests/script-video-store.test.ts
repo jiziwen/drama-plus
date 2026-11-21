@@ -18,6 +18,20 @@ async function fixture(run: (store: ScriptVideoStore, directory: string) => Prom
   try { await run(store, dir) } finally { await store.close(); rmSync(dir, { recursive: true, force: true }) }
 }
 
+test('new episodes default to 480P and preserve the resolution explicitly saved on other episodes', async () => fixture(async store => {
+  const project = await store.create('分辨率')
+  assert.equal(project.episodes[0].resolution, '480P')
+  await store.applyChanges(project.id, {
+    clientId: randomUUID(), sequence: 1,
+    changes: [
+      { target: 'episode', id: project.episodeId, fields: { resolution: '720P' } },
+      { target: 'episode', id: 'new', value: { id: 'new' } },
+      { target: 'episode', id: 'explicit', value: { id: 'explicit', resolution: '1080P' } },
+    ],
+  })
+  assert.deepEqual((await store.get(project.id)).episodes.map(episode => episode.resolution), ['720P', '480P', '1080P'])
+}))
+
 test('persists isolated projects and episodes across store instances', async () => fixture(async (store, dir) => {
   const a = await store.create('甲'), b = await store.create('乙')
   a.assets.push({ id: 'asset-1', name: '角色_一', kind: 'character', image: '/static/uploads/a.png' })
@@ -941,6 +955,61 @@ test('legacy prompts get asset markers and closed-mouth OS cues without rewritin
   assert.equal(card.version,7)
   assert.equal(card.promptVersions[0].prompt,raw)
   assert.equal(readFileSync(recordFile,'utf8'),disk)
+}))
+
+test('import restores a visible @ reference missed in a saved prompt after dialogue', async () => fixture(async (store, directory) => {
+  const project = await store.create('已保存的引用')
+  project.assets = [
+    { id: 'pendant', name: '玉佩', kind: 'prop', image: '/static/pendant.png' },
+    { id: 'courtyard', name: '院落', kind: 'scene', image: '/static/courtyard.png' },
+  ]
+  const prompt = '镜头 01（0–3秒）\n对白／音效：无。\n近拍 @玉佩 。\n→衔接至第2段：切到 @院落 。'
+  project.episodes[0].cards = [{
+    id: 'card', prompt, assetIds: [], shots: [{ id: 'shot', duration: 3, visualAssetIds: [] }],
+    status: 'draft', version: 1,
+  }]
+  const legacy = join(directory, 'legacy')
+  mkdirSync(legacy)
+  const original = JSON.stringify({ project, jobs: [] })
+  const recordFile = join(legacy, project.id + '.json')
+  writeFileSync(recordFile, original)
+  const migrated = new ScriptVideoStore(legacy)
+  try {
+    const card = (await migrated.get(project.id)).episodes[0].cards[0]
+    assert.deepEqual(card.assetIds, ['pendant'])
+    assert.equal(card.prompt, prompt)
+    assert.equal(readFileSync(recordFile, 'utf8'), original)
+  } finally {
+    await migrated.close()
+  }
+}))
+
+test('reading a saved SQLite draft restores visible @ assets missed on a sound line', async () => fixture(async (store, directory) => {
+  const project = await store.create('本段素材')
+  const [episode] = project.episodes
+  const prompt = '镜头 01（0–4秒）\n对白／音效：无对白。仅保留旗布轻响 @麻雀  @京兆府-大堂 '
+  project.assets = [
+    { id: 'bird', name: '麻雀', kind: 'creature', image: '/static/bird.png' },
+    { id: 'hall', name: '京兆府-大堂', kind: 'scene', image: '/static/hall.png' },
+  ]
+  episode.cards = [{ id: 'card', prompt, assetIds: [], shots: [{ id: 'shot', duration: 4 }], duration: 4 }]
+  await store.update(project.id, project, project.revision)
+  const db = new Database(join(directory, 'workspace.sqlite3'))
+  try {
+    db.prepare("UPDATE episodes SET document=json_set(document,'$.cards[0].assetIds',json('[\"bird\"]')) WHERE project_id=?").run(project.id)
+    const card = (await store.episode(project.id, episode.id)).episode.cards[0]
+    assert.deepEqual(card.assetIds, ['bird', 'hall'])
+    assert.equal(card.prompt, prompt)
+    const { project: snapshot } = await store.episodeSnapshot(project.id, episode.id)
+    const { buildScriptVideoDelivery } = await import('../src/services/script-video-delivery.js')
+    const delivery = buildScriptVideoDelivery(snapshot.episodes[0].cards[0], snapshot.assets)
+    assert.deepEqual(delivery.images.map(asset => asset.id), ['bird', 'hall'])
+    assert.match(delivery.prompt, /@图片2京兆府-大堂/u)
+    assert.equal(db.prepare("SELECT json_extract(document,'$.cards[0].assetIds') FROM episodes WHERE project_id=?")
+      .pluck().get(project.id), '["bird"]')
+  } finally {
+    db.close()
+  }
 }))
 
 test('confirmed video rejections repair stale unknown failures on status and retry, while genuine unknowns require acknowledgement', async () => fixture(async (store, directory) => {

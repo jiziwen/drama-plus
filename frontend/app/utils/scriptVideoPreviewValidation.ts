@@ -40,6 +40,7 @@ export function inspectPreviewCardAssets(
   const prompt = typeof card.prompt === "string" ? card.prompt : "";
   const shots = Array.isArray(card.shots) ? card.shots : [];
   const references = annotateScriptVideoAssets(prompt, assets, card.assetIds, {
+    card,
     characters: card.characters,
     cast: context.cast,
     excludedIds: card.excludedAssetIds,

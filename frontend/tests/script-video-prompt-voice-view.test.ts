@@ -61,3 +61,14 @@ test('the displayed audio number is derived and cannot become an authored asset 
   assert.equal(edit.text, source)
   assert.equal(edit.selectionStart, sourceOffset)
 })
+
+test('音效叙述仅为确实发声的角色投射音频，编辑保存仍保留原始文稿', () => {
+  const source = '对白／音效：〈吴良短促仰头发笑；笑声随吴良低头收住。〉顾凌天：“吴良走了。”'
+  const first = { ...mention(source, '吴良', 0, 'speaker', true), vocalization: true as const }
+  const later = mention(source, '吴良', 1, 'context', true)
+  const quoted = mention(source, '吴良', 2, 'context', true)
+  const view = scriptVideoPromptVoiceView(source, [first, later, quoted], new Map([['lead', 3]]))
+  assert.equal(view.text, '对白／音效：〈吴良（音色参考@音频3）短促仰头发笑；笑声随吴良低头收住。〉顾凌天：“吴良走了。”')
+  assert.equal(view.cues.length, 1)
+  assert.equal(editScriptVideoPromptVoiceView(view, view.text + '。', view.text.length + 1, view.text.length + 1).text, source + '。')
+})

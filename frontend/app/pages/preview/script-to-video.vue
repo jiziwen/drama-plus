@@ -799,6 +799,7 @@
               <template v-else-if="promptPreview.delivery">
                 <p v-if="promptPreview.delivery.pending" class="vp-final-prompt-warning" role="status">{{ promptPreview.delivery.pending }}</p>
                 <p v-if="promptPreview.delivery.missingVoices.length" class="vp-final-prompt-warning" role="status">{{ missingVideoVoiceMessage(promptPreview.delivery.missingVoices) }}</p>
+                <p v-for="warning in promptPreview.delivery.warnings" :key="warning" class="vp-final-prompt-warning" role="status">{{ warning }}</p>
                 <ScriptVideoFinalPrompt
                   :prompt="promptPreview.delivery.prompt"
                   :style-section="promptPreview.delivery.style"
@@ -1386,9 +1387,10 @@ import {
   getScriptVideoStylePreset,
   hasScriptVideoPromptBody,
   isScriptVideoStylePreset,
+  splitScriptVideoPromptStyle,
   type ScriptVideoStylePreset,
 } from '../../../../backend/src/services/script-video-style'
-import { buildScriptVideoDelivery, getScriptVideoMissingVoices, type ScriptVideoContinuation, type ScriptVideoLightingRange } from '../../../../backend/src/services/script-video-delivery'
+import { buildScriptVideoDelivery, getScriptVideoMissingVoices, scriptVideoDeliveryTags, type ScriptVideoContinuation, type ScriptVideoLightingRange } from '../../../../backend/src/services/script-video-delivery'
 import { buildScriptVideoLightingPlan } from '../../../../backend/src/services/script-video-lighting-plan'
 import { officialScriptVideoUrl } from '../../../../backend/src/services/script-video-versions'
 import { AICOST_VIDEO_RATIOS, AICOST_VIDEO_RESOLUTIONS, aicostVideoModelCapabilities } from '../../../../backend/src/services/aicost-video-models'
@@ -1557,7 +1559,7 @@ function makeEpisode(
     modelLabel: '',
     modelMaxDuration: 0,
     aspectRatio: '16:9',
-    resolution: '720P',
+    resolution: '480P',
   }
 }
 const loadingProjects = ref(true)
@@ -1920,7 +1922,7 @@ const modelResolutions = computed(() =>
   (usesAicost.value ? selectedAicost.value?.resolutions ?? AICOST_VIDEO_RESOLUTIONS
     : usesJimeng.value ? jimengVideoModel(currentEpisode.value.modelName || '')?.resolutions
     : selectedLibTV.value?.resolutions ?? selectedSeedance.value?.resolutions)
-    ?.map(size => size.toUpperCase()) ?? ['720P', '1080P', '480P'],
+    ?.map(size => size.toUpperCase()) ?? ['480P', '720P', '1080P'],
 )
 const modelAspectRatios = computed<readonly string[]>(() =>
   usesAicost.value ? selectedAicost.value?.ratios ?? AICOST_VIDEO_RATIOS
@@ -1939,7 +1941,7 @@ const aspectRatio = computed({
   },
 })
 const resolution = computed({
-  get: () => currentEpisode.value.resolution,
+  get: () => currentEpisode.value.resolution?.toUpperCase() || '',
   set: (value: string) => {
     currentEpisode.value.resolution = value
   },
@@ -2792,6 +2794,10 @@ function setVideoModel(selection: {
   provider?: string
 }) {
   if (selection.key !== videoModel.value) return
+  const previousModel = currentEpisode.value.modelName
+  const previousConfig = currentEpisode.value.modelConfigId
+  const changedModel = !!previousModel && (previousModel !== selection.model ||
+    (previousConfig != null && previousConfig !== selection.configId))
   currentEpisode.value.modelConfigId = selection.configId
   currentEpisode.value.modelProvider = selection.provider
   currentEpisode.value.modelName = selection.model
@@ -2801,8 +2807,8 @@ function setVideoModel(selection: {
   currentEpisode.value.modelWholeSeconds = selection.wholeSeconds
   currentEpisode.value.modelMaxAudioReferences = selection.maxAudioReferences
   currentEpisode.value.modelMaxAudioDuration = selection.maxAudioDuration
-  if (selection.key && !modelResolutions.value.includes(resolution.value)) {
-    resolution.value = modelResolutions.value.includes('720P') ? '720P' : modelResolutions.value[0] || '720P'
+  if (selection.key && (changedModel || !modelResolutions.value.includes(resolution.value))) {
+    resolution.value = modelResolutions.value.includes('480P') ? '480P' : modelResolutions.value[0] || '480P'
   }
   if (selection.key && !modelAspectRatios.value.includes(aspectRatio.value)) {
     aspectRatio.value = modelAspectRatios.value.includes('16:9') ? '16:9' : modelAspectRatios.value[0] || '16:9'
@@ -3220,7 +3226,8 @@ type FinalPromptDelivery = {
   audios: FinalPromptReference[]
   firstFrame?: FinalPromptMedia
   missingVoices: string[]
-  source: 'preview' | 'submitted'
+  warnings?: string[]
+  source: 'preview' | 'submitted' | 'draft'
   pending?: string
 }
 const promptPreview = ref<{
@@ -3404,6 +3411,9 @@ function retryJobs(request: VideoGenerationRequest) {
 }
 function openVideoRetry(request: VideoGenerationRequest, jobs = retryJobs(request)) {
   if (!jobs.size) return false
+  // A different workspace may be visible by the time a provider reports an
+  // uncertain submission. The failed task in the source episode retains its retry action.
+  if (!episodeLock.owns(request.projectId, request.episodeId)) return true
   pendingVideoRetry.value = { ...request, jobs }
   dialog.value = 'video-retry'
   return true
@@ -3431,11 +3441,26 @@ async function requestVideoGeneration(cardIds: string[]) {
 }
 async function confirmVideoRetry(confirmed: boolean) {
   const request = pendingVideoRetry.value
-  if (!request) return
+  if (!request || !episodeLock.owns(request.projectId, request.episodeId)) return
   pendingVideoRetry.value = null
   dialog.value = null
   if (confirmed) await runVideoRequests(request, request.jobs)
   else await runVideoRequests({ ...request, cardIds: request.cardIds.filter((id) => !request.jobs.has(id)) })
+}
+function reportVideoError(projectId: string, episodeId: string, message: string) {
+  if (!alive) return
+  if (episodeLock.owns(projectId, episodeId)) return toast.error(message)
+  const project = projects.value.find(item => item.id === projectId)
+  const episode = project?.episodes.find(item => item.id === episodeId)
+  const source = [project?.title, episode?.number ? `第${episode.number}集` : episode?.title].filter(Boolean).join(' · ')
+  toast.error(`${source || '原分集'}：${message}`)
+}
+async function refreshVideoEpisodeAfterTaskUpdate(projectId: string, episodeId: string, signal = requestController.signal) {
+  // The task was already accepted or reached a terminal state on the server.
+  // A temporarily unavailable UI snapshot must not interrupt dependent segments.
+  try {
+    await refreshProject(projectId, episodeId, AbortSignal.any([signal, AbortSignal.timeout(8000)]))
+  } catch { /* The next episode activity refresh will update the cached snapshot. */ }
 }
 async function runVideoRequests(request: VideoGenerationRequest, approvedJobs?: Map<string, string>) {
   const { projectId, episodeId } = request
@@ -3444,10 +3469,11 @@ async function runVideoRequests(request: VideoGenerationRequest, approvedJobs?: 
     id: previewId('video-request'), controller: new AbortController(), cardIds: request.cardIds,
     cardStatuses: new Map(), waitingToSubmit: new Set(),
   })
-  const ownsEpisode = () => alive && !run.controller.signal.aborted && episodeLock.owns(projectId, episodeId)
   const episode = videoEpisode(projectId, episodeId)
   const project = projects.value.find(item => item.id === projectId)
-  if (!project || !episode || !ownsEpisode() || activeVideoRequests.value.has(scope) || cancelingVideo.value.has(scope)) return
+  if (!alive || !project || !episode || !episodeLock.owns(projectId, episodeId) ||
+      activeVideoRequests.value.has(scope) || cancelingVideo.value.has(scope)) return
+  const canContinue = () => alive && !run.controller.signal.aborted && !!videoEpisode(projectId, episodeId)
   if (rejectVideoRequestWithoutVoices(request)) return
 
   const selected = new Set(request.cardIds)
@@ -3467,13 +3493,13 @@ async function runVideoRequests(request: VideoGenerationRequest, approvedJobs?: 
   let submitting = Promise.resolve()
   function submit(cardId: string) {
     const next = submitting.then(async (): Promise<VideoSubmission> => {
-      if (!ownsEpisode()) return
+      if (!canContinue()) return
       const current = videoEpisode(projectId, episodeId)
       const card = current?.cards.find(item => item.id === cardId)
       if (!current || !card) return
       const task = indexVideoTasks(current.tasks).get(cardId)
       if (task?.status === 'processing') return task.taskId
-      if (task && isVideoDeliveryRecovery(task)) return recoverFailedVideo(projectId, task)
+      if (task && isVideoDeliveryRecovery(task)) return recoverFailedVideo(projectId, episodeId, task)
       const uncertain = (task?.status === 'failed' || task?.status === 'canceled') && task.code === 'SUBMISSION_UNKNOWN'
       const approved = uncertain && approvedJobs?.get(cardId) === task.id
       if (uncertain && !approved) return 'needs-approval'
@@ -3491,12 +3517,12 @@ async function runVideoRequests(request: VideoGenerationRequest, approvedJobs?: 
   let keepQueue: ReturnType<typeof setInterval> | undefined
   try {
     await saveProjectNow(projectId)
-    if (!ownsEpisode()) return
+    if (!canContinue()) return
     if (toReserve.length) {
       await scriptVideoRequest(queuePath, 'POST', { requestId: run.id, cardIds: toReserve }, run.controller.signal)
       reserved = true
       for (const id of toReserve) run.waitingToSubmit.add(id)
-      if (!ownsEpisode()) return
+      if (!canContinue()) return
       keepQueue = setInterval(async () => {
         if (renewing || run.controller.signal.aborted) return
         const waiting = [...run.waitingToSubmit]
@@ -3552,7 +3578,7 @@ async function runVideoRequests(request: VideoGenerationRequest, approvedJobs?: 
         if (task?.taskId && await waitForRender(task.taskId)) return submit(card.id)
         const latestSource = videoEpisode(projectId, episodeId)?.cards.find(item => item.id === previous.id)
         if (latestSource && officialScriptVideoUrl(latestSource) && (!task || task.taskId)) return submit(card.id)
-        if (ownsEpisode()) blocked.push({ segment: index + 1, previous: index })
+        if (canContinue()) blocked.push({ segment: index + 1, previous: index })
       })())
     }
     const results = await Promise.all([...scheduled].map(async ([id, result]) => {
@@ -3563,45 +3589,45 @@ async function runVideoRequests(request: VideoGenerationRequest, approvedJobs?: 
         run.waitingToSubmit.delete(id)
       }
     }))
-    if (!ownsEpisode()) return
+    if (!canContinue()) return
     if (blocked.length === 1) {
       const [{ segment, previous }] = blocked
-      toast.error(`第 ${segment} 段需要第 ${previous} 段的尾帧，请等第 ${previous} 段出片后再生成。`)
+      reportVideoError(projectId, episodeId, `第 ${segment} 段需要第 ${previous} 段的尾帧，请等第 ${previous} 段出片后再生成。`)
     } else if (blocked.length > 1) {
       const segments = blocked.map(item => item.segment).sort((a, b) => a - b).join('、')
-      toast.error(`第 ${segments} 段需要上一段的尾帧。请等各自承接的上一段出片后再生成。`)
+      reportVideoError(projectId, episodeId, `第 ${segments} 段需要上一段的尾帧。请等各自承接的上一段出片后再生成。`)
     }
     const needsApproval = results.filter(([, result]) => result === 'needs-approval').map(([id]) => id)
     if (needsApproval.length) openVideoRetry({ ...request, cardIds: needsApproval })
   } catch (error) {
-    if (!run.controller.signal.aborted) toast.error(error instanceof Error ? error.message : '生成任务未提交')
+    if (!run.controller.signal.aborted) reportVideoError(projectId, episodeId, error instanceof Error ? error.message : '生成任务未提交')
   } finally {
     clearInterval(keepQueue)
     if (reserved) void scriptVideoRequest(queuePath, 'DELETE', { requestId: run.id }).catch(() => {})
-    requestActivityRefresh?.()
+    if (episodeLock.owns(projectId, episodeId)) requestActivityRefresh?.()
     if (activeVideoRequests.value.get(scope)?.id === run.id) activeVideoRequests.value.delete(scope)
   }
 }
 async function waitForVideoTail(projectId: string, episodeId: string, taskId: number, runSignal: AbortSignal) {
   const scope = `${projectId}/${episodeId}`
-  const ownsEpisode = () => alive && !runSignal.aborted && episodeLock.owns(projectId, episodeId)
+  const canContinue = () => alive && !runSignal.aborted && !!videoEpisode(projectId, episodeId)
   activeTailWaits.value.set(scope, (activeTailWaits.value.get(scope) || 0) + 1)
   try {
     let failures = 0
-    while (ownsEpisode()) {
+    while (canContinue()) {
       const signal = AbortSignal.any([requestController.signal, runSignal, AbortSignal.timeout(10_000)])
       try {
         const state = await scriptVideoRequest<{ status: Task['status']; videoUrl?: string }>(
           `/projects/${projectId}/video/${taskId}`, 'GET', undefined, signal,
         )
-        if (!ownsEpisode()) return false
+        if (!canContinue()) return false
         if (state.status !== 'processing') {
-          await refreshProject(projectId, episodeId, signal)
+          await refreshVideoEpisodeAfterTaskUpdate(projectId, episodeId, signal)
           return state.status === 'completed' && !!state.videoUrl
         }
         failures = 0
       } catch {
-        if (++failures >= 3 || !ownsEpisode()) return false
+        if (++failures >= 3 || !canContinue()) return false
       }
       await new Promise<void>(resolve => {
         function finish() {
@@ -3621,16 +3647,16 @@ async function waitForVideoTail(projectId: string, episodeId: string, taskId: nu
     else activeTailWaits.value.delete(scope)
   }
 }
-async function recoverFailedVideo(projectId: string, task: Task) {
+async function recoverFailedVideo(projectId: string, episodeId: string, task: Task) {
   const taskId = task.taskId
   if (!taskId || taskActions.value.has(task.id)) return
   taskActions.value.add(task.id)
   try {
     await scriptVideoRequest(`/projects/${projectId}/video/${taskId}/recover`, 'POST')
-    await refreshProject(projectId, selectedProjectId.value === projectId ? selectedEpisodeId.value : undefined)
+    await refreshVideoEpisodeAfterTaskUpdate(projectId, episodeId)
     return taskId
   } catch (error) {
-    toast.error(error instanceof Error ? error.message : '恢复视频任务失败')
+    reportVideoError(projectId, episodeId, error instanceof Error ? error.message : '恢复视频任务失败')
   } finally {
     taskActions.value.delete(task.id)
   }
@@ -3655,7 +3681,7 @@ async function generateCard(
   const episode = project?.episodes.find((item) => item.id === episodeId)
   if (!project || !episode) return
   if (!episode.confirmed || !episode.outlineConfirmed) {
-    navigateStage('production')
+    if (episodeLock.owns(projectId, episodeId)) navigateStage('production')
     return
   }
   if (
@@ -3663,36 +3689,36 @@ async function generateCard(
     !episode.modelName ||
     episode.modelMaxDuration <= 0
   ) {
-    toast.error('请先选择已配置的视频模型')
+    reportVideoError(projectId, episodeId, '请先选择已配置的视频模型')
     return
   }
   const durationIssue = videoDurationIssue(episode, duration ?? card.duration)
   if (durationIssue) {
-    toast.error(durationIssue)
+    reportVideoError(projectId, episodeId, durationIssue)
     return
   }
   let voiceCount: number
   try {
     voiceCount = buildScriptVideoDelivery(card, project.assets, deliveryOptions(project, episode)).voices.length
   } catch (error: any) {
-    toast.error(error.message)
+    reportVideoError(projectId, episodeId, error.message)
     return
   }
   if (episode.modelMaxAudioReferences !== null && voiceCount > (episode.modelMaxAudioReferences || 0)) {
-    toast.error(episode.modelMaxAudioReferences
+    reportVideoError(projectId, episodeId, episode.modelMaxAudioReferences
       ? `当前模型最多支持 ${episode.modelMaxAudioReferences} 段角色声音参考，请调整片段或模型`
       : '当前模型不支持角色声音参考，请选择支持音频参考的视频模型')
     return
   }
   if (card.manuallyAdded) {
     if (!hasScriptVideoPromptBody(card.prompt, deliveryOptions(project, episode).stylePreset)) {
-      toast.error('请先输入本段视频提示词')
+      reportVideoError(projectId, episodeId, '请先输入本段视频提示词')
       return
     }
   } else {
     const preflight = validatePreviewCards([card], project.assets, deliveryOptions(project, episode))
     if (!preflight.ok) {
-      toast.error(
+      reportVideoError(projectId, episodeId,
         preflight.issues.find((issue) => issue.level === 'ERROR')?.message ||
           '分镜需要调整',
       )
@@ -3701,19 +3727,19 @@ async function generateCard(
   }
   try {
     await saveProjectNow(project.id)
-    if (!alive || run?.controller.signal.aborted || !episodeLock.owns(projectId, episodeId)) return
+    if (!alive || run?.controller.signal.aborted) return
     const saved = projects.value.find(item => item.id === projectId)
     const current = saved?.episodes.find(item => item.id === episodeId)
     const latest = current?.cards.find(item => item.id === card.id)
     if (!saved || !current || !latest) return
     const savedDurationIssue = videoDurationIssue(current, duration ?? latest.duration)
     if (savedDurationIssue) {
-      toast.error(savedDurationIssue)
+      reportVideoError(projectId, episodeId, savedDurationIssue)
       return
     }
     const voiceWarning = missingVideoVoiceMessage(getScriptVideoMissingVoices(latest, saved.assets, deliveryOptions(saved, current)))
     if (voiceWarning) {
-      toast.error(voiceWarning)
+      reportVideoError(projectId, episodeId, voiceWarning)
       return
     }
     const path = `/projects/${project.id}/episodes/${episode.id}/cards/${card.id}/video`
@@ -3729,7 +3755,7 @@ async function generateCard(
     }
     run?.waitingToSubmit.delete(card.id)
     const result = await scriptVideoRequest<{ taskId: number }>(path, 'POST', payload)
-    await refreshProject(project.id, episodeId)
+    await refreshVideoEpisodeAfterTaskUpdate(project.id, episodeId)
     return result.taskId
   } catch (error: any) {
     if (run?.controller.signal.aborted || error instanceof ScriptVideoRequestError && error.code === 'CANCELED') return
@@ -3741,10 +3767,10 @@ async function generateCard(
         await refreshProject(project.id, episodeId)
         if (error.status === 409 && retryJobs({ projectId, episodeId, cardIds: [card.id] }).size) return 'needs-approval'
       } catch {
-        toast.error('任务列表更新失败，刷新项目可重新读取')
+        reportVideoError(projectId, episodeId, '任务列表更新失败，刷新项目可重新读取')
       }
     }
-    toast.error(videoTaskError({ code: error.code, error: error.message }) || '视频提交失败')
+    reportVideoError(projectId, episodeId, videoTaskError({ code: error.code, error: error.message }) || '视频提交失败')
   }
 }
 function episodeLightingPlan(project: PreviewProject, episode: PreviewEpisode): ReturnType<typeof buildScriptVideoLightingPlan> {
@@ -3787,6 +3813,26 @@ async function copyPromptPreview() {
   } catch { /* The exact prompt remains selectable when clipboard access is denied. */ }
   if (promptPreview.value?.request === preview.request) preview.copied = copied
 }
+function draftFinalPrompt(project: PreviewProject, episode: PreviewEpisode, card: PreviewCard, duration: number | undefined, saveWarning: string): FinalPromptDelivery {
+  const options = deliveryOptions(project, episode)
+  if (!hasScriptVideoPromptBody(card.prompt, options.stylePreset)) throw new Error('本段还没有视频提示词')
+  const delivery = buildScriptVideoDelivery(card, project.assets, { ...options, duration, preview: true })
+  const { imageTag, audioTag } = scriptVideoDeliveryTags(options)
+  const { prefix, style } = splitScriptVideoPromptStyle(delivery.prompt, options.stylePreset)
+  function reference(index: number, tag: string, name: string, url: string): FinalPromptReference {
+    const local = /^\/?static\/[^?#%\\\0]+$/u.test(url) && !url.split('/').some(part => part === '.' || part === '..')
+    return { index, tag, name, url: local ? '/' + url.replace(/^\//u, '') : '' }
+  }
+  return {
+    source: 'draft', prompt: delivery.prompt,
+    ...(style && { style: { ...style, bodyStart: prefix.length } }),
+    images: delivery.images.map((asset, i) => reference(i + 1, imageTag(i + 1), asset.name, asset.image)),
+    audios: delivery.voices.map(({ asset, roles }, i) => reference(i + 1, audioTag(i + 1), roles.map(role => role.name).join('、'), asset.voiceAudio!.url)),
+    missingVoices: delivery.missingVoices,
+    warnings: [...new Set([saveWarning, ...(delivery.warnings || [])])],
+    ...(episode.cards[0]?.id !== card.id && { pending: '本机草稿未核对上一段的续接尾帧及同场光线参考图，需同步后确认。' }),
+  }
+}
 async function showFinalPrompt({ cardId, title, task, event }: {
   cardId: string; title: string; task?: Task; event?: MouseEvent
 }) {
@@ -3799,18 +3845,30 @@ async function showFinalPrompt({ cardId, title, task, event }: {
   const active = () => alive && dialog.value === 'prompt-preview' && promptPreview.value?.request === request &&
     currentProject.value.id === projectId && currentEpisode.value.id === episodeId
   try {
-    if (!task) await saveProjectNow(projectId)
+    let saveWarning: ScriptVideoRequestError | undefined
+    if (!task) {
+      try { await saveProjectNow(projectId) }
+      catch (error) {
+        if (!(error instanceof ScriptVideoRequestError && error.status === 409 && error.code === 'ASSET_REMOVED')) throw error
+        saveWarning = error
+      }
+    }
     if (!active()) return
     const episode = currentEpisode.value
     const card = episode.cards.find(item => item.id === cardId)
     if (!task && !card) throw new Error('分镜已变更，请重新选择片段')
+    const duration = outputMode.value === 'internal' ? episode.videoDurations?.[cardId] : undefined
+    if (saveWarning && card) {
+      const delivery = draftFinalPrompt(currentProject.value, episode, card, duration, saveWarning.message)
+      Object.assign(promptPreview.value!, { delivery, context: '本机草稿 · 尚未同步', pending: false })
+      return
+    }
     const hasModel = episode.modelConfigId && episode.modelName
     const body = task ? { cardId, jobId: task.id } : {
       cardId, cardVersion: card!.version,
       ...(hasModel && { configId: episode.modelConfigId, model: episode.modelName,
         aspectRatio: episode.aspectRatio, resolution: episode.resolution }),
-      ...(outputMode.value === 'internal' && episode.videoDurations?.[cardId] !== undefined
-        ? { duration: episode.videoDurations[cardId] } : {}),
+      ...(duration !== undefined && { duration }),
     }
     const delivery = await scriptVideoRequest<FinalPromptDelivery>(
       `/projects/${projectId}/episodes/${episodeId}/final-prompt`, 'POST', body, requestController.signal,
@@ -3819,7 +3877,7 @@ async function showFinalPrompt({ cardId, title, task, event }: {
     if (!delivery.prompt) throw new Error('本段还没有视频提示词')
     const modelLabel = hasModel ? episode.modelLabel || episode.modelName :
       outputMode.value === 'external' ? '外部交付' : '未选择视频模型'
-    const deliveryContext = delivery.pending || delivery.missingVoices.length ? '待补齐素材' : context
+    const deliveryContext = delivery.pending || delivery.missingVoices.length || delivery.warnings?.length ? '待补齐素材' : context
     Object.assign(promptPreview.value!, { delivery, context: task ? context : `${deliveryContext} · ${modelLabel}`, pending: false })
   } catch (error: unknown) {
     if (active()) Object.assign(promptPreview.value!, { pending: false, error: error instanceof Error ? error.message : '提示词准备失败' })
@@ -4386,6 +4444,7 @@ onBeforeRouteLeave(async () => {
 })
 onBeforeUnmount(() => {
   alive = false
+  for (const run of activeVideoRequests.value.values()) run.controller.abort()
   window.removeEventListener('pagehide', saveViewOnPageHide, true)
   window.removeEventListener('online', reconnect)
   for (const timer of timersForRetry.values()) clearTimeout(timer)

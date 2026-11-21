@@ -802,16 +802,15 @@ function assetReferenceWarnings(input: Parameters<typeof assertScriptVideoCards>
     const bound = new Set(card.assetIds)
     issues.push(...declaredReferenceIssues(card, assetById, bound))
     // Strip system style text and recaps before resolving deliberate @asset references.
-    // Bare prose mentions do not establish a required reference or an ambiguity error.
+    // The shared resolver limits bare mentions to active shot references.
     const prompt = omitScriptVideoRecapQuotes(
       replaceScriptVideoPromptStyle(card.prompt, undefined, input.production?.stylePreset, input.production),
       card.shots,
     )
     const annotated = annotateScriptVideoAssets(prompt, assets, card.assetIds, {
-      autoBind: true, characters: card.characters, cast: input.production?.characters, excludedIds: card.excludedAssetIds,
+      card, autoBind: true, characters: card.characters, cast: input.production?.characters, excludedIds: card.excludedAssetIds,
     })
     for (const problem of annotated.problems) {
-      if (prompt[problem.start] !== '@') continue
       issues.push({
         code: problem.type === 'unknown' ? 'ASSET_MENTION_UNKNOWN' : 'ASSET_AMBIGUOUS',
         message: card.title + ' ' + describeScriptVideoReferenceProblem(prompt, problem),

@@ -122,6 +122,23 @@ test('only current visual references bind beside quoted text, offscreen sound, a
   assert.deepEqual(scan('画面与动作：镜头切到@皇宫-御书房。', assets, selection, options).assetIds, ['study'])
 })
 
+test('same-line explicit selections bind without changing spoken, sound and handoff references', () => {
+  const assets = [
+    { id: 'hall', name: '京兆府-大堂', kind: 'scene' },
+    { id: 'bird', name: '麻雀', kind: 'creature' },
+    { id: 'bell', name: '钟房', kind: 'scene' },
+    { id: 'next', name: '院落', kind: 'scene' },
+    character('侍卫'),
+  ]
+  const select = '对白／音效：无对白。仅保留旗布轻响 @麻雀  @京兆府-大堂 '
+  const line = select + '；音效：从远处 @钟房 传来钟声；→衔接至第2段：切到 @院落 。'
+  assert.deepEqual(scan(line, assets, [], options).mentions.map(hit => [hit.id, hit.usage]),
+    [['bird', 'visual'], ['hall', 'visual'], ['bell', 'context'], ['next', 'context']])
+  assert.deepEqual(scan('对白／音效：@侍卫：“@麻雀 和 @京兆府-大堂 。”', assets, [], options).assetIds, ['侍卫'])
+  assert.deepEqual(scan('对白／音效：@侍卫：在 @京兆府-大堂 听见 @麻雀 。', assets, [], options).assetIds, ['侍卫'])
+  assert.deepEqual(scan(select, assets, [], { ...options, dialogue: true }).assetIds, [])
+})
+
 test('short role names use only bound cast members and keep a crowd distinct from its flag bearer', () => {
   const royal = character('七天/角色/皇家亲军火枪卫/群体'), privateGuard = character('七天/角色/北城火枪卫/群体')
   const dead = character('七天/角色/黑衣死士/群体'), flag = character('火枪卫小旗_飞鱼服')

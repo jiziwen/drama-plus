@@ -7,6 +7,7 @@ import Database from 'better-sqlite3'
 import { tmpdir } from 'node:os'
 import { OUTLINE_DURATION_POLICY, ScriptVideoStore, ScriptVideoStoreError } from '../src/services/script-video-store'
 import { getScriptVideoStylePreset } from '../src/services/script-video-style'
+import { diffScriptVideoChanges } from '../src/services/script-video-sync'
 import type { ScriptVideoGenerationStatus } from '../src/services/script-video-generation'
 
 const STYLE = { id: 'custom' as const, name: '夜色写实', prefix: '  冷色原文\r\n\r\n声音规则  \r\n' }
@@ -106,6 +107,45 @@ test('video duration preferences survive older clients and leave the storyboard 
 
   preserved.episodes[0].videoDurations = {}
   assert.equal((await store.update(project.id, preserved, preserved.revision)).episodes[0].videoDurations, undefined)
+}))
+
+test('参考帧按片段和素材独立保存，恢复自动不清掉其他帧，也不改变成片版本', async () => fixture(async store => {
+  const project = await store.create('参考帧设置')
+  project.episodes[0].cards = ['source', 'target'].map(id => ({ id, duration: 3, shots: [], assetIds: [], prompt: '站在廊下。' }))
+  await store.update(project.id, project, project.revision)
+  const videoUrl = '/static/videos/source.mp4'
+  const currentUrl = '/static/videos/target.mp4'
+  await store.mutate(project.id, ({ project }) => {
+    const [source, target] = project.episodes[0].cards
+    Object.assign(source, { status: 'ready', videoUrl })
+    Object.assign(target, { status: 'ready', videoUrl: currentUrl })
+    return { result: null, documentChanged: true }
+  })
+  const baseline = await store.get(project.id)
+  const tailDraft = structuredClone(baseline), lightDraft = structuredClone(baseline)
+  tailDraft.episodes[0].cards[1].referenceFrameSettings = { tail: { mode: 'off' } }
+  const manual = { mode: 'manual', videoUrl, seconds: 1.275 }
+  lightDraft.episodes[0].cards[1].referenceFrameSettings = { lighting: { '1': manual } }
+  const patch = (base: typeof baseline, next: typeof baseline) => store.applyChanges(project.id, {
+    clientId: randomUUID(), sequence: 1, changes: diffScriptVideoChanges(base, next),
+  })
+  await patch(baseline, tailDraft)
+  await patch(baseline, lightDraft)
+  const saved = await store.get(project.id)
+  const [source, target] = saved.episodes[0].cards
+  assert.deepEqual(target.referenceFrameSettings, { tail: { mode: 'off' }, lighting: { '1': manual } })
+  assert.equal(source.referenceFrameSettings, undefined)
+  assert.deepEqual([target.status, target.version, target.videoUrl], ['ready', 1, currentUrl])
+  // The first tab only knew about the tail override when it restored automatic.
+  const restore = structuredClone(tailDraft)
+  delete restore.episodes[0].cards[1].referenceFrameSettings
+  await patch(tailDraft, restore)
+  const restored = await store.get(project.id)
+  assert.deepEqual(restored.episodes[0].cards[1].referenceFrameSettings, { lighting: { '1': manual } })
+  const forged = structuredClone(restored)
+  forged.episodes[0].cards[1].referenceFrameSettings.lighting['1'].videoUrl = '/static/videos/../outside.mp4'
+  await assert.rejects(patch(restored, forged), /参考帧设置无效/u)
+  assert.deepEqual(await store.get(project.id), restored)
 }))
 
 test('editing an unused project asset preserves completed and pending card versions', async () => fixture(async store => {

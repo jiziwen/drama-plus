@@ -8,6 +8,7 @@ import { projectScriptVideoSpokenText, scriptVideoSpokenText, withoutScriptVideo
 import { parseScriptVideoPromptDialogue } from './script-video-prompt-dialogue.js'
 import { getScriptVideoSceneContinuityIssues } from './script-video-scene-continuity.js'
 import { annotateScriptVideoAssets, describeScriptVideoReferenceProblem } from './script-video-mentions.js'
+import type { ScriptVideoReferenceSettings } from './script-video-reference-settings.js'
 
 export type ScriptVideoVoiceAudio = {
   url: string
@@ -101,6 +102,7 @@ export type ScriptVideoCard = z.infer<typeof outlineFields> &
   Partial<z.infer<typeof formalContext>> & {
     excludedAssetIds?: string[]
     manuallyAdded?: true
+    referenceFrameSettings?: ScriptVideoReferenceSettings
     promptNeedsSync?: boolean
     dialogueThrough?: ScriptVideoDialogueBoundary
     id: string

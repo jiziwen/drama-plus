@@ -1,3 +1,5 @@
+import type { ScriptVideoReferenceSettings } from './script-video-reference-settings.js'
+
 export interface ScriptVideoLightingRange {
   /** One-based storyboard shot numbers, inclusive. */
   startShot: number
@@ -8,6 +10,11 @@ export interface ScriptVideoLightingRange {
   transitionIn?: boolean
 }
 
+export function manualScriptVideoLightingRanges(ranges: readonly ScriptVideoLightingRange[] | undefined, settings?: ScriptVideoReferenceSettings) {
+  return (ranges ?? []).filter((range): range is ScriptVideoLightingRange & { imageUrl: string } =>
+    !!range.imageUrl && settings?.lighting?.[range.startShot]?.mode === 'manual')
+}
+
 export interface ScriptVideoReferenceLimits {
   maxReferences: number | null
   maxTotalReferences: number | null
@@ -16,20 +23,22 @@ export interface ScriptVideoReferenceLimits {
 export function bindScriptVideoLighting(
   ranges: readonly ScriptVideoLightingRange[], shotCount: number, images: readonly { image: string }[], voiceCount: number,
   opening: { imageUrl: string; imageIndex?: number } | undefined, limits: ScriptVideoReferenceLimits | undefined,
-  imageTag: (index: number) => string,
+  imageTag: (index: number) => string, settings?: ScriptVideoReferenceSettings,
 ) {
   const referenceByUrl = new Map(images.map(({ image }, i) => [image, imageTag(i + 1)]))
   if (opening) referenceByUrl.set(opening.imageUrl, opening.imageIndex ? imageTag(opening.imageIndex) : '本次提交的首帧')
   const hasDedicatedFirstFrame = !!opening && !opening.imageIndex
   const used = images.length + Number(!!opening?.imageIndex)
   const remaining = Math.min(limits?.maxReferences ?? Infinity, (limits?.maxTotalReferences ?? Infinity) - voiceCount) - used
+  const reserved = new Set(manualScriptVideoLightingRanges(ranges, settings).map(range => range.imageUrl).filter(url => !referenceByUrl.has(url)))
   const lightingImages: string[] = [], lightingRanges: ScriptVideoLightingRange[] = [], instructions: string[] = []
   for (const range of ranges) {
     if (!Number.isInteger(range.startShot) || !Number.isInteger(range.endShot) || range.startShot < 1 ||
         range.endShot < range.startShot || range.endShot > shotCount || !range.sceneName.trim()) continue
     const { imageUrl, ...description } = range
     let tag = imageUrl && referenceByUrl.get(imageUrl)
-    if (imageUrl && !tag && !hasDedicatedFirstFrame && lightingImages.length < remaining) {
+    const manual = imageUrl && reserved.delete(imageUrl)
+    if (imageUrl && !tag && !hasDedicatedFirstFrame && lightingImages.length + (manual ? 0 : reserved.size) < remaining) {
       lightingImages.push(imageUrl)
       tag = imageTag(used + lightingImages.length)
       referenceByUrl.set(imageUrl, tag)

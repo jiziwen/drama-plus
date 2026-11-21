@@ -131,7 +131,13 @@
             </button>
           </div>
         </div>
-        <p v-else class="sv-empty">{{ selectedAssets.length ? '已选素材中没有匹配项' : '本片段尚无可用参考素材' }}</p>
+        <p v-else-if="selectedAssets.length || (!frameEditor?.loading.value && !frameEditor?.frames.value?.tail && !frameEditor?.frames.value?.lighting.length)" class="sv-empty">
+          {{ selectedAssets.length ? '已选素材中没有匹配项' : '本片段尚无可用参考素材' }}
+        </p>
+        <ScriptVideoReferenceFrames
+          v-if="frameEditor" :frames="frameEditor.frames.value" :loading="frameEditor.loading.value" :changing="frameEditor.changing.value"
+          :error="frameEditor.error.value" :choose="frameEditor.choose" @retry="frameEditor.refresh"
+        />
       </template>
 
       <ScriptVideoPreviewRevision
@@ -363,6 +369,7 @@
 import { computed, nextTick, ref, shallowRef, useId, watch } from 'vue'
 import { Eye, Sparkles, Upload, X } from 'lucide-vue-next'
 import MentionTextarea from './MentionTextarea.vue'
+import type { useScriptVideoReferenceFrames } from '~/composables/useScriptVideoReferenceFrames'
 import { getPreviewMaterialUse, inspectPreviewCardAssets, validatePreviewCards } from '~/utils/scriptVideoPreviewValidation'
 import { editScriptVideoPromptVoiceView, scriptVideoPromptVoiceView } from '~/utils/scriptVideoPromptVoiceView'
 import { getScriptVideoPromptVoices } from '../../../backend/src/services/script-video-delivery'
@@ -384,6 +391,7 @@ import {
 const props = withDefaults(
   defineProps<{
     card: PreviewCard
+    frameEditor?: ReturnType<typeof useScriptVideoReferenceFrames>
     assets: PreviewAsset[]
     outputMode: 'internal' | 'external'
     production?: PreviewProduction

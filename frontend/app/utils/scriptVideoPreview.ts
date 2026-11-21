@@ -4,6 +4,7 @@ import { renderScriptVideoPrompt } from '../../../backend/src/services/script-vi
 import { scriptVideoShotHeadings } from '../../../backend/src/services/script-video-asset-scope'
 import { formatScriptVideoStylePreset, scriptVideoPromptStylePrefix, type ScriptVideoStylePreset } from '../../../backend/src/services/script-video-style'
 import type { ScriptVideoVoiceMode } from '../../../backend/src/services/script-video-types'
+import type { ScriptVideoReferenceSettings } from '../../../backend/src/services/script-video-reference-settings'
 import type { ScriptVideoVersion } from '../../../backend/src/services/script-video-versions'
 export { listScriptVideoVersions, selectScriptVideoPlayback as scriptVideoCardPlayback } from '../../../backend/src/services/script-video-versions'
 export type { ScriptVideoVersion } from '../../../backend/src/services/script-video-versions'
@@ -86,6 +87,7 @@ export type PreviewCard = {
   ending?: string
   manuallyAdded?: true
   promptNeedsSync?: boolean
+  referenceFrameSettings?: ScriptVideoReferenceSettings
   excludedAssetIds?: string[]
 }
 

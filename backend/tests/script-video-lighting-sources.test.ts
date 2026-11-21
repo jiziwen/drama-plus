@@ -69,6 +69,32 @@ test('a generating same-scene clip invalidates the prior lighting image until th
   assert.equal(plan().c[0].source?.taskId, jobs[1].taskId)
 })
 
+test('per-range manual frames stay pinned to an earlier saved render; off ranges keep lighting text', async () => {
+  const { cards, jobs, plan } = fixture()
+  jobs.push({ ...jobs[1], id: 'retry', status: 'running', cardVersion: cards[1].version })
+  assert.equal(plan().c[0].pendingCardId, 'b')
+  const settings = { lighting: { '1': { mode: 'manual', videoUrl: cards[0].videoUrl!, seconds: 0.125 } } }
+  Object.assign(cards[2], { referenceFrameSettings: settings })
+  const manual = plan().c
+  assert.equal(manual[0].pendingCardId, undefined)
+  assert.equal(manual[0].source?.cardId, 'a')
+  const generated = await prepareScriptVideoLighting(manual, async () => assert.fail('automatic extraction'), async (url, seconds) => {
+    assert.deepEqual([url, seconds], [cards[0].videoUrl, 0.125])
+    return '/static/manual.jpg'
+  })
+  assert.equal(generated.ranges[0].imageUrl, '/static/manual.jpg')
+  settings.lighting['1'].videoUrl = '/static/videos/unrelated.mp4'
+  const invalid = await prepareScriptVideoLighting(plan().c, async () => assert.fail('automatic fallback'), async () => assert.fail('unauthorized source'))
+  assert.ok(invalid.warnings.length)
+  Object.assign(cards[2], { referenceFrameSettings: { lighting: { '1': { mode: 'off' } } } })
+  const off = await prepareScriptVideoLighting(plan().c, async () => assert.fail('disabled reference'))
+  assert.deepEqual(off.checks, [])
+  assert.ok(!off.ranges[0].imageUrl && off.ranges[0].lighting?.includes('散射光'))
+  assert.equal(plan().d[0].source?.cardId, 'c')
+  Object.assign(cards[2], { referenceFrameSettings: {} })
+  assert.equal(plan().c[0].pendingCardId, 'b')
+})
+
 test('a blank ending falls back within that scene and an unreadable render still permits text lighting', async () => {
   const { plan } = fixture()
   const input = plan().b

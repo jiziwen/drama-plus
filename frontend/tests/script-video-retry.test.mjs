@@ -71,8 +71,8 @@ function controller(initialTasks = [], {
     setTimeout: done => queueMicrotask(done), clearTimeout,
     episodeLock: { owns: (projectId, episodeId) => leaseActive.value && projectId === selectedProjectId.value && episodeId === selectedEpisodeId.value },
     getScriptVideoContinuationScene: (previous, next) => connections.includes(`${previous.id}/${next.id}`),
-    buildScriptVideoLightingPlan: () => Object.fromEntries(Object.entries(lightingScenes).map(([id, sceneKey]) =>
-      [id, [{ sceneKey }]])),
+    buildScriptVideoLightingPlan: () => Object.fromEntries(Object.entries(lightingScenes).map(([id, scenes]) =>
+      [id, (Array.isArray(scenes) ? scenes : [scenes]).map((sceneKey, i) => ({ sceneKey, firstShot: i + 1 }))])),
     currentProject, currentEpisode, projects, tasks: computed(() => currentEpisode.value.tasks),
     cards: computed(() => currentEpisode.value.cards), assets: computed(() => currentProject.value.assets),
     saveProjectNow: async id => { await onSave?.(id) }, refreshProject: async (projectId, episodeId) => { refreshes.push({ projectId, episodeId }); await onRefresh?.(projectId, episodeId) },
@@ -620,6 +620,62 @@ test('同场换机位的批量任务等待实际成片，另一场可先提交',
   finish({ status: 'completed', videoUrl: '/static/videos/task-21.mp4' })
   await batch
   assert.equal(app.submissions[2].path.split('/').at(-2), 'b')
+})
+
+test('尾帧与多个光线范围独立等待，只跳过手选或移除的来源并保留后段取光', async () => {
+  for (const mode of ['off', 'manual']) {
+    const results = { a: Promise.withResolvers(), b: Promise.withResolvers(), c: Promise.withResolvers() }
+    const ids = ['a', 'b', 'c', 'd'], tasks = new Map(ids.map((id, i) => [id, 21 + i]))
+    const app = controller([], {
+      cardIds: ids, connections: ['b/c'], lightingScenes: { a: '松林', b: '院落', c: ['松林', '院落'], d: '松林' },
+      onLookup: path => results[ids[Number(path.split('/').at(-1)) - 21]].promise,
+      onSubmit: path => ({ taskId: tasks.get(path.split('/').at(-2)) }),
+    })
+    const choice = mode === 'off' ? { mode } : { mode, videoUrl: '/static/videos/source.mp4', seconds: 1 }
+    // B's automatic tail is disabled in C, and C's first light range also has
+    // an explicit choice. C should still wait for B's second-range light.
+    app.episode.cards[2].referenceFrameSettings = { tail: choice, lighting: { 1: choice } }
+    const batch = app.requestVideoGeneration(ids)
+    const submitted = () => app.submissions.map(call => call.path.split('/').at(-2))
+    await new Promise(resolve => setImmediate(resolve))
+    assert.deepEqual(submitted(), ['a','b'])
+    results.b.resolve({ status: 'completed', videoUrl: '/static/videos/b.mp4' })
+    await new Promise(resolve => setImmediate(resolve))
+    assert.deepEqual(submitted(), ['a','b','c'])
+    results.c.resolve({ status: 'completed', videoUrl: '/static/videos/c.mp4' })
+    await batch
+    assert.deepEqual(submitted(), ids)
+    results.a.resolve({ status: 'completed', videoUrl: '/static/videos/a.mp4' })
+  }
+})
+
+test('关闭光线范围仍等待自动尾帧，单独关闭尾帧能直接提交', async () => {
+  for (const disableTail of [false, true]) {
+    const first = Promise.withResolvers()
+    const app = controller([], {
+      connections: ['a/b'], lightingScenes: { a: '大堂', b: '大堂' },
+      onLookup: () => first.promise, onSubmit: path => ({ taskId: path.endsWith('/a/video') ? 21 : 22 }),
+    })
+    app.episode.cards[1].referenceFrameSettings = { ...(disableTail && { tail: { mode:'off' } }), lighting: { 1: { mode:'off' } } }
+    const batch = app.requestVideoGeneration(['a','b'])
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(app.submissions.length, disableTail ? 2 : 1)
+    first.resolve({ status: 'completed', videoUrl: '/static/videos/a.mp4' })
+    await batch
+    assert.equal(app.submissions.length, 2)
+  }
+})
+
+test('外部交付没有选择模型、没有自动续接时仍取回手选帧', async () => {
+  const app = controller([], { onContinuations: () => ({ continuations: {}, lightingRanges: {} }) })
+  const card = app.episode.cards[1]
+  app.episode.modelConfigId = undefined
+  app.episode.modelName = ''
+  card.referenceFrameSettings = { tail: { mode: 'manual', videoUrl: '/static/videos/source.mp4', seconds: 1 } }
+  await app.deliveryContinuations(app.project, app.episode, [card])
+  assert.deepEqual(Array.from(app.calls.at(-1).body.cardIds), ['b'])
+  assert.equal(Object.hasOwn(app.calls.at(-1).body, 'configId'), false)
+  assert.equal(Object.hasOwn(app.calls.at(-1).body, 'model'), false)
 })
 
 test('第一段即梦直接提交时，仅续约后续分镜的排队提示', async () => {

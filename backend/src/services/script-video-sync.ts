@@ -142,12 +142,27 @@ export function applyScriptVideoChanges<T extends Document>(project: T, changes:
 
 function fieldsChanged(target: ScriptVideoChange['target'], before: Document, after: Document) {
   const fields: Record<string, unknown> = {}, unset: string[] = []
+  function setChoice(name: string, a: unknown, b: unknown) {
+    if (same(a, b)) return
+    if (b === undefined) unset.push(name)
+    else fields[name] = clone(b)
+  }
   function visit(a: Document, b: Document, prefix = '') {
     for (const key of new Set([...Object.keys(a), ...Object.keys(b)])) {
       if (!prefix && !editable(target, key)) continue
       if (key.startsWith('_') || forbidden.has(key)) continue
       const name = prefix ? `${prefix}.${key}` : key
       if (same(a[key], b[key])) continue
+      // A frame choice is one value, but different reference rows can be
+      // edited independently, even when the first override creates the map.
+      if (target === 'card' && name === 'referenceFrameSettings') {
+        const prev = a[key], next = b[key]
+        setChoice(`${name}.tail`, prev?.tail, next?.tail)
+        for (const shot of new Set([...Object.keys(prev?.lighting || {}), ...Object.keys(next?.lighting || {})])) {
+          setChoice(`${name}.lighting.${shot}`, prev?.lighting?.[shot], next?.lighting?.[shot])
+        }
+        continue
+      }
       if (!own(b, key) || b[key] === undefined) unset.push(name)
       else if (object(a[key]) && object(b[key]) && Object.keys(b[key]).length) visit(a[key], b[key], name)
       else fields[name] = clone(b[key])

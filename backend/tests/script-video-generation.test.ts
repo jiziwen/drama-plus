@@ -576,6 +576,45 @@ test('黑屏尾帧回退至末镜稳定画面，按所选服务商协议提交�
   assert.equal(native.content[0].text!, finalPrompt.prompt)
   assert.match(native.content[0].text!, /镜头1至2「北廊」：廊下散射光/u)
   assert.deepEqual(native.content.slice(1), [{ type: 'image_url', role: 'first_frame', image_url: { url: 'https://media.example.test' + frame.imageUrl } }])
+
+  // A deliberately chosen lighting frame must accompany even a same-camera opening.
+  const manual = { ...onlyFrame, continuationSource: { ...source, manualSeconds: 0.5 }, card: {
+    ...onlyFrame.card, referenceFrameSettings: { lighting: { '1': { mode: 'manual' as const, videoUrl: source.videoUrl, seconds: 0.25 } } },
+  } }
+  const chosen = await previewScriptVideoPrompt({ ...manual, selection: onlyFrame })
+  assert.equal(chosen.firstFrame, undefined)
+  assert.equal(chosen.images.length, 2)
+  assert.equal(chosen.images[1].url, onlyFrame.lightingRanges[0].imageUrl)
+  assert.match(chosen.prompt, /从上一段成片手动选取的续接画面/u)
+  const exportedManual = await prepareScriptVideoDeliveryReferences([{ card: manual.card, source: manual.continuationSource }],
+    [], onlyFrame, { [manual.card.id]: manual.lightingRanges })
+  assert.equal(exportedManual.continuations[manual.card.id].mode, 'reference')
+  assert.deepEqual(exportedManual.lightingRanges[manual.card.id], manual.lightingRanges)
+  const actualManual = await startScriptVideoGeneration(manual)
+  assert.equal((await finish(actualManual.taskId)).status, 'completed')
+  assert.deepEqual(actualManual.continuation, exportedManual.continuations[manual.card.id])
+  assert.deepEqual(actualManual.lightingRanges, manual.lightingRanges)
+  assert.deepEqual(submissions.at(-1)!.content.slice(1).map(item => item.role), ['reference_image', 'reference_image'])
+})
+
+test('供应商参考图不足时预览提示缺少的手选镜头，提交及导出均阻止静默降级', async () => {
+  const sourceUrl = '/static/videos/earlier.mp4'
+  const ranges = Array.from({ length: 11 }, (_, n) => ({ startShot: n + 1, endShot: n + 1,
+    sceneName: '北廊', lighting: '廊下散射光', imageUrl: '/static/videos/light-' + n + '.jpg' }))
+  const card = { ...input.card, assetIds: [], prompt: '北廊日景。', duration: ranges.length, shots: ranges.map(() => ({ duration: 1 })),
+    referenceFrameSettings: { lighting: Object.fromEntries(ranges.map(range => [range.startShot,
+      { mode: 'manual' as const, videoUrl: sourceUrl, seconds: range.startShot }])) } }
+  // Seedance 2.0 allows nine images. No image should reach the provider.
+  const options = { ...input, card, assets: [], lightingRanges: ranges }
+  const preview = await previewScriptVideoPrompt({ ...options, selection: options })
+  assert.ok(preview.warnings?.some(warning => /手选光线参考图.*镜头10.*镜头11/u.test(warning)))
+  const rejected = /手选光线参考图.*镜头10.*镜头11/u
+  await assert.rejects(startScriptVideoGeneration(options), rejected)
+  await assert.rejects(prepareScriptVideoDeliveryReferences([{ card }], [], options), rejected)
+  // Automatic ranges may fall back to their existing text to leave a slot for the manual choice.
+  const onlyLast = { ...card, referenceFrameSettings: { lighting: { '11': card.referenceFrameSettings.lighting['11'] } } }
+  const available = await prepareScriptVideoDeliveryReferences([{ card: onlyLast }], [], options)
+  assert.equal(available.lightingRanges[card.id].at(-1)?.imageUrl, ranges[10].imageUrl)
 })
 
 test('同场换机位把本地影调帧传到 AICost 普通图片序列，返回实际提交快照', async t => {

@@ -401,6 +401,7 @@
             :key="`${currentEpisode.id}:${selectedCard.id}`"
             v-model:tab="editorTab"
             :card="selectedCard"
+            :frame-editor="frameEditor"
             :completed-task-video-url="latestCompletedVideoByCard.get(selectedCard.id)?.videoUrl"
             :video-versions="selectedVideoVersions"
             :promoting-video-version="promotingVideoVersion"
@@ -1379,6 +1380,7 @@ import {
 import { toast } from 'vue-sonner'
 import { onBeforeRouteLeave } from 'vue-router'
 import { useScriptVideoEpisodeLock } from '~/composables/useScriptVideoEpisodeLock'
+import { useScriptVideoReferenceFrames } from '~/composables/useScriptVideoReferenceFrames'
 import { usesJimengVideo } from '~/utils/jimengVideo'
 import { jimengVideoModel } from '../../../../backend/src/services/jimeng-video-models'
 import { LIBTV_VIDEO_RATIOS, libtvVideoModel } from '../../../../backend/src/services/libtv-video-models'
@@ -2403,8 +2405,11 @@ function updateCard(card: PreviewCard, targetEpisode?: PreviewEpisode) {
   const index = episode.cards.findIndex((c) => c.id === card.id)
   if (index < 0) return
   if (!targetEpisode && stage.value === 'outline') episode.outlineConfirmed = false
+  const { referenceFrameSettings: _snapshotSettings, ...content } = card
+  const settings = episode.cards[index].referenceFrameSettings
   episode.cards[index] = {
-    ...card,
+    ...content,
+    ...(settings && { referenceFrameSettings: settings }),
     status: 'draft',
     version: episode.cards[index].version + 1,
   }
@@ -3540,45 +3545,51 @@ async function runVideoRequests(request: VideoGenerationRequest, approvedJobs?: 
       const alreadySubmitted = existing?.status === 'processing' ||
         isVideoDeliveryRecovery(existing)
       if (!alreadySubmitted) run.cardStatuses.set(card.id, 'queued')
-      if (alreadySubmitted || !previous || !getScriptVideoContinuationScene(previous, card, project.assets)) {
-        const sceneKeys = new Set(lightingPlan[card.id]?.map(range => range.sceneKey))
-        const sources = new Set<Promise<VideoSubmission> | number>()
-        if (!alreadySubmitted && sceneKeys.size) {
-          for (const prior of episode.cards.slice(0, index).reverse()) {
-            const shared = lightingPlan[prior.id]?.filter(range => sceneKeys.has(range.sceneKey))
-            if (!shared?.length) continue
-            const task = initialTasks.get(prior.id)
-            const pending = scheduled.get(prior.id) || (task?.status === 'processing' && task.taskId)
-            if (!pending && !officialScriptVideoUrl(prior)) continue
-            if (pending) sources.add(pending)
-            for (const range of shared) sceneKeys.delete(range.sceneKey)
-            if (!sceneKeys.size) break
-          }
+      const needsTail = !alreadySubmitted && previous && !card.referenceFrameSettings?.tail &&
+        getScriptVideoContinuationScene(previous, card, project.assets)
+      const automaticRanges = (lightingPlan[card.id] || []).filter(range => !card.referenceFrameSettings?.lighting?.[range.firstShot])
+      const sceneKeys = new Set(automaticRanges.map(range => range.sceneKey))
+      const sources = new Set<Promise<VideoSubmission> | number>()
+      if (!alreadySubmitted && sceneKeys.size) {
+        for (const prior of episode.cards.slice(0, index).reverse()) {
+          const shared = lightingPlan[prior.id]?.filter(range => sceneKeys.has(range.sceneKey))
+          if (!shared?.length) continue
+          const task = initialTasks.get(prior.id)
+          const pending = scheduled.get(prior.id) || (task?.status === 'processing' && task.taskId)
+          if (!pending && !officialScriptVideoUrl(prior)) continue
+          if (pending) sources.add(pending)
+          for (const range of shared) sceneKeys.delete(range.sceneKey)
+          if (!sceneKeys.size) break
         }
-        scheduled.set(card.id, sources.size ? (async (): Promise<VideoSubmission> => {
-          for (const source of sources) {
-            const taskId = await source
-            if (taskId === 'needs-approval') return
-            if (taskId) await waitForRender(taskId)
-          }
-          return submit(card.id)
-        })() : submit(card.id))
-        continue
       }
-      const precedingSubmission = scheduled.get(previous.id)
       scheduled.set(card.id, (async (): Promise<VideoSubmission> => {
-        if (precedingSubmission) {
-          const prior = await precedingSubmission
-          if (prior === 'needs-approval') return prior
-          if (prior && await waitForRender(prior)) return submit(card.id)
+        if (needsTail) {
+          let ready = false
+          const precedingSubmission = scheduled.get(previous.id)
+          if (precedingSubmission) {
+            const prior = await precedingSubmission
+            if (prior === 'needs-approval') return prior
+            if (prior) ready = await waitForRender(prior)
+          }
+          if (!ready) {
+            const current = videoEpisode(projectId, episodeId)
+            const source = current?.cards.find(item => item.id === previous.id)
+            const task = current && source && pendingVideoTask(current, source)
+            if (task?.taskId) ready = await waitForRender(task.taskId)
+            const latest = videoEpisode(projectId, episodeId)?.cards.find(item => item.id === previous.id)
+            ready ||= !!(latest && officialScriptVideoUrl(latest) && (!task || task.taskId))
+          }
+          if (!ready) {
+            if (canContinue()) blocked.push({ segment: index + 1, previous: index })
+            return
+          }
         }
-        const current = videoEpisode(projectId, episodeId)
-        const source = current?.cards.find(item => item.id === previous.id)
-        const task = current && source && pendingVideoTask(current, source)
-        if (task?.taskId && await waitForRender(task.taskId)) return submit(card.id)
-        const latestSource = videoEpisode(projectId, episodeId)?.cards.find(item => item.id === previous.id)
-        if (latestSource && officialScriptVideoUrl(latestSource) && (!task || task.taskId)) return submit(card.id)
-        if (canContinue()) blocked.push({ segment: index + 1, previous: index })
+        for (const source of sources) {
+          const taskId = await source
+          if (taskId === 'needs-approval') return
+          if (taskId) await waitForRender(taskId)
+        }
+        return submit(card.id)
       })())
     }
     const results = await Promise.all([...scheduled].map(async ([id, result]) => {
@@ -3790,15 +3801,16 @@ async function deliveryContinuations(project: PreviewProject, episode: PreviewEp
   const plan = episodeLightingPlan(project, episode)
   const cardIds = cards.filter(card => {
     const previous = episode.cards[episode.cards.findIndex(item => item.id === card.id) - 1]
-    return plan[card.id]?.length || previous && getScriptVideoContinuationScene(previous, card, project.assets)
+    return card.referenceFrameSettings?.tail?.mode === 'manual' || Object.values(card.referenceFrameSettings?.lighting || {}).some(choice => choice.mode === 'manual') ||
+      plan[card.id]?.length || previous && getScriptVideoContinuationScene(previous, card, project.assets)
   }).map(card => card.id)
-  if (!cardIds.length || !episode.modelConfigId || !episode.modelName) return { continuations: {}, lightingRanges: {} }
+  if (!cardIds.length) return { continuations: {}, lightingRanges: {} }
   await saveProjectNow(project.id)
   const prepared = await scriptVideoRequest<{
     continuations: Record<string, ScriptVideoContinuation>; lightingRanges?: Record<string, ScriptVideoLightingRange[]>
   }>(
     `/projects/${project.id}/episodes/${episode.id}/continuations`, 'POST', {
-      cardIds, configId: episode.modelConfigId, model: episode.modelName,
+      cardIds, ...(episode.modelConfigId && episode.modelName && { configId: episode.modelConfigId, model: episode.modelName }),
     },
   )
   return { continuations: prepared.continuations, lightingRanges: prepared.lightingRanges ?? {} }
@@ -4392,6 +4404,21 @@ async function confirmAssetDeletion() {
 const sharedActivity = ref<{ scope: string; activeCardIds: string[]; queuedCardIds: string[] }>({ scope: '', activeCardIds: [], queuedCardIds: [] })
 const activeCardIds = computed(() => sharedActivity.value.scope === episodeKey.value ? sharedActivity.value.activeCardIds : [])
 const queuedCardIds = computed(() => sharedActivity.value.scope === episodeKey.value ? sharedActivity.value.queuedCardIds : [])
+const frameEditor = useScriptVideoReferenceFrames(
+  () => episodeOpen.value && stage.value === 'production' && selectedCard.value
+    ? { projectId: currentProject.value.id, episodeId: currentEpisode.value.id, card: selectedCard.value } : undefined,
+  () => {
+    const card = selectedCard.value, episode = currentEpisode.value
+    if (!episodeOpen.value || stage.value !== 'production' || !card) return ''
+    const previous = episode.cards.slice(0, episode.cards.findIndex(item => item.id === card.id))
+    const sources = new Set(previous.map(item => item.id))
+    return JSON.stringify([card.version, episode.modelConfigId, episode.modelName,
+      previous.map(item => [item.id, item.version, officialScriptVideoUrl(item)]),
+      episode.tasks.filter(task => sources.has(task.cardId)).map(task => [task.id, task.status, task.videoUrl]),
+      queuedCardIds.value.filter(id => sources.has(id)).sort()])
+  },
+  saveProjectNow, (path, body, signal) => scriptVideoRequest(path, 'POST', body, signal),
+)
 const pageVisible = ref(false)
 function updatePageVisibility() { pageVisible.value = document.visibilityState === 'visible' }
 onMounted(() => {

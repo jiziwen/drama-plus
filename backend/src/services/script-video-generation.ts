@@ -13,6 +13,7 @@ import { publicMediaBaseUrl } from './public-media.js'
 import { ffmpeg } from '../utils/ffmpeg.js'
 import { isPreTlsConnectionReset } from '../utils/network-error.js'
 import { extractVideoTailFrame } from '../utils/video-poster.js'
+import { extractVideoReferenceFrame } from '../utils/video-reference-frame.js'
 import type { TailShotRange } from '../utils/video-tail-frame.js'
 import { resolveMediaConfig } from './media-selection.js'
 import { isScriptVideoGenerationDuration, scriptVideoCapabilities, type ScriptVideoCapabilities } from './script-video-capabilities.js'
@@ -21,7 +22,7 @@ import { safeTaskError } from './video-download.js'
 import { aicostVideoSubmissionRejection } from './adapters/aicost-video.js'
 import { aliyunWanVideoPrompt } from './adapters/aliyun-wan-video.js'
 import { hasScriptVideoPromptBody, splitScriptVideoPromptStyle, type ScriptVideoStylePreset } from './script-video-style.js'
-import { sceneGradedStyle } from './script-video-lighting-delivery.js'
+import { manualScriptVideoLightingRanges, sceneGradedStyle } from './script-video-lighting-delivery.js'
 import { JimengCliError } from './jimeng-cli.js'
 import { jimengVideoModel } from './jimeng-video-models.js'
 import { LIBTV_VIDEO_RATIOS, libtvVideoModel } from './libtv-video-models.js'
@@ -33,6 +34,7 @@ export type ScriptVideoContinuationSource = {
   videoUrl: string
   shotStartSeconds?: number
   shotEndSeconds?: number
+  manualSeconds?: number
 }
 
 export interface ScriptVideoGenerationInput {
@@ -146,27 +148,34 @@ async function checkedVoiceAudio(asset: Asset): Promise<{ url: string; duration:
   return { url: voice.url, duration }
 }
 
+export function scriptVideoOpeningImage(source: ScriptVideoContinuationSource) {
+  if (source.manualSeconds !== undefined) return extractVideoReferenceFrame(source.videoUrl, source.manualSeconds)
+  const { shotStartSeconds, shotEndSeconds } = source
+  return extractVideoTailFrame(source.videoUrl, shotStartSeconds === undefined || shotEndSeconds === undefined
+    ? undefined : { shotStartSeconds, shotEndSeconds })
+}
+
 async function prepareOpeningFrame(
   source: ScriptVideoContinuationSource,
   provider: string,
   model: string,
   hasReferences: boolean,
 ): Promise<ScriptVideoContinuation> {
-  const { shotStartSeconds, shotEndSeconds } = source
-  const imageUrl = await extractVideoTailFrame(source.videoUrl, shotStartSeconds === undefined || shotEndSeconds === undefined
-    ? undefined : { shotStartSeconds, shotEndSeconds })
+  const imageUrl = await scriptVideoOpeningImage(source)
+  if (!imageUrl && source.manualSeconds !== undefined) throw new Error('手选尾帧不可用，请重新选帧或恢复自动。')
   if (!imageUrl) throw new Error('上一段末镜没有找到稳定的续接画面，请检查上一段视频后再试')
   const supportsFirstFrame = ['volcengine', 'minimax', 'aliyun'].includes(provider) ||
     provider === 'aicost' && isAicostMiniMaxH3Model(model)
   return {
     previousCardId: source.previousCardId, previousVideoUrl: source.videoUrl,
+    ...(source.manualSeconds !== undefined && { manualSeconds: source.manualSeconds }),
     ...(source.previousTaskId && { previousTaskId: source.previousTaskId }), imageUrl,
     mode: supportsFirstFrame && !hasReferences ? 'first-frame' : 'reference',
   }
 }
 
 type PreviewCard = ScriptVideoDeliveryCard & { id: string }
-type PreviewOptions = Omit<ScriptVideoDeliveryOptions, 'continuation' | 'provider'> & { configId: number }
+type PreviewOptions = Omit<ScriptVideoDeliveryOptions, 'continuation' | 'provider'> & { configId?: number }
 
 export async function prepareScriptVideoDeliveryReferences(
   inputs: readonly { card: PreviewCard; source?: ScriptVideoContinuationSource }[],
@@ -177,9 +186,9 @@ export async function prepareScriptVideoDeliveryReferences(
   const lightingRanges: Record<string, ScriptVideoLightingRange[]> = Object.create(null)
   const selected = inputs.filter(({ card, source }) => source || (lightingRangesByCard[card.id] ?? options.lightingRanges)?.length)
   if (!selected.length) return { continuations, lightingRanges }
-  const config = await resolveMediaConfig('video', options)
-  const { provider, model } = config
-  const referenceLimits = scriptVideoCapabilities(provider, model, config.comfyui) ?? undefined
+  const config = options.configId !== undefined ? await resolveMediaConfig('video', options) : undefined
+  const provider = config?.provider, model = config?.model
+  const referenceLimits = config ? scriptVideoCapabilities(config.provider, config.model, config.comfyui) ?? undefined : undefined
   for (const { card, source } of selected) {
     const deliveryOptions = { ...options, provider, model, referenceLimits,
       lightingRanges: lightingRangesByCard[card.id] ?? options.lightingRanges }
@@ -205,14 +214,25 @@ async function prepareCardDelivery(
   baseline = buildScriptVideoDelivery(card, assets, options),
 ) {
   if (options.requireVoices && baseline.missingVoices.length) throw new Error(scriptVideoMissingVoicesMessage(baseline.missingVoices))
-  // Optional grade images must not downgrade an exact same-camera first frame.
+  // Automatic light references are optional. A manual light needs a mode
+  // that can send the selected image alongside the opening frame.
+  const manualLights = manualScriptVideoLightingRanges(options.lightingRanges, card.referenceFrameSettings)
   const continuation = source && await prepareOpeningFrame(source, options.provider || '', options.model || '',
-    !!(baseline.images.length || baseline.voices.length)).catch(error => {
+    !!(baseline.images.length || baseline.voices.length || manualLights.length)).catch(error => {
     if (!options.preview) throw error
     baseline.warnings = [...(baseline.warnings ?? []), safeTaskError(error)]
     return undefined
   })
-  return { delivery: continuation ? buildScriptVideoDelivery(card, assets, { ...options, continuation }) : baseline, continuation }
+  const delivery = continuation ? buildScriptVideoDelivery(card, assets, { ...options, continuation }) : baseline
+  const missing = manualLights.filter(light => !delivery.lightingRanges.some(range =>
+    range.startShot === light.startShot && range.imageUrl === light.imageUrl))
+  if (missing.length) {
+    const shots = missing.map(range => '镜头' + range.startShot).join('、')
+    const message = '当前模型的参考图配额无法容纳手选光线参考图（' + shots + '），请减少参考图或更换模型。'
+    if (!options.preview) throw new Error(message)
+    delivery.warnings = [...(delivery.warnings ?? []), message]
+  }
+  return { delivery, continuation }
 }
 
 type CardDelivery = Awaited<ReturnType<typeof prepareCardDelivery>>['delivery']

@@ -28,6 +28,8 @@ import {
   getScriptVideoSubmissionPrompt,
   prepareScriptVideoArchiveImages,
   prepareScriptVideoDeliveryReferences,
+  scriptVideoOpeningImage,
+  ScriptVideoGenerationValidationError,
   previewScriptVideoPrompt,
   scriptVideoMissingVoicesMessage,
   type ScriptVideoContinuationSource,
@@ -46,12 +48,14 @@ import {
   reviseScriptVideoCard,
 } from '../services/script-video-ai.js'
 import { getScriptVideoContinuationScene } from '../services/script-video-scene-boundary.js'
-import { isActiveScriptVideoRender, planScriptVideoLighting, prepareScriptVideoLighting, reviewScriptVideoLighting, selectedScriptVideoRenders, type RenderLightingRange } from '../services/script-video-lighting.js'
+import { earlierScriptVideoRender, isActiveScriptVideoRender, planScriptVideoLighting, prepareScriptVideoLighting, reviewScriptVideoLighting, selectedScriptVideoRenders, type RenderLightingRange } from '../services/script-video-lighting.js'
+import { extractVideoReferenceFrame } from '../utils/video-reference-frame.js'
+import { scriptVideoReferenceSourceUrl, validScriptVideoFrameTime, type ScriptVideoReferenceFrameRow, type ScriptVideoReferenceFrames } from '../services/script-video-reference-settings.js'
 import { safeTaskError } from '../services/video-download.js'
 import { holdVideoCliSubmission } from '../services/video-cli-tasks.js'
 import { getScriptVideoMerge, mergeScriptVideoClips } from '../services/ffmpeg-merge.js'
 import { resolveStoredVideo } from '../utils/video-poster.js'
-import { listScriptVideoVersions, selectScriptVideoPlayback, type ScriptVideoVersion } from '../services/script-video-versions.js'
+import { listScriptVideoVersions, officialScriptVideoUrl, selectScriptVideoPlayback, type ScriptVideoVersion } from '../services/script-video-versions.js'
 
 type Action = 'outline' | 'storyboard' | 'revisions' | 'review'
 const SESSION_HEADER = 'X-Script-Video-Session'
@@ -110,7 +114,7 @@ function digest(
   ) : project.assets
   const videoInput = (value: typeof card, predecessor = false) => {
     if (!value) return value
-    const { status: _status, videoUrl: _videoUrl, videoVersions: _videoVersions, ...fields } = value
+    const { status: _status, videoUrl: _videoUrl, videoVersions: _videoVersions, referenceFrameSettings: _nextFrames, ...fields } = value
     // A predecessor's voice-only revision does not change the tail frame that
     // was selected for this submission. Its actual shot fields still matter.
     if (scopedVoices && predecessor) delete fields.version
@@ -162,14 +166,14 @@ function digest(
   }
   const textCard = (card: any) => {
     if (!card) return card
-    const { status, version, videoUrl, videoVersions, ...input } = card
+    const { status, version, videoUrl, videoVersions, referenceFrameSettings, ...input } = card
     return input
   }
   const selectedCards = perCard ? [previousCard, card] : ep.cards
   const digestCards = action === 'video' ? [videoInput(previousCard, true), videoInput(card)]
     : textInput ? selectedCards.map(textCard) : selectedCards.map((card: any) => {
       if (!card) return card
-      const { videoVersions, ...fields } = card
+      const { videoVersions, referenceFrameSettings, ...fields } = card
       return fields
     })
   const input = {
@@ -336,10 +340,17 @@ export function createScriptVideoRoutes(
 
   async function continuationSource(
     project: ScriptVideoProject, jobs: ScriptVideoJob[], episodeId: string, cardId: string,
-    queuedCards: ReadonlySet<string>, readOnly = false,
-  ): Promise<ScriptVideoContinuationSource | 'pending' | 'missing' | undefined> {
+    queuedCards: ReadonlySet<string>, readOnly = false, automatic = false,
+  ): Promise<ScriptVideoContinuationSource | 'pending' | 'missing' | 'manual-missing' | undefined> {
     const episode = episodeOf(project, episodeId)
     const index = episode.cards.findIndex((card: { id: string }) => card.id === cardId)
+    if (index < 0) return undefined
+    const choice = automatic ? undefined : episode.cards[index].referenceFrameSettings?.tail
+    if (choice?.mode === 'off') return undefined
+    if (choice?.mode === 'manual') {
+      const owner = earlierScriptVideoRender(episode, cardId, choice.videoUrl)
+      return owner ? { previousCardId: owner.cardId, previousTaskId: owner.taskId, videoUrl: owner.videoUrl, manualSeconds: choice.seconds } : 'manual-missing'
+    }
     if (index < 1) return undefined
     const predecessor: ScriptVideoCard = episode.cards[index - 1]
     if (!getScriptVideoContinuationScene(predecessor, episode.cards[index], project.assets)) return undefined
@@ -411,10 +422,10 @@ export function createScriptVideoRoutes(
           const handoff = task?.continuation
           const selected = episode && selectedScriptVideoRenders(episode, record.jobs)
           const previous = handoff && selected?.get(handoff.previousCardId)
-          const sameTailSource = !handoff || !!previous && (handoff.previousVideoUrl
+          const sameTailSource = !handoff || handoff.manualSeconds !== undefined || !!previous && (handoff.previousVideoUrl
             ? previous.videoUrl === handoff.previousVideoUrl : previous.taskId === handoff.previousTaskId)
           const sameLightingSources = (task?.lightingRanges || []).every(({ imageUrl, source }: RenderLightingRange) =>
-            !imageUrl || !source || selected?.get(source.cardId)?.videoUrl === source.videoUrl)
+            !imageUrl || !source || source.manualSeconds !== undefined || selected?.get(source.cardId)?.videoUrl === source.videoUrl)
           if (card && card.version === job.cardVersion && sameTailSource && sameLightingSources &&
               digest(record.project, job.episodeId, job.videoDigestVersion ? 'video' : 'revisions', job.cardId, job) === job.baseDigest) {
             completedCards.push({ card, version: {
@@ -477,7 +488,7 @@ export function createScriptVideoRoutes(
     const activeSources = new Set((planScriptVideoLighting(project, episodeId, jobs)[cardId] || []).flatMap(range =>
       range.pendingCardId ? [range.pendingCardId] : [],
     ))
-    if (getScriptVideoContinuationScene(predecessor, episode.cards[index], project.assets)) activeSources.add(predecessor.id)
+    if (!episode.cards[index].referenceFrameSettings?.tail && getScriptVideoContinuationScene(predecessor, episode.cards[index], project.assets)) activeSources.add(predecessor.id)
     const activeCards = new Map<string, ScriptVideoCard>(episode.cards.filter((card: ScriptVideoCard) => activeSources.has(card.id))
       .map((card: ScriptVideoCard) => [card.id, card]))
     const checks = (await Promise.all(jobs.map(async (job): Promise<VideoCheck | null> => {
@@ -647,6 +658,84 @@ export function createScriptVideoRoutes(
     }
   })
 
+  app.post('/projects/:id/episodes/:episodeId/cards/:cardId/reference-frames', async c => {
+    try {
+      c.header('Cache-Control', 'no-store')
+      const { id, episodeId, cardId } = c.req.param()
+      const body = await c.req.json().catch(() => null)
+      if (!body || typeof body !== 'object' || Array.isArray(body)) throw new ScriptVideoStoreError('无效的选帧参数')
+      const seek = Object.keys(body).length > 0
+      if (seek && (!['tail', 'lighting'].includes(body.kind) || !validScriptVideoFrameTime(body.seconds) ||
+          (body.kind === 'lighting' ? !Number.isSafeInteger(body.startShot) || body.startShot < 1 : body.startShot !== undefined) ||
+          (body.expectedVideoUrl !== undefined && typeof body.expectedVideoUrl !== 'string') ||
+          Object.keys(body).some(key => !['kind', 'startShot', 'seconds', 'expectedVideoUrl'].includes(key)))) {
+        throw new ScriptVideoStoreError('无效的参考帧或时间点')
+      }
+      const { project, jobs } = await store.episodeSnapshot(id, episodeId)
+      const episode = episodeOf(project, episodeId)
+      const card = episode.cards.find((item: ScriptVideoCard) => item.id === cardId)
+      if (!card) throw new ScriptVideoStoreError('分镜不存在', 404, 'NOT_FOUND')
+      const sourceInfo = (id: string | undefined, selectedUrl?: string) => {
+        if (!id) return {}
+        const index = episode.cards.findIndex((item: ScriptVideoCard) => item.id === id)
+        if (index < 0) return {}
+        // While automatic selection waits for a remake, the existing take is
+        // still a legitimate source for a new, explicit manual selection.
+        const videoUrl = scriptVideoReferenceSourceUrl(selectedUrl ?? officialScriptVideoUrl(episode.cards[index]))
+        return { sourceLabel: '第 ' + (index + 1) + ' 段', ...(videoUrl && { videoUrl }) }
+      }
+      const queued = queuedReferenceCards(id, episodeId)
+      const plans = planScriptVideoLighting(project, episodeId, jobs, queued)[cardId] || []
+      const tailMode = card.referenceFrameSettings?.tail?.mode ?? 'auto'
+      const tailSource = await continuationSource(project, jobs, episodeId, cardId, queued, true, tailMode === 'off')
+      const selectedTail = typeof tailSource === 'object' ? tailSource : undefined
+      const result: ScriptVideoReferenceFrames = { lighting: [] }
+      for (const plan of plans) {
+        const { startShot, endShot, sceneName } = plan.range
+        const mode = plan.choice?.mode ?? 'auto'
+        const source = mode === 'off' ? plan.automaticSource : plan.source
+        if (!plan.choice && !source && !plan.pendingCardId) continue
+        result.lighting.push({ kind: 'lighting', startShot, endShot, sceneName, mode,
+          state: mode === 'off' ? 'off' : plan.pendingCardId ? 'pending' : 'missing',
+          ...sourceInfo(source?.cardId ?? (mode === 'off' ? plan.automaticPendingCardId : plan.pendingCardId), source?.videoUrl),
+          ...(source?.manualSeconds !== undefined && { seconds: source.manualSeconds }) })
+      }
+      if (tailSource || tailMode !== 'auto') {
+        const predecessor = tailSource === 'pending' || tailSource === 'missing'
+          ? episode.cards[episode.cards.indexOf(card) - 1] : undefined
+        result.tail = { kind: 'tail', mode: tailMode,
+          state: tailMode === 'off' ? 'off' : tailSource === 'pending' ? 'pending' : 'missing',
+          ...sourceInfo(selectedTail?.previousCardId ?? predecessor?.id, selectedTail?.videoUrl),
+          ...(selectedTail?.manualSeconds !== undefined && { seconds: selectedTail.manualSeconds }) }
+      }
+      if (seek) {
+        const row: ScriptVideoReferenceFrameRow | undefined = body.kind === 'tail' ? result.tail :
+          result.lighting.find(range => range.startShot === body.startShot)
+        if (body.expectedVideoUrl !== undefined && row?.videoUrl !== body.expectedVideoUrl) {
+          throw new ScriptVideoStoreError('参考来源成片已更新，请重新打开选帧。', 409, 'REFERENCE_FRAME_SOURCE_CHANGED')
+        }
+        if (!row?.videoUrl || !earlierScriptVideoRender(episode, cardId, row.videoUrl)) {
+          throw new ScriptVideoStoreError('没有可用的来源成片', 422, 'REFERENCE_FRAME_UNAVAILABLE')
+        }
+        const seconds = Number(body.seconds.toFixed(3))
+        const imageUrl = await extractVideoReferenceFrame(row.videoUrl, seconds)
+        if (!imageUrl) throw new ScriptVideoStoreError('来源视频在该时间点没有可读取的帧', 422, 'REFERENCE_FRAME_TIME')
+        result.candidate = { imageUrl, videoUrl: row.videoUrl, seconds }
+      }
+      const [prepared, tailImage] = await Promise.all([
+        prepareScriptVideoLighting(plans),
+        tailMode !== 'off' && selectedTail ? scriptVideoOpeningImage(selectedTail).catch(() => null) : undefined,
+      ])
+      for (const range of prepared.ranges) {
+        if (!range.imageUrl) continue
+        const row = result.lighting.find(item => item.startShot === range.startShot)
+        if (row) { row.imageUrl = range.imageUrl; row.state = 'ready' }
+      }
+      if (result.tail && tailImage) { result.tail.imageUrl = tailImage; result.tail.state = 'ready' }
+      return success(c, result)
+    } catch (error) { return respondError(c, error) }
+  })
+
   app.post('/projects/:id/episodes/:episodeId/final-prompt', async (c) => {
     try {
       c.header('Cache-Control', 'no-store')
@@ -715,6 +804,8 @@ export function createScriptVideoRoutes(
           : lightingPlan.some(range => range.pendingCardId) ? '同场上一段正在制作，出片后将自动补入光线参考图。' : undefined
       try {
         const lighting = await prepareScriptVideoLighting(lightingPlan)
+        if (source === 'manual-missing') warnings.add('手选尾帧的来源成片不可用，请重新选帧或恢复自动。')
+        for (const warning of lighting.warnings) warnings.add(warning)
         const result = await previewScriptVideoPrompt({ ...input, projectId: id, episodeId,
           selection: hasSelection ? { configId: body.configId, model: body.model, aspectRatio: body.aspectRatio, resolution: body.resolution } : undefined,
           duration: body.duration,
@@ -734,8 +825,9 @@ export function createScriptVideoRoutes(
   app.post('/projects/:id/episodes/:episodeId/continuations', async (c) => {
     try {
       const { cardIds, configId, model } = await c.req.json()
+      const hasSelection = configId !== undefined || model !== undefined
       if (!Array.isArray(cardIds) || cardIds.some(cardId => typeof cardId !== 'string') ||
-          !Number.isSafeInteger(configId) || configId <= 0 || typeof model !== 'string' || !model.trim()) {
+          hasSelection && (!Number.isSafeInteger(configId) || configId <= 0 || typeof model !== 'string' || !model.trim())) {
         throw new ScriptVideoStoreError('视频模型配置或分镜无效')
       }
       const id = c.req.param('id'), episodeId = c.req.param('episodeId')
@@ -747,14 +839,16 @@ export function createScriptVideoRoutes(
       const inputs = await Promise.all(episode.cards.filter((card: ScriptVideoCard) => cardIds.includes(card.id))
         .map(async (card: ScriptVideoCard) => {
           const source = await continuationSource(project, jobs, episodeId, card.id, queued)
+          if (source === 'manual-missing') throw new ScriptVideoStoreError('手选尾帧的来源成片不可用，请重新选帧或恢复自动。', 422, 'REFERENCE_FRAME_UNAVAILABLE')
           return { card, source: source && typeof source !== 'string' ? source : undefined }
         }))
-      const options = {         configId, model, cast: episode.production?.characters,
-        stylePreset: episode.production?.stylePreset || project.settings?.stylePreset       }
+      const options = { configId, model, cast: episode.production?.characters,
+        stylePreset: episode.production?.stylePreset || project.settings?.stylePreset }
       try {
         const lightingRanges = Object.create(null)
         for (const [cardId, plans] of lightingPlans) {
           const prepared = await prepareScriptVideoLighting(plans)
+          if (prepared.warnings.length) throw new ScriptVideoStoreError(prepared.warnings[0], 422, 'REFERENCE_FRAME_UNAVAILABLE')
           lightingRanges[cardId] = prepared.ranges.map(({ source, sceneKey, ...range }) => range)
         }
         return success(c, await prepareScriptVideoDeliveryReferences(inputs, project.assets, options, lightingRanges))
@@ -1087,10 +1181,11 @@ export function createScriptVideoRoutes(
             const previous = target.cards.find(
               (item: any) => item.id === card.id,
             )
-            const { manuallyAdded: _manualOrigin, ...generated } = card
+            const { manuallyAdded: _manualOrigin, referenceFrameSettings: _snapshotFrames, ...generated } = card
             const videoVersions = previous ? listScriptVideoVersions(previous) : []
             return {
               ...generated,
+              ...(previous?.referenceFrameSettings && { referenceFrameSettings: previous.referenceFrameSettings }),
               promptNeedsSync: false,
               videoUrl: retimed && (previous?.duration !== card.duration || previous?.prompt !== card.prompt)
                 ? undefined : previous?.videoUrl,
@@ -1260,9 +1355,10 @@ export function createScriptVideoRoutes(
               uncertain.code,
             )
           const remainingQueued = queuedReferenceCards(id, episodeId, session, body.requestId)
-          if (source === 'pending' || source && typeof source !== 'string' && remainingQueued.has(source.previousCardId)) {
+          if (source === 'pending' || source && typeof source !== 'string' && source.manualSeconds === undefined && remainingQueued.has(source.previousCardId)) {
             throw new ScriptVideoStoreError('本段从上一段尾帧继续，请等待上一段视频生成完成', 409, 'CONTINUATION_PENDING')
           }
+          if (source === 'manual-missing') throw new ScriptVideoStoreError('手选尾帧的来源成片不可用，请重新选帧或恢复自动。', 422, 'REFERENCE_FRAME_UNAVAILABLE')
           if (source === 'missing') {
             throw new ScriptVideoStoreError('本段从上一段尾帧继续，请先生成上一段视频', 409, 'CONTINUATION_REQUIRED')
           }
@@ -1325,6 +1421,7 @@ export function createScriptVideoRoutes(
         job = prepared.job
         queue.submitted(id, episodeId, cardId, session, body.requestId)
         const lighting = await prepareScriptVideoLighting(prepared.lightingPlan)
+        if (lighting.warnings.length) throw new ScriptVideoGenerationValidationError(lighting.warnings[0])
         const generationInput = {
           projectId: id,
           episodeId,

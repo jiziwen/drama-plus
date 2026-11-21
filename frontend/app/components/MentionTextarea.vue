@@ -104,6 +104,7 @@ const { t } = useI18n()
 
 // 无图资产在下拉中显示分组图标兜底（场景=定位、道具=包裹、角色=人物）——按 kind code 判断，不依赖显示文案
 const groupIcon = (kind) => (kind === 'scene' ? MapPin : kind === 'prop' ? Package : kind === 'audio' ? Headphones : User)
+const mentionTokenGroup = kind => kind === 'scene' || kind === 'prop' ? kind : 'role'
 
 const props = defineProps({
   modelValue: { type: String, default: '' },
@@ -330,7 +331,7 @@ watch(() => [props.options, props.previewOnHover], () => {
 const mentionNames = computed(() => {
   const seen = new Map()
   for (const o of props.options) {
-    if (o.value && !o.previewOnly && !seen.has(o.value)) seen.set(o.value, o.kind === 'scene' ? 'scene' : 'role')
+    if (o.value && !o.previewOnly && !seen.has(o.value)) seen.set(o.value, mentionTokenGroup(o.kind))
   }
   return [...seen.entries()].sort((a, b) => b[0].length - a[0].length)
 })
@@ -363,7 +364,7 @@ const highlightedHtml = computed(() => {
     for (const hit of spans) {
       const index = indexById.size && hit.id != null ? indexById.get(hit.id) : indexOf.get(hit.name)
       if (index == null) continue
-      const group = props.options[index].kind === 'scene' ? 'scene' : 'role'
+      const group = mentionTokenGroup(props.options[index].kind)
       const virtual = text.value[hit.start] !== '@' ? ' mention-virtual' : ''
       html += escapeHtml(text.value.slice(last, hit.start))
       html += `<span class="mention-token mention-token-${group}${virtual}" data-mention-index="${index}">${escapeHtml(text.value.slice(hit.start, hit.end))}</span>`
@@ -748,6 +749,10 @@ defineExpose({ syncDisplay })
 .mention-backdrop :deep(.mention-token-scene) {
   color: var(--tag-success-text);
   background: var(--success-bg);
+}
+.mention-backdrop :deep(.mention-token-prop) {
+  color: var(--warning);
+  background: var(--warning-bg);
 }
 .mention-dropdown {
   position: fixed;

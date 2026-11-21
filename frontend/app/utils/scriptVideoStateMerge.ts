@@ -120,6 +120,26 @@ export function mergeScriptVideoProject<T>(
     if (key && serverField(context, key)) return clone(remoteValue)
     if (key && localField(context, key))
       return clone(localValue === missing ? remoteValue : localValue)
+    if (context === 'card' && key === 'referenceFrameSettings') {
+      const settings = [baseValue, localValue, remoteValue].map(value => object(value) ? value : {})
+      const maps = settings.map(value => object(value.lighting) ? value.lighting : {})
+      const result: ObjectValue = {}, lighting: ObjectValue = {}
+      // Never combine the mode, timestamp and video from different edits.
+      function choice(values: ObjectValue[], name: string, choicePath: string) {
+        const [base, local, remote] = values.map(value => own(value, name))
+        if (equal(local, base)) return clone(remote)
+        if (!equal(local, remote) && !equal(base, remote)) conflicts.push(choicePath)
+        return clone(local)
+      }
+      const tail = choice(settings, 'tail', join(path, 'tail'))
+      if (tail !== missing) result.tail = tail
+      for (const shot of new Set(maps.flatMap(value => Object.keys(value)))) {
+        const frame = choice(maps, shot, join(path, `lighting.${shot}`))
+        if (frame !== missing) lighting[shot] = frame
+      }
+      if (Object.keys(lighting).length) result.lighting = lighting
+      return Object.keys(result).length ? result : missing
+    }
     if (localValue === missing || remoteValue === missing) {
       if (localValue === missing && remoteValue === missing) return missing
       if (baseValue === missing)

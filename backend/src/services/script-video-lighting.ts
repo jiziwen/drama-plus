@@ -1,8 +1,10 @@
 import type { ScriptVideoLightingRange } from './script-video-delivery.js'
 import { buildScriptVideoLightingPlan, type ScriptVideoLightingSceneRange } from './script-video-lighting-plan.js'
 import type { ScriptVideoJob, ScriptVideoProject } from './script-video-store.js'
-import { officialScriptVideoUrl, type ScriptVideoVersion } from './script-video-versions.js'
+import { listScriptVideoVersions, officialScriptVideoUrl, type ScriptVideoVersion } from './script-video-versions.js'
+import { scriptVideoReferenceSourceUrl, type ScriptVideoFrameChoice } from './script-video-reference-settings.js'
 import { compareVideoLightingFrames, extractVideoLightingFrame } from '../utils/video-lighting-frame.js'
+import { extractVideoReferenceFrame } from '../utils/video-reference-frame.js'
 
 type LightingSource = {
   cardId: string
@@ -11,6 +13,7 @@ type LightingSource = {
   start: number
   end: number
   stableStart: number
+  manualSeconds?: number
 }
 type PlannedRange = {
   range: ScriptVideoLightingRange
@@ -20,6 +23,9 @@ type PlannedRange = {
   sampleStart: number
   sampleEnd: number
   pendingCardId?: string
+  choice?: ScriptVideoFrameChoice
+  automaticSource?: LightingSource
+  automaticPendingCardId?: string
 }
 export type RenderLightingRange = ScriptVideoLightingRange & {
   sceneKey: string
@@ -57,6 +63,21 @@ export function selectedScriptVideoRenders(episode: ScriptVideoProject['episodes
   return ready
 }
 
+/** A manual selection may keep using an archived take after a newer render
+ * is selected. Resolve ownership before exposing the URL or seeking a file. */
+export function earlierScriptVideoRender(episode: ScriptVideoProject['episodes'][number], cardId: string, videoUrl: string) {
+  const url = scriptVideoReferenceSourceUrl(videoUrl)
+  if (!url) return
+  const index = episode.cards.findIndex((card: VideoCard) => card.id === cardId)
+  for (let i = index - 1; i >= 0; i--) {
+    const card = episode.cards[i]
+    if (!listScriptVideoVersions(card, episode.tasks).some(version => scriptVideoReferenceSourceUrl(version.url) === url)) continue
+    const task = episode.tasks?.find((item: { cardId: string; videoUrl?: string; status: string }) =>
+      item.cardId === card.id && item.status === 'completed' && scriptVideoReferenceSourceUrl(item.videoUrl) === url)
+    return { cardId: card.id as string, taskId: task?.taskId as number | undefined, videoUrl: url }
+  }
+}
+
 function shotEnd(card: { shots: { duration: number }[] }, index: number) {
   return card.shots.slice(0, index).reduce((sum, shot) => sum + shot.duration, 0)
 }
@@ -85,12 +106,18 @@ export function planScriptVideoLighting(
     const scenes = ranges[card.id] || []
     result[card.id] = scenes.map((scene: ScriptVideoLightingSceneRange) => {
       const sampleShot = scene.transitionIn ? scene.firstShot + 1 : scene.firstShot
+      const choice: ScriptVideoFrameChoice | undefined = card.referenceFrameSettings?.lighting?.[String(scene.firstShot)]
+      const automatic = sources.get(scene.sceneKey)
+      const owner = choice?.mode === 'manual' && earlierScriptVideoRender(episode, card.id, choice.videoUrl)
+      const source = owner && choice?.mode === 'manual'
+        ? { ...owner, start: choice.seconds, end: choice.seconds, stableStart: choice.seconds, manualSeconds: choice.seconds }
+        : undefined
       return {
         range: { startShot: scene.firstShot, endShot: scene.lastShot, sceneName: scene.sceneName,
           lighting: scene.lighting, ...(scene.transitionIn && { transitionIn: true }) },
         sceneKey: scene.sceneKey,
-        ...sources.get(scene.sceneKey),
-        previous: scene.firstShot === 1 && boundary?.sceneKey === scene.sceneKey ? boundary.source : undefined,
+        ...(choice ? { choice, automaticSource: automatic?.source, automaticPendingCardId: automatic?.pendingCardId, source } : automatic),
+        previous: !choice && scene.firstShot === 1 && boundary?.sceneKey === scene.sceneKey ? boundary.source : undefined,
         sampleStart: scene.stableStartSeconds,
         sampleEnd: Math.min(scene.stableEndSeconds, scene.stableStartSeconds + 2, shotEnd(card, sampleShot)),
       }
@@ -120,15 +147,18 @@ export function planScriptVideoLighting(
 
 export async function prepareScriptVideoLighting(
   plans: readonly PlannedRange[], extract = extractVideoLightingFrame,
+  exact = extractVideoReferenceFrame,
 ) {
   const ranges: RenderLightingRange[] = []
   const checks: LightingCheck[] = []
+  const warnings: string[] = []
   const frames = new Map<string, Promise<string | null>>()
   function frame(source: LightingSource) {
     const key = JSON.stringify(source)
     let value = frames.get(key)
     if (!value) {
       value = (async () => {
+        if (source.manualSeconds !== undefined) return exact(source.videoUrl, source.manualSeconds)
         const image = await extract(source.videoUrl, source.start, source.end)
         if (image || source.stableStart >= source.start) return image
         return extract(source.videoUrl, source.stableStart, source.end)
@@ -137,15 +167,16 @@ export async function prepareScriptVideoLighting(
     }
     return value
   }
-  for (const { range, sceneKey, source, previous, sampleStart, sampleEnd } of plans) {
+  for (const { range, sceneKey, source, previous, sampleStart, sampleEnd, choice } of plans) {
     const imageUrl = source && await frame(source)
+    if (choice?.mode === 'manual' && !imageUrl) warnings.push('镜头' + range.startShot + '的手选光线参考帧不可用，请重新选帧或恢复自动。')
     ranges.push({ ...range, sceneKey, ...(imageUrl && { source, imageUrl }) })
     if (previous && sampleEnd > sampleStart) {
       const reference = await frame(previous)
       if (reference) checks.push({ shot: range.startShot, start: sampleStart, end: sampleEnd, reference })
     }
   }
-  return { ranges, checks }
+  return { ranges, checks, warnings }
 }
 
 export async function reviewScriptVideoLighting(

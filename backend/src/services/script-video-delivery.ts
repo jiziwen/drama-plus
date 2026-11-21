@@ -1,4 +1,5 @@
 import { omitScriptVideoRecapQuotes, replaceScriptVideoPromptStyle } from './script-video-format.js'
+import type { ScriptVideoReferenceSettings } from './script-video-reference-settings.js'
 import { annotateScriptVideoInnerOs, hasScriptVideoInnerOs, SCRIPT_VIDEO_INNER_OS_DIRECTION } from './script-video-inner-os.js'
 import { mapScriptVideoSoundLine, speechClosers, unquotedSpeaker } from './script-video-foley.js'
 import { annotateScriptVideoAssets, describeScriptVideoReferenceProblem, scriptVideoMaterialEvidenceText, scriptVideoMaterialIds, type AssetMention } from './script-video-mentions.js'
@@ -37,12 +38,14 @@ export interface ScriptVideoDeliveryCard {
   characters?: string
   excludedAssetIds?: string[]
   manuallyAdded?: true
+  referenceFrameSettings?: ScriptVideoReferenceSettings
 }
 
 export interface ScriptVideoContinuation {
   previousCardId: string
   previousTaskId?: number
   previousVideoUrl?: string
+  manualSeconds?: number
   imageUrl: string
   mode: 'first-frame' | 'reference'
 }
@@ -547,14 +550,15 @@ export function buildScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(
     ...continuation,
     imageIndex: continuation.mode === 'reference' ? images.length + 1 : undefined,
   }
+  const selectedFrame = openingFrame?.manualSeconds !== undefined ? '从上一段成片手动选取的续接画面。' : '从上一段成片尾镜选取的续接画面。'
   const opening = openingFrame && (openingFrame.imageIndex
-    ? `以${imageTag(openingFrame.imageIndex)}作为本段首帧，这是从上一段成片尾镜选取的续接画面。`
-    : '本次提交的首帧是从上一段成片尾镜选取的续接画面。') + '开场保持该帧的构图、机位、角色站位和道具状态，接着完成当前动作，再按本段分镜继续。'
+    ? `以${imageTag(openingFrame.imageIndex)}作为本段首帧，这是${selectedFrame}`
+    : '本次提交的首帧是' + selectedFrame) + '开场保持该帧的构图、机位、角色站位和道具状态，接着完成当前动作，再按本段分镜继续。'
   // Custom ComfyUI workflows can reuse a model label with a different count.
   // Their server-filtered ranges are authoritative when previewing a snapshot.
   const limits = options.referenceLimits ?? (options.provider && options.provider !== 'comfyui'
     ? scriptVideoCapabilities(options.provider, model) ?? undefined : undefined)
-  const lighting = bindScriptVideoLighting(options.lightingRanges ?? [], card.shots.length, images, voices.length, openingFrame, limits, imageTag)
+  const lighting = bindScriptVideoLighting(options.lightingRanges ?? [], card.shots.length, images, voices.length, openingFrame, limits, imageTag, card.referenceFrameSettings)
   const prompt = [style && sceneGradedStyle(style, lighting.lightingRanges), opening, header, castContinuity, space, lighting.prompt,
     seedance25 && screenTextNotes(body), output]
     .filter(Boolean).join('\n\n').trim()

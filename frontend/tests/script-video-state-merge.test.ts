@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { reactive } from 'vue'
 import { mergeScriptVideoProject } from '../app/utils/scriptVideoStateMerge'
+import type { ScriptVideoReferenceSettings } from '../../backend/src/services/script-video-reference-settings'
 
 const base = () => ({
   id:'p', revision:1, title:'剧目', episodeId:'e1', assets:[],
@@ -44,6 +45,26 @@ test('same field conflict is explicit and retains the local draft', () => {
   const merged=mergeScriptVideoProject(b,l,r)
   assert.deepEqual(merged.conflicts,['episodes.e1.cards.a.prompt'])
   assert.equal(merged.project.episodes[0]!.cards[0]!.prompt,'本地')
+})
+
+test('参考帧按单张合并，双端的不同参考图不会互相覆盖，同一帧选择保持完整', () => {
+  const withSettings = (settings?: ScriptVideoReferenceSettings) => {
+    const project = base()
+    return Object.assign(project, { episodes: project.episodes.map(episode => ({ ...episode,
+      cards: episode.cards.map(card => ({ ...card, ...(settings && { referenceFrameSettings: settings }) })),
+    })) })
+  }
+  const manual = { mode: 'manual' as const, videoUrl: '/static/videos/a.mp4', seconds: 1 }
+  const local = withSettings({ tail: { mode: 'off' } })
+  const remote = withSettings({ lighting: { '1': manual } })
+  const first = mergeScriptVideoProject(withSettings(), local, remote)
+  assert.deepEqual(first.conflicts, [])
+  assert.deepEqual(first.project.episodes[0]!.cards[0]!.referenceFrameSettings, { tail: { mode: 'off' }, lighting: { '1': manual } })
+
+  const changed = mergeScriptVideoProject(withSettings({ tail: manual }), local,
+    withSettings({ tail: { ...manual, videoUrl: '/static/videos/b.mp4', seconds: 2 } }))
+  assert.ok(changed.conflicts.includes('episodes.e1.cards.a.referenceFrameSettings.tail'))
+  assert.deepEqual(changed.project.episodes[0]!.cards[0]!.referenceFrameSettings, { tail: { mode: 'off' } })
 })
 
 test('preserves local selections, busy state, additions and deletions', () => {

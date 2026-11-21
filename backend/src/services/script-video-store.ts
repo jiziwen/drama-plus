@@ -20,6 +20,7 @@ import type { LightingCheck } from './script-video-lighting.js'
 import type { ScriptVideoReferenceNames } from './script-video-generation.js'
 import { isScriptVideoGenerationDuration } from './script-video-capabilities.js'
 import { listScriptVideoVersions } from './script-video-versions.js'
+import { scriptVideoReferenceSettings } from './script-video-reference-settings.js'
 
 export const OUTLINE_DURATION_POLICY = '30-except-tail-v1' as const
 
@@ -142,7 +143,7 @@ function validateAsset(asset: any) {
   }
 }
 function withoutCardMetadata(card: any) {
-  const { status, version, videoUrl, videoVersions, promptNeedsSync, ...rest } = card
+  const { status, version, videoUrl, videoVersions, promptNeedsSync, referenceFrameSettings, ...rest } = card
   return rest
 }
 
@@ -331,7 +332,15 @@ function sanitizeProject(
         : prior?.prompt
       // Only a new card added to an existing video-production episode can use
       // a free-form prompt. A snapshot edit cannot change a saved card's origin.
-      const { manuallyAdded, videoVersions: _incomingVersions, ...cardContent } = card
+      const { manuallyAdded, videoVersions: _incomingVersions, referenceFrameSettings, ...cardContent } = card
+      const incomingReferences = referenceFrameSettings === undefined && !partialWrite
+        ? prior?.referenceFrameSettings : referenceFrameSettings
+      try {
+        const references = scriptVideoReferenceSettings(incomingReferences)
+        if (references) cardContent.referenceFrameSettings = references
+      } catch {
+        throw new ScriptVideoStoreError('分镜参考帧设置无效')
+      }
       const manual = prior?.manuallyAdded === true || !prior && manuallyAdded === true &&
         old?.outlineConfirmed === true && (old.stage === 'production' || episode.stage === 'production' || !!old.production)
       const annotated = cardReferences({ ...cardContent, ...(manual && { manuallyAdded: true }), prompt: normalizedPrompt }, input.assets, production, style)

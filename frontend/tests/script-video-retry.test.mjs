@@ -8,11 +8,14 @@ import { officialScriptVideoUrl } from '../../backend/src/services/script-video-
 import { buildScriptVideoDelivery, scriptVideoDeliveryTags } from '../../backend/src/services/script-video-delivery.ts'
 import { hasScriptVideoPromptBody, splitScriptVideoPromptStyle } from '../../backend/src/services/script-video-style.ts'
 import { previousScriptVideoCard } from '../../backend/src/services/script-video-predecessor.ts'
+import { DEFAULT_VIDEO_PROMPT_MODE } from '../../backend/src/services/video-prompt-mode.ts'
 
 const source = readFileSync(new URL('../app/pages/preview/script-to-video.vue', import.meta.url), 'utf8')
+const promptModeStart = source.indexOf('const videoPromptModes =')
+const promptModeEnd = source.indexOf('const currentReview =', promptModeStart)
 const start = source.indexOf('const taskActions =')
-const end = source.indexOf('function checkForAction(', start)
-const controllerSource = ts.transpileModule(source.slice(start, end), {
+const end = source.indexOf('function sourceChapterCount(', start)
+const controllerSource = ts.transpileModule(source.slice(promptModeStart, promptModeEnd) + source.slice(start, end), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
 }).outputText
 
@@ -27,7 +30,7 @@ class ScriptVideoRequestError extends Error {
 const failed = (id, cardId, code, taskId) => ({ id, cardId, code, taskId, status: 'failed', error: '通道不可用' })
 
 function controller(initialTasks = [], {
-  onLookup, onSubmit, onFinalPrompt, onContinuations, clipboardWrite, onSave, onRefresh, missingVoices = () => [],
+  onLookup, onSubmit, onFinalPrompt, onContinuations, onExport, clipboardWrite, onSave, onRefresh, missingVoices = () => [],
   pendingAudioEdits = () => undefined,
   connections = [], lightingScenes = {}, cardIds = ['a', 'b'],
   remoteActiveIds = [], queueTimer = setInterval, previousEpisodes = [],
@@ -65,7 +68,7 @@ function controller(initialTasks = [], {
     selectedProjectId.value = project.id
     selectedEpisodeId.value = episode.id
   }
-  const value = runInNewContext(controllerSource + '\n;({ requestVideoGeneration, cancelVideoGeneration, confirmVideoRetry, pendingVideoRetry, videoTaskError, showFinalPrompt, copyPromptPreview, promptPreview, batchVideoVoiceWarning, videoVoiceWarningForCard, activeVideoRun, activeVideoRequests, videoTailWaiting, deliveryContinuations })', {
+  const value = runInNewContext(controllerSource + '\n;({ requestVideoGeneration, cancelVideoGeneration, confirmVideoRetry, pendingVideoRetry, videoTaskError, showFinalPrompt, copyPromptPreview, promptPreview, batchVideoVoiceWarning, videoVoiceWarningForCard, activeVideoRun, activeVideoRequests, videoTailWaiting, deliveryContinuations, exportCards, videoPromptMode })', {
     ref, computed, reactive, dialog, activeCardIds: ref(remoteActiveIds), requestActivityRefresh: () => {}, setInterval: queueTimer, clearInterval, ScriptVideoRequestError, alive: true, AbortController, AbortSignal, requestController: new AbortController(),
     officialScriptVideoUrl, previousScriptVideoCard,
     promptReturnFocus: null,
@@ -76,6 +79,8 @@ function controller(initialTasks = [], {
     buildScriptVideoEpisodeLightingPlan: () => Object.fromEntries(Object.entries(lightingScenes).map(([id, scenes]) =>
       [id, (Array.isArray(scenes) ? scenes : [scenes]).map((sceneKey, i) => ({ sceneKey, firstShot: i + 1 }))])),
     currentProject, currentEpisode, projects, tasks: computed(() => currentEpisode.value.tasks),
+    DEFAULT_VIDEO_PROMPT_MODE, exporting: ref(false), confirmedScript: ref(''),
+    exportPreviewPackage: async (...args) => { await onExport?.(...args) },
     cards: computed(() => currentEpisode.value.cards), assets: computed(() => currentProject.value.assets),
     saveProjectNow: async id => { await onSave?.(id) }, pendingAudioEdits,
     refreshProject: async (projectId, episodeId) => { refreshes.push({ projectId, episodeId }); await onRefresh?.(projectId, episodeId) },
@@ -98,6 +103,7 @@ function controller(initialTasks = [], {
       }
       if (path.endsWith('/final-prompt')) return onFinalPrompt?.(body) || finalDelivery()
       if (path.endsWith('/continuations')) return onContinuations?.(body)
+      if (path.endsWith('/validate')) return { referenceImages: {} }
       if (path.endsWith('/video-cancel')) return { canceled: 1, upstreamUnconfirmed: 0 }
       return onSubmit?.(path, body, episode) || { taskId: 21 }
     },
@@ -145,6 +151,35 @@ test('已确认失败直接重新提交，错误原因保持可见', async () =>
   assert.equal(app.dialog.value, null)
   assert.equal(app.submissions.length, 1)
   assert.equal(app.submissions[0].body.confirmRetryAfterUnknown, undefined)
+  assert.equal(app.submissions[0].body.promptMode, 'reference-guide')
+})
+
+test('批量提交使用点击时选定的提示词模式', async () => {
+  const app = controller([], {
+    onSubmit(path) {
+      if (path.endsWith('/cards/a/video')) app.videoPromptMode.value = 'reference-guide'
+    },
+  })
+  app.videoPromptMode.value = 'inline'
+  await app.requestVideoGeneration(['a', 'b'])
+  assert.deepEqual(app.submissions.map(({ body }) => body.promptMode), ['inline', 'inline'])
+})
+
+test('提示词导出在准备参考图和交付包时使用同一个模式', async () => {
+  let exportedMode
+  const app = controller([], {
+    connections: ['a/b'],
+    onContinuations() {
+      app.videoPromptMode.value = 'reference-guide'
+      return { continuations: {}, lightingRanges: {} }
+    },
+    onExport(_cards, _assets, _filename, context) { exportedMode = context.delivery.promptMode },
+  })
+  app.videoPromptMode.value = 'inline'
+  await app.exportCards([app.episode.cards[1]])
+  assert.equal(app.calls.find(({ path }) => path.endsWith('/continuations')).body.promptMode, 'inline')
+  assert.equal(app.calls.find(({ path }) => path.endsWith('/validate')).body.promptMode, 'inline')
+  assert.equal(exportedMode, 'inline')
 })
 
 test('即梦直接提交生成，保留选定时长且不请求前端报价', async () => {
@@ -161,13 +196,16 @@ test('即梦直接提交生成，保留选定时长且不请求前端报价', as
   assert.ok(!app.calls.some(call => call.path.endsWith('/quote')))
 })
 
-test('批量使用每段自己的出片时长，最终提示词预览复用当前设置', async () => {
+test('批量使用每段自己的出片时长，预览和提交默认素材说明置前', async () => {
   const app = controller()
   app.episode.videoDurations = { a: 12 }
   await app.showFinalPrompt({ cardId: 'a', title: '片段 A' })
-  assert.equal(app.calls.find(call => call.path.endsWith('/final-prompt')).body.duration, 12)
+  const preview = app.calls.find(call => call.path.endsWith('/final-prompt')).body
+  assert.equal(preview.duration, 12)
+  assert.equal(preview.promptMode, 'reference-guide')
   await app.requestVideoGeneration(['a', 'b'])
   assert.deepEqual(app.submissions.map(call => call.body.duration), [12, undefined])
+  assert.deepEqual(app.submissions.map(call => call.body.promptMode), ['reference-guide', 'reference-guide'])
   assert.deepEqual(app.episode.cards.map(card => card.duration), [30, 30])
 })
 
@@ -206,9 +244,11 @@ for (const otherProject of [false, true]) test(otherProject ? '批量提交中�
     }
     return { taskId: 22 }
   } })
+  app.videoPromptMode.value = 'inline'
   const generation = app.requestVideoGeneration(['a', 'b'])
   await started
   const other = app.navigate(otherProject)
+  assert.equal(app.videoPromptMode.value, 'reference-guide')
   assert.equal(app.activeVideoRun.value, undefined)
   assert.ok(app.activeVideoRequests.value.has('project/episode'))
   finishFirst({ taskId: 21 })
@@ -216,8 +256,11 @@ for (const otherProject of [false, true]) test(otherProject ? '批量提交中�
   assert.equal(app.submissions.length, 2)
   assert.ok(app.submissions.every(call => call.path.startsWith('/projects/project/episodes/episode/cards/')))
   assert.ok(app.submissions.every(call => call.body.model === 'custom-model' && call.body.resolution === '720p'))
+  assert.ok(app.submissions.every(call => call.body.promptMode === 'inline'))
   assert.ok(app.refreshes.every(call => call.projectId === 'project' && call.episodeId === 'episode'))
   assert.equal(other.episode.tasks.length, 0)
+  app.navigateBack()
+  assert.equal(app.videoPromptMode.value, 'inline')
 })
 
 test('等待上一段尾帧期间切换分集，前段完成后仍会提交原分集续接段', async () => {
@@ -303,6 +346,7 @@ test('缓存中的未知任务先读本地状态，查明已拒绝后直接重�
 
 test('真实提交结果未知先显示站内确认，确认后才带重试授权', async () => {
   const app = controller([failed('unknown', 'a', 'SUBMISSION_UNKNOWN')])
+  assert.equal(app.videoTaskError(app.episode.tasks[0]), '通道不可用')
   await app.requestVideoGeneration(['a'])
   assert.equal(app.dialog.value, 'video-retry')
   assert.equal(app.submissions.length, 0)
@@ -339,12 +383,91 @@ test('服务端第一次返回未知状态冲突时刷新并呈现确认入口',
   assert.equal(app.submissions[1].body.confirmRetryAfterUnknown, true)
 })
 
+test('历史未知提交被后续失败任务遮住时，409 仍提供可确认的重试入口', async () => {
+  const app = controller([], {
+    onSubmit(_path, body) {
+      if (!body.confirmRetryAfterUnknown) throw new ScriptVideoRequestError('上次提交未收到结果。重新提交可能重复计费。', 409, 'SUBMISSION_UNKNOWN')
+    },
+    onRefresh() {
+      app.episode.tasks = [failed('history-unknown', 'a', 'SUBMISSION_UNKNOWN'), failed('latest-failed', 'a', 'VIDEO_FAILED')]
+    },
+  })
+  await app.requestVideoGeneration(['a'])
+  assert.equal(app.dialog.value, 'video-retry')
+  assert.equal(app.pendingVideoRetry.value.jobs.get('a'), 'history-unknown')
+  assert.deepEqual(app.toasts, [])
+  await app.confirmVideoRetry(true)
+  assert.equal(app.submissions.length, 2)
+  assert.equal(app.submissions[1].body.confirmRetryAfterUnknown, true)
+})
+
+test('同卡历史未知提交仍未确认时，点击生成直接呈现确认入口', async () => {
+  const app = controller([failed('history-unknown', 'a', 'SUBMISSION_UNKNOWN'), failed('latest-failed', 'a', 'VIDEO_FAILED')])
+  await app.requestVideoGeneration(['a'])
+  assert.equal(app.dialog.value, 'video-retry')
+  assert.equal(app.submissions.length, 0)
+  await app.confirmVideoRetry(true)
+  assert.equal(app.submissions[0].body.confirmRetryAfterUnknown, true)
+})
+
 test('已出片但保存失败时恢复任务号，不重新提交', async () => {
   const app = controller([failed('delivery', 'a', 'DELIVERY_FAILED', 17)], { missingVoices: () => ['阿离'] })
   await app.requestVideoGeneration(['a'])
   assert.equal(app.dialog.value, null)
   assert.equal(app.submissions.length, 0)
   assert.equal(app.calls.filter(call => call.method === 'POST' && call.path === '/projects/project/video/17/recover').length, 1)
+})
+
+test('LibTV 查询超时后查询原任务，不进入重新计费确认或创建新任务', async () => {
+  const task = { ...failed('libtv-query', 'a', 'SUBMISSION_UNKNOWN', 23), canRecover: true,
+    error: 'LibTV 查询原任务超时，请稍后查询。' }
+  const app = controller([task], { missingVoices: () => ['阿离'] })
+  assert.match(app.videoTaskError(task), /LibTV 查询原任务超时/u)
+  await app.requestVideoGeneration(['a'])
+  assert.equal(app.dialog.value, null)
+  assert.equal(app.submissions.length, 0)
+  assert.equal(app.calls.filter(call => call.method === 'POST' && call.path === '/projects/project/video/23/recover').length, 1)
+})
+
+for (const latestCode of ['VIDEO_FAILED', 'SUBMISSION_UNKNOWN']) test(`LibTV 历史原任务可查询时优先恢复，后续 ${latestCode} 不触发新生成`, async () => {
+  const original = { ...failed('original', 'b', 'SUBMISSION_UNKNOWN', 23), canRecover: true }
+  const app = controller([original, failed('later', 'b', latestCode)], {
+    missingVoices: () => ['阿离'], connections: ['a/b'],
+  })
+  assert.equal(app.videoVoiceWarningForCard('b'), '')
+  await app.requestVideoGeneration(['b'])
+  assert.equal(app.dialog.value, null)
+  assert.deepEqual(app.toasts, [])
+  assert.equal(app.submissions.length, 0)
+  assert.equal(app.calls.filter(call => call.method === 'POST' && call.path === '/projects/project/video/23/recover').length, 1)
+  assert.ok(!app.calls.some(call => call.path.endsWith('/video-queue')))
+})
+
+test('已确认重新生成的历史原任务不再覆盖最新失败任务', async () => {
+  const original = { ...failed('acknowledged', 'a', 'SUBMISSION_UNKNOWN_ACKNOWLEDGED', 23), canRecover: true }
+  const app = controller([original, failed('later', 'a', 'VIDEO_FAILED')])
+  await app.requestVideoGeneration(['a'])
+  assert.equal(app.dialog.value, null)
+  assert.equal(app.submissions.length, 1)
+  assert.ok(!app.calls.some(call => call.path.endsWith('/recover')))
+})
+
+test('只有已确认重新生成的原任务时，不再强制查询旧任务', async () => {
+  const original = { ...failed('acknowledged', 'a', 'SUBMISSION_UNKNOWN_ACKNOWLEDGED', 23), canRecover: true }
+  const app = controller([original])
+  await app.requestVideoGeneration(['a'])
+  assert.equal(app.dialog.value, null)
+  assert.equal(app.submissions.length, 1)
+  assert.ok(!app.calls.some(call => call.path.endsWith('/recover')))
+})
+
+test('当前生成中任务优先于可查询的历史原任务', async () => {
+  const original = { ...failed('original', 'a', 'SUBMISSION_UNKNOWN', 23), canRecover: true }
+  const app = controller([original, { id: 'current', cardId: 'a', taskId: 24, status: 'processing' }])
+  await app.requestVideoGeneration(['a'])
+  assert.equal(app.dialog.value, null)
+  assert.equal(app.submissions.length, 0)
+  assert.ok(!app.calls.some(call => call.path.endsWith('/recover')))
 })
 
 test('批量警告标明缺少音频的片段，单段生成独立检查', async () => {
@@ -436,7 +559,7 @@ test('连续镜头重试读取正片，导出重新查询尾帧和光线而非�
   Object.assign(app.episode.cards[0], { status: 'draft', videoUrl: archived, videoVersions: [{ url: archived }] })
   await app.requestVideoGeneration(['b'])
   assert.equal(app.submissions.length, 1)
-  const references = await app.deliveryContinuations(app.project, app.episode, [app.episode.cards[1]])
+  const references = await app.deliveryContinuations(app.project, app.episode, [app.episode.cards[1]], app.videoPromptMode.value)
   assert.deepEqual(Array.from(app.calls.find(call => call.path.endsWith('/continuations')).body.cardIds), ['b'])
   assert.equal(references.continuations.b.imageUrl, fresh)
   assert.equal(references.lightingRanges.b, undefined)
@@ -448,17 +571,20 @@ test('当前预览和任务记录都在弹框内按显示文字原样复制', as
   const app = controller([task], { onFinalPrompt: body => body.jobId
     ? finalDelivery({ prompt: '以@图片7作为本段首帧。\n\n原提示词', images, source: 'submitted' })
     : finalDelivery() })
+  app.videoPromptMode.value = 'inline'
   await app.showFinalPrompt({ cardId: 'b', title: '当前分镜' })
   assert.equal(app.dialog.value, 'prompt-preview')
   assert.equal(app.calls[0].body.cardId, 'b')
   assert.equal(app.calls[0].body.cardVersion, 1)
   assert.equal(app.calls[0].body.model, 'custom-model')
+  assert.equal(app.calls[0].body.promptMode, 'inline')
   assert.equal(app.promptPreview.value.delivery.prompt, '原提示词')
   assert.equal(app.copied.length, 0)
   await app.copyPromptPreview()
   assert.equal(app.copied[0], '原提示词')
   await app.showFinalPrompt({ cardId: task.cardId, title: '任务记录', task })
   assert.equal(app.calls[1].body.jobId, task.id)
+  assert.equal('promptMode' in app.calls[1].body, false)
   assert.equal(app.copied.length, 1)
   assert.match(app.promptPreview.value.delivery.prompt, /^以@图片7作为本段首帧。/u)
   assert.equal(app.promptPreview.value.delivery.images[0].url, images[0].url)
@@ -714,7 +840,7 @@ test('分镜资料导出没有选择模型、没有自动续接时仍取回手�
   app.episode.modelConfigId = undefined
   app.episode.modelName = ''
   card.referenceFrameSettings = { tail: { mode: 'manual', videoUrl: '/static/videos/source.mp4', seconds: 1 } }
-  await app.deliveryContinuations(app.project, app.episode, [card])
+  await app.deliveryContinuations(app.project, app.episode, [card], app.videoPromptMode.value)
   assert.deepEqual(Array.from(app.calls.at(-1).body.cardIds), ['b'])
   assert.equal(Object.hasOwn(app.calls.at(-1).body, 'configId'), false)
   assert.equal(Object.hasOwn(app.calls.at(-1).body, 'model'), false)
@@ -827,7 +953,7 @@ test('生成和导出第一段只读加载上一集，保留当前分集选择�
       await app.requestVideoGeneration(['a'])
       assert.equal(app.submissions.length, 1)
     } else {
-      const result = await app.deliveryContinuations(app.project, app.episode, app.episode.cards)
+      const result = await app.deliveryContinuations(app.project, app.episode, app.episode.cards, app.videoPromptMode.value)
       assert.equal(result.continuations.a.imageUrl, '/static/videos/previous-tail.jpg')
       assert.deepEqual([...app.calls.find(call => call.path.endsWith('/continuations')).body.cardIds], ['a'])
     }
@@ -852,12 +978,13 @@ test('上一集末段缺少成片时首段提示明确集号，空上一集不�
   assert.ok(!separated.calls.some(call => call.method === 'GET'))
 })
 
-test('首段参考帧监听上一集末段成片、任务和排队变化', () => {
+test('首段选帧监听上一集所有来源片段的成片、任务和排队变化', () => {
   const start = source.indexOf('const frameEditor = useScriptVideoReferenceFrames(')
   const end = source.indexOf('const pageVisible =', start)
-  const previous = precedingEpisode({ tasks: [
-    { id: 'source-task', cardId: 'previous-last', status: 'processing' },
-  ] })
+  const previous = precedingEpisode({
+    cards: [{ id: 'previous-first', version: 1 }, ...precedingEpisode().cards],
+    tasks: [{ id: 'source-task', cardId: 'previous-first', status: 'processing' }],
+  })
   const episode = { id: 'episode', cards: [{ id: 'a' }], tasks: [] }
   const project = { id: 'project', episodes: [previous, episode] }
   const sourceActivity = ref({ scope: 'project/episode', episodeId: previous.id, queuedCardIds: [] })
@@ -872,7 +999,7 @@ test('首段参考帧监听上一集末段成片、任务和排队变化', () =>
     saveProjectNow: () => {},
   })
   const before = revision()
-  Object.assign(previous.cards[0], { status: 'ready', videoUrl: '/static/videos/previous-last.mp4' })
+  Object.assign(previous.cards[0], { status: 'ready', videoUrl: '/static/videos/previous-first.mp4' })
   assert.notEqual(revision(), before)
   const rendered = revision()
   previous.tasks[0].status = 'completed'
@@ -880,4 +1007,7 @@ test('首段参考帧监听上一集末段成片、任务和排队变化', () =>
   const completed = revision()
   sourceActivity.value.queuedCardIds = ['previous-last']
   assert.notEqual(revision(), completed)
+  const queued = revision()
+  Object.assign(previous.cards[1], { status: 'ready', videoUrl: '/static/videos/previous-last.mp4' })
+  assert.notEqual(revision(), queued)
 })

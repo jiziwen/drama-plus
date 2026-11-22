@@ -293,6 +293,9 @@
       "h3Video": "Work-Fisher · 多参生视频编辑"
     },
     "cliAccount": {
+      "saveToConnect": "保存后为这条视频配置单独授权账号。",
+      "saveAndConnect": "保存并配置账号",
+      "deleteConfig": "删除「{name}」后，它将从视频模型列表移除，已提交的任务仍可查看。",
       "selected": "当前生成账号",
       "empty": "尚未添加账号，点击「添加账号」前往官方网页授权。",
       "current": "使用中",
@@ -385,11 +388,26 @@
     "tabs": {
       "general": "通用",
       "ai": "AI 服务",
+      "promptMode": "提示词入参模式",
       "styles": "风格预设",
       "storage": "存储位置",
       "agents": "Agent 配置",
       "releaseNotes": "发布更新",
       "feedback": "问题反馈"
+    },
+    "promptMode": {
+      "title": "提示词入参模式",
+      "desc": "设置未指定入参模式时使用的提示词组织方式。",
+      "mode": "入参模式",
+      "referenceGuideName": "素材说明置前",
+      "referenceGuide": "素材说明置前（默认）",
+      "inline": "逐处素材引用",
+      "referenceGuideDesc": "将本段已选的角色、场景、道具等图片素材及音色说明放在开头，分镜正文仅插入音频引用。",
+      "inlineDesc": "在分镜各处插入图片及音频素材引用。",
+      "loadFailed": "提示词入参模式读取失败，请重试。",
+      "saveFailed": "提示词入参模式保存失败，请重试。",
+      "retry": "重新读取",
+      "saving": "保存中…"
     },
     "common": {
       "disabled": "已停用",

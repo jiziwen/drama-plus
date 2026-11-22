@@ -1,4 +1,5 @@
 import { buildScriptVideoDelivery, type ScriptVideoDeliveryOptions } from '../../../backend/src/services/script-video-delivery'
+import { formatJimengReferenceLabel, formatJimengScriptPrompt } from '../../../backend/src/services/jimeng-reference-labels'
 import {
   exportMarkdown,
   type PreviewAsset,
@@ -92,8 +93,11 @@ export function portableDeliveryCard(card: PreviewCard, assets: PreviewAsset[], 
   const { prompt, images, voices, imageBindings, openingFrame, lightingRanges, lightingImages } = buildScriptVideoDelivery(card, assets, options)
   const referenceVoices = voices.map(({asset, roles}) => ({ url: asset.voiceAudio!.url, assetIds: roles.map(role => role.id) }))
   const assetIds = [...new Set([...imageBindings.map(item => item.assetId), ...referenceVoices.flatMap(voice => voice.assetIds)])]
+  const referenceImageCount = images.length + Number(!!openingFrame?.imageIndex) + lightingImages.length
   return {
-    ...card, editorPrompt: card.prompt, prompt, assetIds, imageBindings,
+    ...card, editorPrompt: card.prompt,
+    prompt: options.provider === 'jimeng' ? formatJimengScriptPrompt(prompt, referenceImageCount, voices.length) : prompt,
+    assetIds, imageBindings,
     referenceImages: images.map(asset => asset.id),
     referenceVoices,
     ...(lightingRanges.length && { lightingRanges }),
@@ -145,9 +149,11 @@ export async function exportPreviewPackage(
   for (const [cardIndex, card] of cards.entries()) {
     const folder = `片段${String(cardIndex + 1).padStart(2, '0')}`
     const delivery = buildScriptVideoDelivery(card, assets, cardOptions(card))
+    const jimeng = options.provider === 'jimeng'
+    const voiceOffset = jimeng ? delivery.images.length + Number(!!delivery.openingFrame?.imageIndex) + delivery.lightingImages.length : 0
     files.push({
       name: `${folder}/视频提示词.txt`,
-      bytes: encoder.encode(delivery.prompt),
+      bytes: encoder.encode(jimeng ? formatJimengScriptPrompt(delivery.prompt, voiceOffset, delivery.voices.length) : delivery.prompt),
     })
     for (const [index, asset] of delivery.images.entries()) {
       const url = context.referenceImages?.[asset.image] || asset.image
@@ -180,11 +186,12 @@ export async function exportPreviewPackage(
       const blob = await response.blob()
       const extension = asset.voiceAudio.url.match(/\.(mp3|wav|m4a|aac)$/iu)?.[1]?.toLowerCase() || 'wav'
       const safeName = asset.name.replace(/[/\\:*?"<>|]/g, '-')
-      const file = `声音${voiceFiles.size + 1}-${safeName}.${extension}`
+      const label = jimeng ? formatJimengReferenceLabel('audio', voiceOffset + voiceFiles.size + 1) : `声音${voiceFiles.size + 1}`
+      const file = `${label}-${safeName}.${extension}`
       voiceFiles.set(asset.voiceAudio.url, { file, roles: roles.map(role => role.name) })
       files.push({ name: `${folder}/${file}`, bytes: new Uint8Array(await blob.arrayBuffer()) })
     }
-    if (voiceFiles.size) files.push({ name: `${folder}/角色声音参考.txt`, bytes: encoder.encode([...voiceFiles.values()].map((item, index) => `音频${index + 1}：${item.roles.join('、')}\n文件：${item.file}`).join('\n\n')) })
+    if (voiceFiles.size) files.push({ name: `${folder}/角色声音参考.txt`, bytes: encoder.encode([...voiceFiles.values()].map((item, index) => `音频${voiceOffset + index + 1}：${item.roles.join('、')}\n文件：${item.file}`).join('\n\n')) })
   }
   downloadPreviewFile(filename, zip(files))
 }

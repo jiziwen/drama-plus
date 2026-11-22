@@ -194,6 +194,7 @@ export const sqliteSchemaStatements = [
     model TEXT,
     endpoint TEXT,
     query_endpoint TEXT,
+    video_cli_account_id TEXT,
     priority INTEGER DEFAULT 0,
     is_default INTEGER DEFAULT 0,
     is_active INTEGER DEFAULT 1,
@@ -417,6 +418,7 @@ export function initSqliteSchema(sqlite: Database.Database) {
     scenes: { image_model: 'TEXT', image_config_id: 'INTEGER', reference_model: 'TEXT', reference_config_id: 'INTEGER', reference_images: 'TEXT', edit_prompt: 'TEXT' },
     props: { image_model: 'TEXT', image_config_id: 'INTEGER', reference_model: 'TEXT', reference_config_id: 'INTEGER', reference_images: 'TEXT', edit_prompt: 'TEXT' },
     storyboards: { video_model: 'TEXT', video_config_id: 'INTEGER' },
+    ai_service_configs: { video_cli_account_id: 'TEXT' },
   }
   sqlite.transaction(() => {
     for (const [table, fields] of Object.entries(mediaColumns)) {
@@ -426,6 +428,8 @@ export function initSqliteSchema(sqlite: Database.Database) {
       }
     }
   })()
+  sqlite.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_config_video_cli_account
+    ON ai_service_configs(provider, video_cli_account_id) WHERE video_cli_account_id IS NOT NULL`)
   const callColumns = new Set((sqlite.prepare('PRAGMA table_info(api_call_logs)').all() as { name: string }[]).map(c => c.name))
   if (!callColumns.has('request_key')) sqlite.exec('ALTER TABLE api_call_logs ADD COLUMN request_key TEXT')
   sqlite.exec('CREATE INDEX IF NOT EXISTS idx_api_call_logs_request_key ON api_call_logs(request_key, id)')

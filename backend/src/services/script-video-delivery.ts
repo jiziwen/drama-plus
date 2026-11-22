@@ -13,8 +13,10 @@ import { jimengVideoModel } from './jimeng-video-models.js'
 import { libtvVideoModel } from './libtv-video-models.js'
 import { aicostVideoModelCapabilities, isAicostMiniMaxH3Model, isAicostSeedance25Model } from './aicost-video-models.js'
 import type { ScriptVideoVoiceMode } from './script-video-types.js'
+import type { ScriptVideoPromptMode } from './video-prompt-mode.js'
 
 export type { ScriptVideoLightingRange, ScriptVideoReferenceLimits } from './script-video-lighting-delivery.js'
+export type { ScriptVideoPromptMode } from './video-prompt-mode.js'
 
 export interface ScriptVideoDeliveryAsset {
   id: string
@@ -52,6 +54,8 @@ export interface ScriptVideoContinuation {
 export interface ScriptVideoDeliveryOptions {
   model?: string
   provider?: string
+  /** App settings supply the layout; unspecified preserves the original inline format. */
+  promptMode?: ScriptVideoPromptMode
   stylePreset?: ScriptVideoStylePreset
   cast?: readonly { name: string }[]
   continuation?: ScriptVideoContinuation
@@ -110,6 +114,7 @@ function seedanceVisualOrder(body: string, visual: readonly AssetMention[]) {
 
 type SeedanceSoundContext = {
   audioOnlySpeakers: readonly string[]
+  visualSpeakerNames: readonly string[]
   hasMultipleCharacters: boolean
   vocalizationShots: ReadonlySet<number>
 }
@@ -158,6 +163,7 @@ function renderSeedanceShot(block: string, context: SeedanceSoundContext) {
     if (!line.trim() || /^(?:镜头\s*\d|开场画面|末镜停在|景别|画面与动作|场景|人物|本段事件)/u.test(line)) inDialogue = false
     const attribution = /^[^：:]+[：:]/u.exec(line)?.[0] || ''
     const handwritten = /^@图片\d+[^：:]+[：:][ \t]*[“「『"{]/u.test(line) ||
+      isNamedVisualSpeaker(attribution, context) && /^[“「『"{]/u.test(line.slice(attribution.length).trimStart()) ||
       hasScriptVideoInnerOs(attribution) || isAudioOnlySpeaker(attribution, context.audioOnlySpeakers)
     return inDialogue || handwritten ? soundText(line, context, sound) : line
   })
@@ -176,6 +182,12 @@ function renderSeedanceShot(block: string, context: SeedanceSoundContext) {
 function isAudioOnlySpeaker(attribution: string, names: readonly string[]) {
   const label = attribution.trimStart()
   return names.some(name => label.startsWith(name) && /^(?:\s|[（(【\[：:]|$)/u.test(label.slice(name.length)))
+}
+
+function isNamedVisualSpeaker(attribution: string, context: SeedanceSoundContext) {
+  const label = attribution.trimStart()
+  return context.visualSpeakerNames.some(name => label.startsWith(name) &&
+    /^(?:\s|[（(【\[：:]|$)/u.test(label.slice(name.length)))
 }
 
 function soundText(line: string, context: SeedanceSoundContext, sound: ShotSound): string {
@@ -200,7 +212,8 @@ function renderSpeech(line: string, context: SeedanceSoundContext, sound: ShotSo
         for (const pause of speaker.matchAll(/[，,。.!！？?][ \t]*/gu)) {
           const next = pause.index + pause[0].length
           const label = speaker.slice(next)
-          if (!/^@图片\d+/u.test(label) && !isAudioOnlySpeaker(label, context.audioOnlySpeakers)) continue
+          if (!/^@图片\d+/u.test(label) && !isNamedVisualSpeaker(label, context) &&
+            !isAudioOnlySpeaker(label, context.audioOnlySpeakers)) continue
           if (!unquotedSpeaker.test(label + '：')) continue
           sep += speaker.slice(0, next)
           speaker = hasScriptVideoInnerOs(label) ? annotateScriptVideoInnerOs(label + '：').slice(0, -1) : label
@@ -219,10 +232,12 @@ function renderSpeech(line: string, context: SeedanceSoundContext, sound: ShotSo
       for (const label of labels) {
         if (offscreen || isAudioOnlySpeaker(label.trimEnd(), context.audioOnlySpeakers)) continue
         sound.hasOnScreenSpeech = true
-        const onCamera = /^\s*(@图片\d+.+)/u.exec(label)?.[1].trimEnd()
+        const onCamera = /^\s*(@图片\d+.+)/u.exec(label)?.[1].trimEnd() ||
+          (isNamedVisualSpeaker(label, context) ? label.trim() : undefined)
         if (onCamera) sound.onCameraSpeakers.add(onCamera)
       }
       if (!/^\s*(?:@图片\d+|旁白|画外音|心声)/u.test(speaker) &&
+        !isNamedVisualSpeaker(speaker, context) &&
         !labels.some(label => isAudioOnlySpeaker(label.trimEnd(), context.audioOnlySpeakers))) return _match
       return sep + speaker + '：{' + speech + '}'
     })
@@ -295,18 +310,27 @@ function inspectScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(
   // even in a recap or an offscreen attribution. Keep its narrative usage so
   // attaching the image does not turn a contextual name into an on-camera role.
   const excluded = new Set(card.excludedAssetIds)
+  const referenceGuide = options.promptMode === 'reference-guide'
   const characterReferences = evidence.mentions.filter(hit => !hit.literal &&
     byId.get(hit.id)?.kind === 'character' && !excluded.has(hit.id))
-  const imageIds = [...new Set([...materials.imageIds, ...characterReferences.map(hit => hit.id)])]
+  const selectedImages = referenceGuide ? assetIds.filter(id => !excluded.has(id) && byId.get(id)?.kind !== 'audio') : []
+  const imageIds = [...new Set([...selectedImages, ...materials.imageIds, ...characterReferences.map(hit => hit.id)])]
     .filter(id => byId.get(id)?.kind !== 'audio')
   const referenceOnlyImages = new Set(imageIds.filter(id => !materials.imageIds.includes(id)))
   const speakerIds = materials.speakerIds.filter(id => byId.get(id)?.kind !== 'audio')
   const audioIds = new Set(scan.mentions.filter(hit => hit.usage === 'audio').map(hit => hit.id))
+  if (referenceGuide) {
+    for (const id of excluded) audioIds.delete(id)
+    for (const id of assetIds) {
+      const asset = byId.get(id)
+      if (!excluded.has(id) && asset?.kind === 'audio' && voiceReferenceUrl(asset)) audioIds.add(id)
+    }
+  }
   if (card.manuallyAdded) {
     const bound = new Set(assetIds)
     return {
       byId, body, style, scan, referenceOnlyImages,
-      imageIds: imageIds.filter(id => bound.has(id) && byId.get(id)?.image),
+      imageIds: imageIds.filter(id => bound.has(id) && (referenceGuide || byId.get(id)?.image)),
       talking: new Set(speakerIds.filter(id => bound.has(id))),
       audioIds: new Set([...audioIds].filter(id => bound.has(id))),
       missingVoices: [],
@@ -366,7 +390,8 @@ export function getScriptVideoVoiceInputs(
     : isSeedance25Model(model) || isAicostSeedance25Model(model)
   const inputByAsset = new Map<string, string>()
   const automatic = automaticSpeakers(talking, scan.mentions, audioIds, byId)
-  for (const id of [...voiceAssetIds(source, body, automatic, talking, imageIds, seedance25, referenceOnlyImages), ...audioIds]) {
+  for (const id of [...voiceAssetIds(source, body, automatic, talking, imageIds,
+    seedance25 || options.promptMode === 'reference-guide', referenceOnlyImages), ...audioIds]) {
     const asset = byId.get(id)
     const input = talking.has(id) ? scriptVideoVoiceSource(asset) : voiceReferenceUrl(asset)
     if (input) inputByAsset.set(id, input)
@@ -422,13 +447,15 @@ export function getScriptVideoPromptVoices<A extends ScriptVideoDeliveryAsset>(
   const visual = scan.mentions.filter(mention => mention.usage === 'visual' && activeImages.has(mention.id))
   const ordered = orderedVisualIds(card, body, visual, activeImages, seedance25)
   const automatic = automaticSpeakers(talking, scan.mentions, audioIds, byId)
-  return groupReferenceVoices(card, body, automatic, talking, ordered, byId, seedance25, audioIds, referenceOnlyImages)
+  return groupReferenceVoices(card, body, automatic, talking, ordered, byId,
+    seedance25 || options.promptMode === 'reference-guide', audioIds, referenceOnlyImages)
 }
 
 export function buildScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(
   card: ScriptVideoDeliveryCard, assets: readonly A[], options: ScriptVideoDeliveryOptions = {},
 ) {
   const model = options.model || ''
+  const referenceGuide = options.promptMode === 'reference-guide'
   const { aicostSeedance20, seedance25, minimax, imageTag, audioTag } = scriptVideoDeliveryTags(options)
   const { byId, body, style, scan, talking, imageIds, referenceOnlyImages, audioIds, missingVoices } = inspectScriptVideoDelivery(card, assets, options)
   const warnings = new Set<string>()
@@ -444,6 +471,13 @@ export function buildScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(
   if (!card.manuallyAdded) {
     for (const problem of scan.problems) referenceIssue(describeScriptVideoReferenceProblem(body, problem))
     const boundIds = new Set(card.assetIds)
+    if (referenceGuide) for (const id of activeImages) {
+      if (boundIds.has(id)) continue
+      referenceIssue('@' + (byId.get(id)?.name || id) + ' 尚未绑定该卡素材')
+      unavailable.add(id)
+      activeImages.delete(id)
+      talking.delete(id)
+    }
     for (const m of scan.mentions) {
       if (m.explicit && ((m.usage === 'visual' || m.usage === 'context' && !m.literal) && activeImages.has(m.id) || m.usage === 'speaker' && talking.has(m.id) || m.usage === 'audio' && audioIds.has(m.id)) && !boundIds.has(m.id)) {
         referenceIssue('@' + m.name + ' 尚未绑定该卡素材')
@@ -464,7 +498,8 @@ export function buildScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(
   const visual = scan.mentions.filter(mention => mention.usage === 'visual' && activeImages.has(mention.id))
   const orderedIds = orderedVisualIds(card, body, visual, activeImages, seedance25)
   const automatic = automaticSpeakers(talking, scan.mentions, audioIds, byId)
-  const voices = groupReferenceVoices(card, body, automatic, talking, orderedIds, byId, seedance25, audioIds, referenceOnlyImages)
+  const voices = groupReferenceVoices(card, body, automatic, talking, orderedIds, byId,
+    seedance25 || referenceGuide, audioIds, referenceOnlyImages)
   const audioByAssetId = new Map(voices.flatMap(({ roles }, i) => roles.map(asset => [asset.id, audioTag(i + 1)] as const)))
   // Providers which require a visual reference alongside audio can anchor an
   // audio-only clip to one speaker image without staging that speaker on camera.
@@ -491,6 +526,7 @@ export function buildScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(
 
   let cursor = 0, output = ''
   const audioOnlySpeakers = new Set<string>()
+  const visualSpeakerNames = new Set<string>()
   const vocalizations = scan.mentions.filter(mention => mention.vocalization)
   const vocalizingRoles = new Set(vocalizations.map(mention => mention.id))
   const vocalizationShots = new Set<number>()
@@ -509,11 +545,14 @@ export function buildScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(
     const imageIndex = includedImageIds.has(id) ? indexByImage.get(asset.image) : undefined
     if (usage === 'speaker' && !vocalization && (!imageIndex || referenceOnlyImages.has(id))) {
       audioOnlySpeakers.add(surface)
-      if (imageIndex) audioOnlySpeakers.add(imageTag(imageIndex) + surface)
+      if (imageIndex) audioOnlySpeakers.add((referenceGuide ? '@' : imageTag(imageIndex)) + surface)
+    }
+    if (referenceGuide && imageIndex && asset.kind === 'character' && !mention.literal && !unavailable.has(id)) {
+      visualSpeakerNames.add('@' + surface)
     }
     const voiceTag = audioByAssetId.get(id)
     const rendered = mention.literal && (spoken || usage !== 'context') || unavailable.has(id) ? body.slice(start, end) : usage === 'audio' ? voiceTag ?? body.slice(start, end)
-      : (usage !== 'context' || !mention.literal) && imageIndex ? imageTag(imageIndex) + surface : surface
+      : (usage !== 'context' || !mention.literal) && imageIndex ? (referenceGuide ? '@' : imageTag(imageIndex)) + surface : surface
     const inlineVoice = usage === 'speaker' && voiceTag && (!spoken || vocalization)
       && !usesPickedAudio(mention, audioIds, byId) ? ' ' + voiceTag : ''
     const separator = usage === 'audio' && cursor === start && previousMention?.manualAudioId === id ? ' ' : ''
@@ -526,21 +565,39 @@ export function buildScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(
   const header = ordered.flatMap(asset => {
     const referenceOnly = referenceOnlyImages.has(asset.id)
     const voiceOnly = referenceOnly && talking.has(asset.id) || !activeImages.has(asset.id)
-    if (!seedance25 && !voiceOnly && !referenceOnly) return []
+    if (!referenceGuide && !seedance25 && !voiceOnly && !referenceOnly) return []
     const duty = voiceOnly ? '画外声音来源，不安排出镜' : referenceOnly
       ? '人物外观参考，是否出镜以当前分镜为准' : pictureDuties[asset.kind || ''] || '外观'
-    return [`${imageTag(indexByImage.get(asset.image)!)} ${asset.name}（${duty}）`]
-  }).join('，')
+    return [referenceGuide
+      ? `${imageTag(indexByImage.get(asset.image)!)} 是 @${asset.name} 的${pictureDuties[asset.kind || ''] || '外观'}参考图${voiceOnly ? '（画外声音来源，不安排出镜）' : referenceOnly ? '（是否出镜以当前分镜为准）' : ''}。`
+      : `${imageTag(indexByImage.get(asset.image)!)} ${asset.name}（${duty}）`]
+  }).join(referenceGuide ? '\n' : '，')
   const hasInnerVoice = seedance25 && output.includes(SCRIPT_VIDEO_INNER_OS_DIRECTION)
   const hasMultipleCharacters = images.filter(asset => asset.kind === 'character').length > 1
-  const castContinuity = seedance25 && hasMultipleCharacters
+  const castContinuity = (referenceGuide && images.some(asset => asset.kind === 'character') || seedance25 && hasMultipleCharacters)
     ? '各角色沿用各自参考图的脸、发型和服装。各镜的走位、动作与画内对白由该镜指定的人物完成。'
     : ''
   const voiceLabel = (asset: A) => {
+    if (referenceGuide) return '@' + asset.name
     const index = indexByImage.get(asset.image)
     return index ? imageTag(index) + asset.name : asset.name
   }
-  const referenceVoiceText = voices.flatMap(({ roles }, i) => roles.filter(asset => asset.kind === 'character').map(asset =>
+  const referenceVoiceText = referenceGuide ? voices.map(({ roles }, i) => {
+    const pickedAudioIds = new Set(roles.filter(asset => asset.kind === 'audio').map(asset => asset.id))
+    const pickedSpeakers = scan.mentions.filter(mention => mention.usage === 'speaker' &&
+      mention.manualAudioId && pickedAudioIds.has(mention.manualAudioId)).flatMap(mention => {
+      const asset = byId.get(mention.id)
+      return asset?.kind === 'character' ? [asset] : []
+    })
+    const speakers = [...new Map([...roles.filter(asset => asset.kind === 'character'), ...pickedSpeakers]
+      .map(asset => [asset.id, asset])).values()]
+    const names = (speakers.length ? speakers : roles).map(asset => '@' + asset.name).join('、')
+    const pickedNames = speakers.length && pickedAudioIds.size
+      ? '（声音素材：' + roles.filter(asset => asset.kind === 'audio').map(asset => '@' + asset.name).join('、') + '）' : ''
+    return speakers.length
+      ? `${audioTag(i + 1)} 是 ${names} 的配音音色参考${pickedNames}，只参考音色，不照搬音频中的内容。`
+      : `${audioTag(i + 1)} 是 ${names} 的声音参考，按本段标注使用。`
+  }) : voices.flatMap(({ roles }, i) => roles.filter(asset => asset.kind === 'character').map(asset =>
     `${voiceLabel(asset)}的${hasInnerVoice || vocalizingRoles.has(asset.id) ? '角色' : '对白'}音色参考${audioTag(i + 1)}，只参考音色，不照搬音频中的内容。`,
   ))
   const modelVoiceText: string[] = []
@@ -553,9 +610,11 @@ export function buildScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(
   const voiceText = [...referenceVoiceText, ...modelVoiceText].join('\n')
   const duration = options.duration ?? card.duration
   if (!card.manuallyAdded && duration !== card.duration) output = retimeShotText(output, card, duration)
-  if (seedance25) output = seedanceShotText(output, duration, { audioOnlySpeakers: [...audioOnlySpeakers], hasMultipleCharacters, vocalizationShots })
+  if (seedance25) output = seedanceShotText(output, duration, {
+    audioOnlySpeakers: [...audioOnlySpeakers], visualSpeakerNames: [...visualSpeakerNames], hasMultipleCharacters, vocalizationShots,
+  })
   else if (aicostSeedance20 || seedanceModelLimits(model)?.version === '2.0') output = output.replace(shotHeading, '镜头$1')
-  if (voiceText) {
+  if (voiceText && !referenceGuide) {
     const firstShot = output.search(shotBoundary)
     const insertion = firstShot < 0 ? Math.max(0, output.search(legacyShotBody)) : firstShot
     const header = output.slice(0, insertion)
@@ -586,7 +645,21 @@ export function buildScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(
   const limits = options.referenceLimits ?? (options.provider && options.provider !== 'comfyui'
     ? scriptVideoCapabilities(options.provider, model) ?? undefined : undefined)
   const lighting = bindScriptVideoLighting(options.lightingRanges ?? [], card.shots.length, images, voices.length, openingFrame, limits, imageTag, card.referenceFrameSettings)
-  const prompt = [style && sceneGradedStyle(style, lighting.lightingRanges), opening, header, castContinuity, space, lighting.prompt,
+  const materialGuide = referenceGuide && [header,
+    openingFrame?.imageIndex && `${imageTag(openingFrame.imageIndex)} 是续接参考图。`,
+    ...lighting.lightingImages.map((url, index) => {
+      const sceneName = lighting.lightingRanges.find(range => range.imageUrl === url)?.sceneName
+      return `${imageTag(images.length + Number(!!openingFrame?.imageIndex) + index + 1)} 是${sceneName || '同场'}的光线与影调参考图。`
+    }),
+  ].filter(Boolean).join('\n')
+  const styleInstructions = style && sceneGradedStyle(style, lighting.lightingRanges)
+  const guide = [materialGuide, voiceText].filter(Boolean).join('\n')
+  const prefix = referenceGuide
+    ? [guide && '参考素材：\n' + guide,
+      guide && '请同时参考以上素材，保持人物形象、人物音色、场景、道具和画面的连续性。',
+      castContinuity, opening, space, lighting.prompt, styleInstructions]
+    : [styleInstructions, opening, header, castContinuity, space, lighting.prompt]
+  const prompt = [...prefix,
     seedance25 && screenTextNotes(body), output]
     .filter(Boolean).join('\n\n').trim()
   const imageBindings = ordered.map(asset => ({ assetId: asset.id, index: indexByImage.get(asset.image)! }))

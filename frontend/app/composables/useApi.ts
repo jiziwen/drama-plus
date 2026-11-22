@@ -1,3 +1,5 @@
+import type { ScriptVideoPromptMode } from '../../../backend/src/services/video-prompt-mode'
+
 const BASE = '/api/v1'
 
 export function apiErrorMessage(payload: unknown, status: number): string {
@@ -42,6 +44,11 @@ export const api = {
   post: <T = any>(p: string, b?: any) => req<T>('POST', p, b),
   put: <T = any>(p: string, b?: any) => req<T>('PUT', p, b),
   del: <T = any>(p: string) => req<T>('DELETE', p),
+}
+
+export const promptModeAPI = {
+  get: () => api.get<{ mode: ScriptVideoPromptMode }>('/settings/video-prompt-mode'),
+  save: (mode: ScriptVideoPromptMode) => api.put<{ mode: ScriptVideoPromptMode }>('/settings/video-prompt-mode', { mode }),
 }
 
 export const libtvPhoneAPI = {

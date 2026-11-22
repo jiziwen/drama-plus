@@ -19,9 +19,11 @@ import { getScriptVideoVoiceInputs, scriptVideoVoiceSource, type ScriptVideoDeli
 import type { ScriptVideoStoryboardCheckpoint, ScriptVideoStoryboardProgress } from './script-video-ai.js'
 import type { LightingCheck } from './script-video-lighting.js'
 import type { ScriptVideoReferenceNames } from './script-video-generation.js'
+import type { ScriptVideoPromptMode } from './video-prompt-mode.js'
 import { isScriptVideoGenerationDuration } from './script-video-capabilities.js'
 import { listScriptVideoVersions } from './script-video-versions.js'
-import { scriptVideoReferenceSettings } from './script-video-reference-settings.js'
+import { scriptVideoReferenceSettings, type ScriptVideoReferenceSettings } from './script-video-reference-settings.js'
+import { previousScriptVideoRender } from './script-video-predecessor.js'
 import { isScriptVideoEpisodeProgress } from './script-video-episode-progress.js'
 
 export const OUTLINE_DURATION_POLICY = '30-except-tail-v1' as const
@@ -37,6 +39,8 @@ export type ScriptVideoJob = {
   result?: unknown
   error?: string
   code?: string
+  /** 服务端确认可继续查询原视频任务；不发起新的生成提交。 */
+  canRecover?: boolean
   issues?: { code: string; message: string }[]
   cardId?: string
   cardVersion?: number
@@ -45,8 +49,10 @@ export type ScriptVideoJob = {
   taskId?: number
   baseDigest?: string
   videoDigestVersion?: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9
+  videoIgnoresPredecessor?: true
   videoModel?: string
   videoProvider?: string
+  videoPromptMode?: ScriptVideoPromptMode
   videoDuration?: number
   staleResult?: boolean
   lightingChecks?: LightingCheck[]
@@ -97,6 +103,33 @@ export function assertOutlineDurationPolicy(cards: Array<{ duration: number }>) 
 }
 const validId = (id: unknown): id is string =>
   typeof id === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(id)
+
+function assertChangedReferenceSources(
+  next: ScriptVideoProject, before: ScriptVideoProject, order: readonly string[],
+  loadEpisode?: (id: string) => ScriptVideoProject['episodes'][number],
+) {
+  const currentEpisodes = new Map(next.episodes.map(episode => [episode.id, episode]))
+  const priorEpisodes = new Map(before.episodes.map(episode => [episode.id, episode]))
+  const frameChoices = (settings?: ScriptVideoReferenceSettings) => ({ ...settings?.lighting, tail: settings?.tail })
+  for (const episode of next.episodes) {
+    const priorCards = new Map<string, { referenceFrameSettings?: ScriptVideoReferenceSettings }>(
+      priorEpisodes.get(episode.id)?.cards.map((card: { id: string }) => [card.id, card]),
+    )
+    for (const card of episode.cards) {
+      if (!card.referenceFrameSettings) continue
+      const old = frameChoices(priorCards.get(card.id)?.referenceFrameSettings)
+      for (const [key, choice] of Object.entries(frameChoices(card.referenceFrameSettings))) {
+        if (choice?.mode !== 'manual' || !choice.sourceCardId || isDeepStrictEqual(choice, old[key as keyof typeof old])) continue
+        const previousId = order[order.indexOf(episode.id) - 1]
+        const previous = previousId && (currentEpisodes.get(previousId) ?? loadEpisode?.(previousId))
+        const context = { episodes: previous ? [previous, episode] : [episode] }
+        if (!previousScriptVideoRender(context, episode.id, card.id, choice.videoUrl, choice.sourceCardId))
+          throw new ScriptVideoStoreError('参考来源成片已更新，请重新打开选帧。', 409, 'REFERENCE_FRAME_SOURCE_CHANGED')
+      }
+    }
+  }
+}
+
 function assertId(id: unknown): asserts id is string {
   if (!validId(id)) throw new ScriptVideoStoreError('无效的标识')
 }
@@ -955,6 +988,7 @@ export class ScriptVideoStore {
       if ((input as any)?.id !== id)
         throw new ScriptVideoStoreError('项目标识不匹配')
       const project = sanitizeProject(input, record.project)
+      assertChangedReferenceSources(project, record.project, project.episodes.map(episode => episode.id))
       this.assertRemovalsAllowed(record.project, project.episodes)
       project.revision = record.project.revision + 1
       record.project = project
@@ -1017,6 +1051,7 @@ export class ScriptVideoStore {
           }
           next.episodeId = ''
           next = sanitizeProject(next, before, true)
+          assertChangedReferenceSources(next, before, nextOrder, eid => this.catalog.episode(id, eid)?.episode)
           if (voiceModesOnly) {
             // A persisted toggle only affects speakers that actually use the
             // fallback. With an uploaded recording there is no episode work.

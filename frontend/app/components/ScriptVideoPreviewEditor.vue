@@ -152,6 +152,7 @@
         <ScriptVideoReferenceFrames
           v-if="frameEditor" :frames="frameEditor.frames.value" :loading="frameEditor.loading.value" :changing="frameEditor.changing.value"
           :error="frameEditor.error.value" :choose="frameEditor.choose" @retry="frameEditor.refresh"
+          @preview="(name, url) => openMediaPreview('image', name, url)"
         />
       </template>
 

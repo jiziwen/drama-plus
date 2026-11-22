@@ -5,6 +5,7 @@ import type { ScriptVideoFrameChoice, ScriptVideoReferenceFrameRow, ScriptVideoR
 type Scope = { projectId: string; episodeId: string; card: { id: string; version?: number; referenceFrameSettings?: ScriptVideoReferenceSettings } }
 type Request = (path: string, body: object, signal: AbortSignal) => Promise<ScriptVideoReferenceFrames>
 export type FrameSelection = 'auto' | 'off' | 'manual'
+export type FrameSource = NonNullable<ScriptVideoReferenceFrames['previousEpisodeSources']>[number]
 
 export function useScriptVideoReferenceFrames(
   current: () => Scope | undefined, sourceRevision: () => string,
@@ -68,13 +69,19 @@ export function useScriptVideoReferenceFrames(
   }, { immediate: true })
   onScopeDispose(reset)
 
-  async function choose(row: ScriptVideoReferenceFrameRow, mode: FrameSelection, seconds?: number) {
+  function matchesSource(state: ScriptVideoReferenceFrames, row: ScriptVideoReferenceFrameRow | undefined, source: FrameSource) {
+    return (row?.sourceCardId === source.cardId && row.videoUrl === source.videoUrl) ||
+      state.previousEpisodeSources?.some(item => item.cardId === source.cardId && item.videoUrl === source.videoUrl)
+  }
+
+  async function choose(row: ScriptVideoReferenceFrameRow, mode: FrameSelection, seconds?: number, source?: FrameSource) {
     const scope = current(), endpoint = path.value, available = frames.value
     if (!scope || !available || changing.value || loading.value) return false
     const selectedRow = (state: ScriptVideoReferenceFrames) => row.kind === 'tail' ? state.tail : state.lighting.find(item => item.startShot === row.startShot)
     const selected = selectedRow(available)
     if (!selected || toRaw(selected) !== toRaw(row) || (row.kind === 'lighting' && !row.startShot)) return false
-    if (mode === 'manual' && (!row.videoUrl || !validScriptVideoFrameTime(seconds))) return false
+    const videoUrl = source?.videoUrl ?? row.videoUrl
+    if (mode === 'manual' && (!videoUrl || !validScriptVideoFrameTime(seconds) || (source && !matchesSource(available, selected, source)))) return false
     const controller = writer = new AbortController()
     const version = sourceVersion
     const original = row.kind === 'tail' ? scope.card.referenceFrameSettings?.tail : scope.card.referenceFrameSettings?.lighting?.[String(row.startShot)]
@@ -86,20 +93,23 @@ export function useScriptVideoReferenceFrames(
       let choice: ScriptVideoFrameChoice | undefined = mode === 'off' ? { mode: 'off' } : undefined
       if (mode === 'manual') {
         const result = await request(endpoint, {
-          kind: row.kind, ...(row.kind === 'lighting' && { startShot: row.startShot }), seconds, expectedVideoUrl: row.videoUrl,
+          kind: row.kind, ...(row.kind === 'lighting' && { startShot: row.startShot }), seconds, expectedVideoUrl: videoUrl,
+          ...(source && { sourceCardId: source.cardId }),
         }, controller.signal)
         if (controller.signal.aborted) return false
         const frame = result.candidate
-        if (!frame?.imageUrl || frame.videoUrl !== row.videoUrl || !validScriptVideoFrameTime(frame.seconds))
+        if (!frame?.imageUrl || frame.videoUrl !== videoUrl || (source && frame.sourceCardId !== source.cardId) ||
+            !validScriptVideoFrameTime(frame.seconds))
           throw new Error('来源成片已变化，请刷新后重新选帧。')
         if (sourceVersion !== version) {
           const rechecking = sourceVersion
           const latest = await request(endpoint, {}, controller.signal)
           if (controller.signal.aborted) return false
-          if (sourceVersion !== rechecking || selectedRow(latest)?.videoUrl !== row.videoUrl)
+          const latestRow = selectedRow(latest)
+          if (sourceVersion !== rechecking || (source ? !matchesSource(latest, latestRow, source) : latestRow?.videoUrl !== videoUrl))
             throw new Error('来源成片已变化，请重新选帧。')
         }
-        choice = { mode, videoUrl: frame.videoUrl, seconds: frame.seconds }
+        choice = { mode, videoUrl: frame.videoUrl, seconds: frame.seconds, ...(frame.sourceCardId && { sourceCardId: frame.sourceCardId }) }
       }
       const card = current()?.card
       if (!card || controller.signal.aborted) return false

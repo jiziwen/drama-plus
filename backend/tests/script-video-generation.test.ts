@@ -26,6 +26,10 @@ const { startScriptVideoGeneration, getScriptVideoGeneration, getScriptVideoSubm
 const { scriptVideoCapabilities } = await import('../src/services/script-video-capabilities.js')
 const { getScriptVideoStylePreset, scriptVideoPromptStylePrefix } = await import('../src/services/script-video-style.js')
 const { buildScriptVideoDelivery } = await import('../src/services/script-video-delivery.js')
+const { getVideoPromptMode, setVideoPromptMode } = await import('../src/services/app-settings.js')
+
+// Preserve the legacy layout expectations in this suite unless a test selects the guide.
+setVideoPromptMode('inline')
 
 const submissions: Array<{model: string; content: {text?: string; image_url?: {url: string}; audio_url?: {url: string}; role?: string}[]; ratio: string; duration: number; resolution: string}> = []
 type AicostJsonSubmission = { model: string; prompt: string; seconds: number; aspect_ratio: string; resolution: string; images: string[]; audios: string[] }
@@ -512,6 +516,38 @@ test('AICost 按 PUBLIC_BASE_URL 选择公网参考图与角色音频或本地�
     images: ['https://media.example.test/static/uploads/a.png', 'https://media.example.test/static/uploads/b.png'],
     audios: [voiceAudio, otherVoiceAudio].map(({url}) => `https://media.example.test${url}`),
   })
+
+  const priorMode = getVideoPromptMode()
+  t.after(() => setVideoPromptMode(priorMode))
+  setVideoPromptMode('reference-guide')
+  const prop = { id: 'blade', kind: 'prop', name: '绣春刀', image: '/static/uploads/aicost-blade.png' }
+  await fs.writeFile(path.join(root, prop.image), png)
+  const guidedEpisode = { ...episode, assets: [...applicableAssets, prop], card: { ...card, assetIds: [...card.assetIds, prop.id] } }
+  const guidedPreview = await previewScriptVideoPrompt({ ...guidedEpisode, selection: guidedEpisode })
+  assert.match(guidedPreview.prompt, /^参考素材：[\s\S]+@图片3 是 @绣春刀/u)
+  const body = guidedPreview.prompt.split(/^镜头01/mu)[1]
+  assert.doesNotMatch(body, /@图片\d/u)
+  assert.match(body, /@戍卒 @音频2/u)
+  const guided = await startScriptVideoGeneration(guidedEpisode)
+  assert.equal((await finish(guided.taskId)).status, 'completed')
+  const guidedPayload = aicostSubmissions.at(-1)!
+  assert.ok(!(guidedPayload instanceof FormData))
+  assert.equal(guidedPayload.prompt, guidedPreview.prompt)
+  assert.deepEqual(guidedPayload.images, [...hostedPayload.images, 'https://media.example.test' + prop.image])
+  assert.deepEqual(guidedPayload.audios, hostedPayload.audios)
+
+  const inlineEpisode = { ...guidedEpisode, promptMode: 'inline' as const }
+  const inlinePreview = await previewScriptVideoPrompt({ ...inlineEpisode, selection: inlineEpisode })
+  const inline = await startScriptVideoGeneration(inlineEpisode)
+  assert.equal((await finish(inline.taskId)).status, 'completed')
+  const inlinePayload = aicostSubmissions.at(-1)!
+  assert.ok(!(inlinePayload instanceof FormData))
+  assert.equal(inlinePayload.prompt, inlinePreview.prompt)
+  assert.doesNotMatch(inlinePayload.prompt, /参考素材：/u)
+  assert.deepEqual(inlinePayload.images, hostedPayload.images)
+  assert.deepEqual(inlinePayload.audios, hostedPayload.audios)
+  assert.equal(getVideoPromptMode(), 'reference-guide')
+  assert.equal(getScriptVideoSubmissionPrompt(guided.taskId, guidedEpisode.assets)?.prompt, guidedPreview.prompt)
 })
 
 test('黑屏尾帧回退至末镜稳定画面，按所选服务商协议提交同一张图', async (t) => {
@@ -559,6 +595,16 @@ test('黑屏尾帧回退至末镜稳定画面，按所选服务商协议提交�
     { [onlyFrame.card.id]: onlyFrame.lightingRanges })
   assert.deepEqual(preview.lightingRanges[onlyFrame.card.id], firstFrame.lightingRanges)
   assert.deepEqual(preview.continuations[onlyFrame.card.id], firstFrame.continuation)
+  const prop = { ...assets[0], kind: 'prop' }
+  const guideCard = { ...onlyFrame.card, assetIds: [prop.id] }
+  const guideOptions = { ...onlyFrame, promptMode: 'reference-guide' as const }
+  const guide = await prepareScriptVideoContinuations([{ card: guideCard, source }], [prop], guideOptions)
+  const followGlobal = await prepareScriptVideoContinuations([{ card: guideCard, source }], [prop], onlyFrame)
+  assert.equal(guide[guideCard.id].mode, 'reference')
+  assert.equal(followGlobal[guideCard.id].mode, 'first-frame')
+  const archiveImages = await prepareScriptVideoArchiveImages([guideCard], [prop], guideOptions, onlyFrame.resolution)
+  assert.deepEqual(Object.keys(archiveImages), [prop.image])
+  assert.deepEqual(Object.keys(await prepareScriptVideoArchiveImages([guideCard], [prop], onlyFrame, onlyFrame.resolution)), [])
   assert.deepEqual((await Promise.all([finish(multimodal.taskId), finish(firstFrame.taskId)])).map(state => state.status), ['completed', 'completed'])
   assert.equal((await getScriptVideoGeneration(firstFrame.taskId)).finalShotRange, undefined)
   assert.equal((await getScriptVideoGeneration(firstFrame.taskId, { finalShotNumber: 1 })).finalShotRange, undefined)

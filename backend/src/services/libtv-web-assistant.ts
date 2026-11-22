@@ -19,7 +19,7 @@ try {
   $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, 0)
   $listener.Start()
   $port = $listener.LocalEndpoint.Port
-  $callback = 'http://127.0.0.1:' + $port + '/callback?state=' + $state + '&expires_at=' + $expiresAt
+  $callback = 'http://127.0.0.1:' + $port + '/callback?state=' + $state
   $loginUrl = 'https://www.liblib.tv/zh?callback_url=' + [Uri]::EscapeDataString($callback)
   Write-Host '正在打开 LibTV 官方登录页，请选择任意可用的登录方式。'
   Start-Process $loginUrl
@@ -75,7 +75,7 @@ try {
     $stream.Flush()
     $client.Close()
     $client = $null
-    if ($valid) { Write-Host '已返回应用，账号状态会自动刷新，可以关闭此窗口。'; break }
+    if ($valid) { Write-Host '已返回应用，请点击「刷新账号与画布」，可以关闭此窗口。'; break }
   }
 } catch {
   Write-Host 'LibTV 本机授权未完成，请返回应用重新连接。'

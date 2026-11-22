@@ -9,6 +9,7 @@
 import { eq } from 'drizzle-orm'
 import { db, schema } from '../db/index.js'
 import { now } from '../utils/response.js'
+import { DEFAULT_VIDEO_PROMPT_MODE, isVideoPromptMode, type ScriptVideoPromptMode } from './video-prompt-mode.js'
 
 export const CONTENT_LANGUAGES = ['zh'] as const
 export type ContentLanguage = 'zh'
@@ -18,6 +19,23 @@ export function getContentLanguage(): ContentLanguage { return 'zh' }
 export function setContentLanguage(lang: ContentLanguage): ContentLanguage {
   if (lang !== 'zh') throw new Error(`Invalid content language: ${lang}`)
   return 'zh'
+}
+
+const VIDEO_PROMPT_MODE_KEY = 'video_prompt_mode'
+
+/** 所有视频服务共用的正文排版偏好，与账号和密钥配置无关。 */
+export function getVideoPromptMode(): ScriptVideoPromptMode {
+  const row = db.select({ value: schema.appSettings.value }).from(schema.appSettings)
+    .where(eq(schema.appSettings.key, VIDEO_PROMPT_MODE_KEY)).get()
+  return isVideoPromptMode(row?.value) ? row.value : DEFAULT_VIDEO_PROMPT_MODE
+}
+
+export function setVideoPromptMode(mode: ScriptVideoPromptMode): ScriptVideoPromptMode {
+  if (!isVideoPromptMode(mode)) throw new Error('视频提示词排版模式无效')
+  db.insert(schema.appSettings)
+    .values({ key: VIDEO_PROMPT_MODE_KEY, value: mode, updatedAt: now() })
+    .onConflictDoUpdate({ target: schema.appSettings.key, set: { value: mode, updatedAt: now() } }).run()
+  return mode
 }
 
 const TOURS_SEEN_KEY = 'tours_seen'

@@ -1,4 +1,5 @@
 import { buildScriptVideoDelivery, type ScriptVideoContinuation, type ScriptVideoDeliveryOptions } from '../../../backend/src/services/script-video-delivery'
+import { formatJimengScriptPrompt } from '../../../backend/src/services/jimeng-reference-labels'
 import { annotateScriptVideoAssets, type AssetMention } from '../../../backend/src/services/script-video-mentions'
 import { renderScriptVideoPrompt } from '../../../backend/src/services/script-video-format'
 import { scriptVideoShotHeadings } from '../../../backend/src/services/script-video-asset-scope'
@@ -353,7 +354,9 @@ export function exportMarkdown(
         `| ${String(i + 1).padStart(2, '0')} | ${shot.duration}秒 | ${cell(shot.camera)} | ${cell(shot.action)} | ${cell(shot.dialogue) || '—'} |`,
       )
     })
-    const prompt = delivery?.prompt || card.prompt || buildCardPrompt(card, assets)
+    const prompt = delivery && context.delivery?.provider === 'jimeng'
+      ? formatJimengScriptPrompt(delivery.prompt, delivery.images.length + Number(!!delivery.openingFrame?.imageIndex) + delivery.lightingImages.length, delivery.voices.length)
+      : delivery?.prompt || card.prompt || buildCardPrompt(card, assets)
     const fence = '`'.repeat(
       Math.max(
         3,

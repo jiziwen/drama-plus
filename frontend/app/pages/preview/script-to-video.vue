@@ -481,145 +481,47 @@
               :searchable="false"
               :disabled="!currentEpisode.modelMaxDuration || videoRequestPending"
             />
-            <p v-if="videoDurationHint" class="vp-duration-hint" :class="{ 'vp-duration-warning': selectedVideoDurationIssue }">
+            <p v-if="videoDurationHint" class="vp-field-hint" :class="{ 'vp-duration-warning': selectedVideoDurationIssue }">
               {{ videoDurationHint }}
             </p>
           </div>
-          <div class="vp-inspector-divider" />
-          <div class="vp-section-header">
-            <h2>编排规则</h2>
-            <button class="vp-link" @click="dialog = 'skills'">查看</button>
+          <div class="vp-field">
+            <label for="vp-video-prompt-mode">{{ t('settings.promptMode.title') }}</label>
+            <BaseSelect
+              v-model="videoPromptMode"
+              input-id="vp-video-prompt-mode"
+              :aria-label="t('settings.promptMode.title')"
+              variant="inspector"
+              :options="[
+                { value: DEFAULT_VIDEO_PROMPT_MODE, label: t('settings.promptMode.referenceGuideName') },
+                { value: 'inline', label: t('settings.promptMode.inline') },
+              ]"
+              :searchable="false"
+            />
+            <p class="vp-field-hint">
+              {{ t(videoPromptMode === 'inline' ? 'settings.promptMode.inlineDesc' : 'settings.promptMode.referenceGuideDesc') }}
+            </p>
           </div>
-          <div class="vp-skill-summary">
-            <span class="vp-mini-icon"><Clapperboard :size="14" /></span>
-            <div>
-              <strong>SD2.5 短剧分镜 v2.1</strong
-              ><small>主 Skill · 分镜规则与五维镜头资料</small>
-            </div>
-            <Check :size="13" />
-          </div>
-          <label class="vp-skill-summary vp-combat-switch"
-            ><span class="vp-mini-icon"><Swords :size="14" /></span>
-            <div>
-              <strong>高燃打斗</strong
-              ><small>打斗子 Skill · 下次编排生效</small>
-            </div>
-            <input
-              v-model="combatEnabled"
-              type="checkbox"
-              :disabled="!canEditSharedProject"
-              aria-label="启用高燃打斗"
-          /></label>
-          <div class="vp-inspector-divider" />
-          <div class="vp-section-header">
-            <h2>生成任务</h2>
-            <span class="vp-muted">{{ tasks.length }}</span>
-          </div>
-          <p v-if="videoTailWaiting" class="vp-muted vp-tail-wait" role="status">
-            等待上一段出片，出片后接续生成。
-          </p>
-          <div class="vp-tasks">
-            <div
-              v-for="task in tasks.slice().reverse()"
-              :key="task.id"
-              class="vp-task"
+          <div class="vp-inspector-actions">
+            <p v-if="videoTailWaiting" class="vp-field-hint" role="status">
+              等待上一段出片，出片后接续生成。
+            </p>
+            <p v-if="batchVideoVoiceWarning" id="vp-batch-video-voice" class="vp-video-voice-warning" role="status">
+              {{ batchVideoVoiceWarning }}
+            </p>
+            <button v-if="activeVideoRun || videoCanceling" class="btn vp-wide" type="button" :disabled="videoCanceling" @click="cancelVideoGeneration()">
+              <X :size="13" />{{ videoCanceling ? '正在取消…' : '取消本集视频生成' }}
+            </button>
+            <button v-else
+              class="btn vp-wide"
+              type="button"
+              :disabled="!cards.length || running || !!activeCardIds.length || !!batchVideoVoiceWarning"
+              :aria-describedby="batchVideoVoiceWarning ? 'vp-batch-video-voice' : undefined"
+              @click="requestVideoGeneration(cards.map(card => card.id))"
             >
-              <LoaderCircle
-                v-if="task.status === 'processing'"
-                :size="14"
-                class="animate-spin"
-              /><X
-                v-else-if="task.status === 'failed' || task.status === 'canceled'"
-                :size="14"
-              /><CircleCheck v-else :size="14" />
-              <div>
-                <strong>{{
-                  task.title ||
-                  cards.find((card) => card.id === task.cardId)?.title ||
-                  '视频任务'
-                }}</strong
-                ><span class="vp-task-model">{{ task.modelLabel }}<template v-if="task.duration"> · {{ task.duration }} 秒</template></span
-                ><small
-                  >{{
-                    task.status === 'processing'
-                      ? '视频生成中…'
-                      : task.status === 'failed'
-                        ? '生成失败'
-                        : task.status === 'canceled'
-                          ? task.code?.startsWith('SUBMISSION_UNKNOWN') ? '已停止站内等待' : '已取消'
-                          : '视频已生成'
-                  }}
-                </small>
-                <small v-if="videoTaskError(task)" class="vp-task-stale">{{ videoTaskError(task) }}</small>
-                <small v-if="task.lightingReviewShots?.length" class="vp-task-stale">光线待复核 · 镜头 {{ task.lightingReviewShots.join('、') }} 与上一段末镜的受光差异较大</small>
-                <a v-if="task.continuation?.imageUrl" :href="task.continuation.imageUrl" target="_blank" rel="noopener" class="vp-link vp-tail-link">
-                  <img :src="task.continuation.imageUrl" alt="上一段尾帧" loading="lazy" />
-                  {{ task.continuation.mode === 'first-frame' ? '上一段尾帧 · 本段首帧' : '上一段尾帧 · 开场参考' }}
-                </a>
-                <a
-                  v-if="task.videoUrl"
-                  :href="task.videoUrl"
-                  target="_blank"
-                  rel="noopener"
-                  class="vp-link"
-                  >查看视频</a
-                >
-                <button v-if="task.taskId" type="button" class="vp-link" @click="showFinalPrompt({ cardId: task.cardId, title: task.title || '视频任务', task, event: $event })">
-                  查看该次提示词
-                </button>
-                <button v-if="task.status === 'processing'" type="button" class="vp-link"
-                  :disabled="videoCanceling || cancelingVideo.has(task.id)" @click="cancelVideoGeneration(task)">
-                  {{ cancelingVideo.has(task.id) ? '正在取消…' : '取消生成' }}
-                </button>
-                <div
-                  v-if="
-                    (task.status === 'failed' || task.status === 'canceled') &&
-                    latestTaskByCard.get(task.cardId)?.id === task.id &&
-                    cards.some(card => card.id === task.cardId)
-                  "
-                >
-                  <small v-if="videoVoiceWarningForCard(task.cardId)" :id="`vp-task-voice-${task.id}`" class="vp-video-voice-warning" role="status">
-                    {{ videoVoiceWarningForCard(task.cardId) }}
-                  </small>
-                  <button
-                    type="button"
-                    class="vp-link"
-                    :disabled="videoRequestPending || activeCardIds.includes(task.cardId) || taskActions.has(task.id) || !!videoVoiceWarningForCard(task.cardId)"
-                    :aria-describedby="videoVoiceWarningForCard(task.cardId) ? `vp-task-voice-${task.id}` : undefined"
-                    @click="requestVideoGeneration([task.cardId])"
-                  >
-                    {{ isVideoDeliveryRecovery(task) ? '恢复原任务' : '重新生成' }}
-                  </button>
-                </div>
-                <small v-if="task.staleResult" class="vp-task-stale">生成期间输入有更新，已保留为历史成片</small>
-                <small
-                  v-else-if="
-                    cards.some(card => card.id === task.cardId && card.version !== task.cardVersion &&
-                      (card.status !== 'ready' || !task.videoUrl || card.videoUrl !== task.videoUrl))
-                  "
-                  class="vp-task-stale"
-                  >分镜版本已更新，可重新生成</small
-                >
-              </div>
-            </div>
-            <div v-if="!tasks.length" class="vp-no-tasks">
-              <MonitorPlay :size="23" /><span>选好片段，开始第一次生成</span>
-            </div>
+              <Layers :size="13" />批量生成视频
+            </button>
           </div>
-          <p v-if="batchVideoVoiceWarning" id="vp-batch-video-voice" class="vp-video-voice-warning" role="status">
-            {{ batchVideoVoiceWarning }}
-          </p>
-          <button v-if="activeVideoRun || videoCanceling" class="btn vp-wide" type="button" :disabled="videoCanceling" @click="cancelVideoGeneration()">
-            <X :size="13" />{{ videoCanceling ? '正在取消…' : '取消本集视频生成' }}
-          </button>
-          <button v-else
-            class="btn vp-wide"
-            :disabled="!cards.length || running || !!activeCardIds.length || !!batchVideoVoiceWarning"
-            :aria-describedby="batchVideoVoiceWarning ? 'vp-batch-video-voice' : undefined"
-            @click="requestVideoGeneration(cards.map(card => card.id))"
-          >
-            <Layers :size="13" />批量生成视频
-          </button>
         </aside>
       </div>
 
@@ -1370,7 +1272,6 @@ import {
   ArrowUpRight,
   Check,
   ChevronRight,
-  CircleCheck,
   Clapperboard,
   Clock3,
   Download,
@@ -1396,12 +1297,14 @@ import {
   X,
 } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
+import { useI18n } from 'vue-i18n'
 import { onBeforeRouteLeave } from 'vue-router'
 import ScriptVideoEpisodePreview from '~/components/ScriptVideoEpisodePreview.vue'
 import { useScriptVideoEpisodeLock } from '~/composables/useScriptVideoEpisodeLock'
 import { useScriptVideoReferenceFrames } from '~/composables/useScriptVideoReferenceFrames'
 import { usesJimengVideo } from '~/utils/jimengVideo'
 import { jimengVideoModel } from '../../../../backend/src/services/jimeng-video-models'
+import { formatJimengScriptPrompt } from '../../../../backend/src/services/jimeng-reference-labels'
 import { LIBTV_VIDEO_RATIOS, libtvVideoModel } from '../../../../backend/src/services/libtv-video-models'
 import {
   SCRIPT_VIDEO_STYLE_PRESETS,
@@ -1414,6 +1317,7 @@ import {
 import { buildScriptVideoDelivery, getScriptVideoMissingVoices, scriptVideoDeliveryTags, type ScriptVideoContinuation, type ScriptVideoLightingRange } from '../../../../backend/src/services/script-video-delivery'
 import { buildScriptVideoEpisodeLightingPlan } from '../../../../backend/src/services/script-video-lighting-plan'
 import { previousScriptVideoCard } from '../../../../backend/src/services/script-video-predecessor'
+import { DEFAULT_VIDEO_PROMPT_MODE, type ScriptVideoPromptMode } from '../../../../backend/src/services/video-prompt-mode'
 import { latestScriptVideoTaskUrls, officialScriptVideoUrl } from '../../../../backend/src/services/script-video-versions'
 import { AICOST_VIDEO_RATIOS, AICOST_VIDEO_RESOLUTIONS, aicostVideoModelCapabilities } from '../../../../backend/src/services/aicost-video-models'
 import { seedanceModelLimits } from '../../../../backend/src/services/seedance-models'
@@ -1474,6 +1378,7 @@ import {
   type ScriptVideoViewPosition,
 } from '~/utils/scriptVideoViewPosition'
 
+const { t } = useI18n()
 const stages: Array<{ id: Stage; label: string }> = [
   { id: 'materials', label: '剧本与资产' },
   { id: 'outline', label: '分段大纲' },
@@ -1490,6 +1395,7 @@ type Task = {
   staleResult?: boolean
   error?: string
   code?: string
+  canRecover?: boolean
   stage?: string
   modelLabel?: string
   duration?: number
@@ -1678,6 +1584,11 @@ const currentAIError = computed(
   () => aiErrors.value[currentEpisode.value.id] || '',
 )
 const episodeKey = computed(() => `${currentProject.value.id}/${currentEpisode.value.id}`)
+const videoPromptModes = reactive(new Map<string, ScriptVideoPromptMode>())
+const videoPromptMode = computed<ScriptVideoPromptMode>({
+  get: () => videoPromptModes.get(episodeKey.value) ?? DEFAULT_VIDEO_PROMPT_MODE,
+  set: mode => { videoPromptModes.set(episodeKey.value, mode) },
+})
 const currentReview = computed(() => episodeReviews.value[episodeKey.value])
 const currentProgress = computed(() => aiProgress.value[episodeKey.value])
 const currentProgressText = computed(() => storyboardProgressText(currentProgress.value))
@@ -1845,7 +1756,7 @@ const editingWarnings = computed(() => {
   const written = cards.value.filter(card => card.shots?.length && card.prompt?.trim())
   if (!written.length) return []
   return validatePreviewCards(written, assets.value, {
-    ...deliveryOptions(currentProject.value, currentEpisode.value),
+    ...deliveryOptions(currentProject.value, currentEpisode.value, videoPromptMode.value),
     script: confirmedScript.value, production: currentEpisode.value.production,
     scope: written.length === cards.value.length ? 'episode' : 'prefix',
   }).warnings
@@ -3326,13 +3237,20 @@ const promptPreview = ref<{
   copied: boolean | null
 } | null>(null)
 let promptPreviewRequest = 0
-type VideoGenerationRequest = { projectId: string; episodeId: string; cardIds: string[]; durations?: Record<string, number> }
+type VideoGenerationRequest = {
+  projectId: string
+  episodeId: string
+  cardIds: string[]
+  durations?: Record<string, number>
+  promptMode: ScriptVideoPromptMode
+}
 type VideoSubmission = number | 'needs-approval' | undefined
 const pendingVideoRetry = ref<(VideoGenerationRequest & { jobs: Map<string, string> }) | null>(null)
 type VideoRun = {
   id: string
   controller: AbortController
   cardIds: string[]
+  promptMode: ScriptVideoPromptMode
   cardStatuses: Map<string, 'queued' | 'generating'>
   waitingToSubmit: Set<string>
 }
@@ -3346,6 +3264,7 @@ const videoTailWaiting = computed(() => activeTailWaits.value.has(episodeKey.val
 const latestTaskByCard = computed(
   () => indexVideoTasks(tasks.value),
 )
+const videoGenerationTaskByCard = computed(() => indexVideoTasksForGeneration(tasks.value))
 const selectedVideoTask = computed(() => {
   const task = latestTaskByCard.value.get(selectedCardId.value)
   return task?.status === 'processing' ? task : undefined
@@ -3420,7 +3339,7 @@ function openSegmentCard(card: PreviewCard, event: MouseEvent) {
   }
 }
 const missingVideoVoicesByCard = computed(() => {
-  const context = deliveryOptions(currentProject.value, currentEpisode.value)
+  const context = deliveryOptions(currentProject.value, currentEpisode.value, videoPromptMode.value)
   return new Map(cards.value.map(card => [card.id, getScriptVideoMissingVoices(card, assets.value, context)]))
 })
 const videoVoiceHelp = '请检查角色绑定，在「项目资产」上传声音或允许模型配音。'
@@ -3440,13 +3359,22 @@ function indexVideoTasks(list: Task[]) {
   return new Map(list.map((task) => [task.cardId, task] as const))
 }
 function isVideoDeliveryRecovery(task?: Task) {
-  return task?.status === 'failed' && task.code === 'DELIVERY_FAILED' && !!task.taskId
+  return task?.status === 'failed' && !!task.taskId && !task.code?.endsWith('_ACKNOWLEDGED') &&
+    (task.code === 'DELIVERY_FAILED' || task.canRecover === true)
+}
+function indexVideoTasksForGeneration(tasks: Task[]) {
+  const selected = indexVideoTasks(tasks)
+  for (const task of tasks) {
+    if (selected.get(task.cardId)?.status === 'processing') continue
+    if (isVideoDeliveryRecovery(task) && !task.code?.endsWith('_ACKNOWLEDGED')) selected.set(task.cardId, task)
+  }
+  return selected
 }
 function missingVideoVoiceMessage(names: readonly string[]) {
   return names.length ? `缺少角色参考音频：${names.join('、')}。${videoVoiceHelp}` : ''
 }
 function missingVoicesForCard(cardId: string) {
-  const task = latestTaskByCard.value.get(cardId)
+  const task = videoGenerationTaskByCard.value.get(cardId)
   if (task?.status === 'processing' || isVideoDeliveryRecovery(task)) return []
   return missingVideoVoicesByCard.value.get(cardId) || []
 }
@@ -3457,15 +3385,17 @@ function videoVoiceWarningForRequest(request: VideoGenerationRequest) {
   const project = projects.value.find(item => item.id === request.projectId)
   const episode = project?.episodes.find(item => item.id === request.episodeId)
   if (!project || !episode) return ''
-  const taskIndex = indexVideoTasks(episode.tasks)
-  const isCurrentEpisode = project.id === currentProject.value.id && episode.id === currentEpisode.value.id
+  const taskIndex = indexVideoTasksForGeneration(episode.tasks)
+  const useCurrentWarnings = project.id === currentProject.value.id && episode.id === currentEpisode.value.id &&
+    request.promptMode === videoPromptMode.value
+  const options = deliveryOptions(project, episode, request.promptMode)
   const missing = new Set<string>()
   for (const card of episode.cards) {
     if (!request.cardIds.includes(card.id)) continue
     const task = taskIndex.get(card.id)
     if (task?.status === 'processing' || isVideoDeliveryRecovery(task)) continue
-    const names = isCurrentEpisode ? missingVideoVoicesByCard.value.get(card.id) || []
-      : getScriptVideoMissingVoices(card, project.assets, deliveryOptions(project, episode))
+    const names = useCurrentWarnings ? missingVideoVoicesByCard.value.get(card.id) || []
+      : getScriptVideoMissingVoices(card, project.assets, options)
     for (const name of names) missing.add(name)
   }
   return missingVideoVoiceMessage([...missing])
@@ -3490,18 +3420,22 @@ async function loadPreviousVideoEpisode(projectId: string, episodeId: string, si
   const previous = project?.episodes[index - 1]
   if (previous?._loaded === false) await refreshProject(projectId, previous.id, signal, false)
 }
-function videoTaskError(task: { status?: Task['status']; code?: string; error?: string }) {
+function videoTaskError(task: { status?: Task['status']; code?: string; error?: string; canRecover?: boolean }) {
   if (task.status === 'canceled') return task.error || ''
-  if (task.code === 'SUBMISSION_UNKNOWN') return '上次提交结果待确认，重新生成可能重复计费。'
+  if (task.canRecover) return task.error || '原任务尚未返回结果，可点击「查询原任务」继续查询。'
+  if (task.code === 'SUBMISSION_UNKNOWN') return task.error || '上次提交结果待确认，重新生成可能重复计费。'
   if (task.code === 'SUBMISSION_UNKNOWN_ACKNOWLEDGED') return '提交结果待确认，已选择重新生成。'
   return task.error || ''
 }
-function retryJobs(request: VideoGenerationRequest) {
-  const latest = indexVideoTasks(videoEpisode(request.projectId, request.episodeId)?.tasks || [])
+function retryJobs(request: Pick<VideoGenerationRequest, 'projectId' | 'episodeId' | 'cardIds'>) {
+  const tasks = videoEpisode(request.projectId, request.episodeId)?.tasks || []
+  const latest = indexVideoTasksForGeneration(tasks)
   const jobs = new Map<string, string>()
-  for (const cardId of request.cardIds) {
-    const task = latest.get(cardId)
-    if ((task?.status === 'failed' || task?.status === 'canceled') && task.code === 'SUBMISSION_UNKNOWN') jobs.set(cardId, task.id)
+  // The server guards every unacknowledged submission, including older attempts
+  // followed by another failure. Keep the approval tied to that original job.
+  for (const task of tasks) {
+    if (!request.cardIds.includes(task.cardId) || latest.get(task.cardId)?.status === 'processing' || isVideoDeliveryRecovery(latest.get(task.cardId))) continue
+    if ((task.status === 'failed' || task.status === 'canceled') && task.code === 'SUBMISSION_UNKNOWN' && !isVideoDeliveryRecovery(task)) jobs.set(task.cardId, task.id)
   }
   return jobs
 }
@@ -3518,7 +3452,10 @@ async function requestVideoGeneration(cardIds: string[]) {
   if (cardIds.some(id => activeCardIds.value.includes(id))) return
   if (!navigator.onLine) { toast.info('联网后可生成视频'); return }
   const episode = currentEpisode.value
-  const request = { projectId: currentProject.value.id, episodeId: episode.id, cardIds, durations: { ...episode.videoDurations } }
+  const request: VideoGenerationRequest = {
+    projectId: currentProject.value.id, episodeId: episode.id, cardIds,
+    durations: { ...episode.videoDurations }, promptMode: videoPromptMode.value,
+  }
   const voiceReplacement = pendingAudioEdits(request.projectId)
   if (voiceReplacement) {
     await voiceReplacement
@@ -3568,6 +3505,7 @@ async function runVideoRequests(request: VideoGenerationRequest, approvedJobs?: 
   const scope = `${projectId}/${episodeId}`
   const run = reactive<VideoRun>({
     id: previewId('video-request'), controller: new AbortController(), cardIds: request.cardIds,
+    promptMode: request.promptMode,
     cardStatuses: new Map(), waitingToSubmit: new Set(),
   })
   let episode = videoEpisode(projectId, episodeId)
@@ -3578,7 +3516,7 @@ async function runVideoRequests(request: VideoGenerationRequest, approvedJobs?: 
   if (rejectVideoRequestWithoutVoices(request)) return
 
   const selected = new Set(request.cardIds)
-  const initialTasks = indexVideoTasks(episode.tasks)
+  const initialTasks = indexVideoTasksForGeneration(episode.tasks)
   const scheduled = new Map<string, Promise<VideoSubmission>>()
   const waits = new Map<number, Promise<boolean>>()
   function waitForRender(taskId: number, sourceEpisodeId = episodeId) {
@@ -3597,11 +3535,12 @@ async function runVideoRequests(request: VideoGenerationRequest, approvedJobs?: 
       const current = videoEpisode(projectId, episodeId)
       const card = current?.cards.find(item => item.id === cardId)
       if (!current || !card) return
-      const task = indexVideoTasks(current.tasks).get(cardId)
+      const task = indexVideoTasksForGeneration(current.tasks).get(cardId)
       if (task?.status === 'processing') return task.taskId
       if (task && isVideoDeliveryRecovery(task)) return recoverFailedVideo(projectId, episodeId, task)
-      const uncertain = (task?.status === 'failed' || task?.status === 'canceled') && task.code === 'SUBMISSION_UNKNOWN'
-      const approved = uncertain && approvedJobs?.get(cardId) === task.id
+      const uncertainJob = retryJobs({ ...request, cardIds: [cardId] }).get(cardId)
+      const uncertain = !!uncertainJob
+      const approved = uncertain && approvedJobs?.get(cardId) === uncertainJob
       if (uncertain && !approved) return 'needs-approval'
       run.cardStatuses.set(cardId, 'generating')
       return generateCard(card, projectId, episodeId, approved, request.durations?.[cardId], run)
@@ -3778,15 +3717,13 @@ async function generateCard(
   card: PreviewCard,
   projectId: string,
   episodeId: string,
-  confirmedRetry = false,
-  duration?: number,
-  run?: VideoRun,
+  confirmedRetry: boolean,
+  duration: number | undefined,
+  run: VideoRun,
 ): Promise<VideoSubmission> {
   const voiceReplacement = pendingAudioEdits(projectId)
-  if (voiceReplacement) {
-    await voiceReplacement
-    if (!alive || run?.controller.signal.aborted) return
-  }
+  if (voiceReplacement) await voiceReplacement
+  if (!alive || run.controller.signal.aborted) return
   const project = projects.value.find((item) => item.id === projectId)!
   const episode = project?.episodes.find((item) => item.id === episodeId)
   if (!project || !episode) return
@@ -3807,9 +3744,11 @@ async function generateCard(
     reportVideoError(projectId, episodeId, durationIssue)
     return
   }
+  const { promptMode } = run
+  const options = deliveryOptions(project, episode, promptMode)
   let voiceCount: number
   try {
-    voiceCount = buildScriptVideoDelivery(card, project.assets, deliveryOptions(project, episode)).voices.length
+    voiceCount = buildScriptVideoDelivery(card, project.assets, options).voices.length
   } catch (error: any) {
     reportVideoError(projectId, episodeId, error.message)
     return
@@ -3821,12 +3760,12 @@ async function generateCard(
     return
   }
   if (card.manuallyAdded) {
-    if (!hasScriptVideoPromptBody(card.prompt, deliveryOptions(project, episode).stylePreset)) {
+    if (!hasScriptVideoPromptBody(card.prompt, options.stylePreset)) {
       reportVideoError(projectId, episodeId, '请先输入本段视频提示词')
       return
     }
   } else {
-    const preflight = validatePreviewCards([card], project.assets, deliveryOptions(project, episode))
+    const preflight = validatePreviewCards([card], project.assets, options)
     if (!preflight.ok) {
       reportVideoError(projectId, episodeId,
         preflight.issues.find((issue) => issue.level === 'ERROR')?.message ||
@@ -3837,7 +3776,7 @@ async function generateCard(
   }
   try {
     await saveProjectNow(project.id)
-    if (!alive || run?.controller.signal.aborted) return
+    if (!alive || run.controller.signal.aborted) return
     const saved = projects.value.find(item => item.id === projectId)
     const current = saved?.episodes.find(item => item.id === episodeId)
     const latest = current?.cards.find(item => item.id === card.id)
@@ -3847,7 +3786,7 @@ async function generateCard(
       reportVideoError(projectId, episodeId, savedDurationIssue)
       return
     }
-    const voiceWarning = missingVideoVoiceMessage(getScriptVideoMissingVoices(latest, saved.assets, deliveryOptions(saved, current)))
+    const voiceWarning = missingVideoVoiceMessage(getScriptVideoMissingVoices(latest, saved.assets, deliveryOptions(saved, current, promptMode)))
     if (voiceWarning) {
       reportVideoError(projectId, episodeId, voiceWarning)
       return
@@ -3859,16 +3798,17 @@ async function generateCard(
       model: current.modelName,
       aspectRatio: current.aspectRatio,
       resolution: current.resolution,
-      ...(run && { requestId: run.id }),
+      requestId: run.id,
+      promptMode,
       ...(duration === undefined ? {} : { duration }),
       ...(confirmedRetry ? { confirmRetryAfterUnknown: true } : {}),
     }
-    run?.waitingToSubmit.delete(card.id)
+    run.waitingToSubmit.delete(card.id)
     const result = await scriptVideoRequest<{ taskId: number }>(path, 'POST', payload)
     await refreshVideoEpisodeAfterTaskUpdate(project.id, episodeId)
     return result.taskId
   } catch (error: any) {
-    if (run?.controller.signal.aborted || error instanceof ScriptVideoRequestError && error.code === 'CANCELED') return
+    if (run.controller.signal.aborted || error instanceof ScriptVideoRequestError && error.code === 'CANCELED') return
     if (
       error instanceof ScriptVideoRequestError &&
       (error.code === 'SUBMISSION_UNKNOWN' || error.code === 'DELIVERY_FAILED')
@@ -3888,15 +3828,15 @@ function episodeLightingPlan(project: PreviewProject, episode: PreviewEpisode): 
     ? buildScriptVideoEpisodeLightingPlan(project, episode.id)
     : {}
 }
-function deliveryOptions(project: PreviewProject, episode: PreviewEpisode, continuation?: ScriptVideoContinuation, lightingRanges?: ScriptVideoLightingRange[]) {
+function deliveryOptions(project: PreviewProject, episode: PreviewEpisode, promptMode?: ScriptVideoPromptMode) {
   return {
     model: episode.modelName, provider: episode.modelProvider,
     stylePreset: episode.production?.stylePreset || project.settings?.stylePreset,
     cast: episode.production?.characters,
-    continuation, lightingRanges,
+    promptMode,
   }
 }
-async function deliveryContinuations(project: PreviewProject, episode: PreviewEpisode, cards: PreviewCard[]) {
+async function deliveryContinuations(project: PreviewProject, episode: PreviewEpisode, cards: PreviewCard[], promptMode: ScriptVideoPromptMode) {
   if (cards.some(card => card.id === episode.cards[0]?.id)) await loadPreviousVideoEpisode(project.id, episode.id)
   project = projects.value.find(item => item.id === project.id) || project
   episode = project.episodes.find(item => item.id === episode.id) || episode
@@ -3913,6 +3853,7 @@ async function deliveryContinuations(project: PreviewProject, episode: PreviewEp
   }>(
     `/projects/${project.id}/episodes/${episode.id}/continuations`, 'POST', {
       cardIds, ...(episode.modelConfigId && episode.modelName && { configId: episode.modelConfigId, model: episode.modelName }),
+      promptMode,
     },
   )
   return { continuations: prepared.continuations, lightingRanges: prepared.lightingRanges ?? {} }
@@ -3927,21 +3868,28 @@ async function copyPromptPreview() {
   } catch { /* The exact prompt remains selectable when clipboard access is denied. */ }
   if (promptPreview.value?.request === preview.request) preview.copied = copied
 }
-function draftFinalPrompt(project: PreviewProject, episode: PreviewEpisode, card: PreviewCard, duration: number | undefined, saveWarning: string): FinalPromptDelivery {
-  const options = deliveryOptions(project, episode)
+function draftFinalPrompt(project: PreviewProject, episode: PreviewEpisode, card: PreviewCard, duration: number | undefined, saveWarning: string, promptMode: ScriptVideoPromptMode): FinalPromptDelivery {
+  const options = deliveryOptions(project, episode, promptMode)
   if (!hasScriptVideoPromptBody(card.prompt, options.stylePreset)) throw new Error('本段还没有视频提示词')
   const delivery = buildScriptVideoDelivery(card, project.assets, { ...options, duration, preview: true })
   const { imageTag, audioTag } = scriptVideoDeliveryTags(options)
-  const { prefix, style } = splitScriptVideoPromptStyle(delivery.prompt, options.stylePreset)
+  const imageOffset = options.provider === 'jimeng' ? delivery.images.length : 0
+  const prompt = options.provider === 'jimeng'
+    ? formatJimengScriptPrompt(delivery.prompt, imageOffset, delivery.voices.length)
+    : delivery.prompt
+  const { prefix, style } = splitScriptVideoPromptStyle(prompt, options.stylePreset)
   function reference(index: number, tag: string, name: string, url: string): FinalPromptReference {
     const local = /^\/?static\/[^?#%\\\0]+$/u.test(url) && !url.split('/').some(part => part === '.' || part === '..')
     return { index, tag, name, url: local ? '/' + url.replace(/^\//u, '') : '' }
   }
   return {
-    source: 'draft', prompt: delivery.prompt,
+    source: 'draft', prompt,
     ...(style && { style: { ...style, bodyStart: prefix.length } }),
     images: delivery.images.map((asset, i) => reference(i + 1, imageTag(i + 1), asset.name, asset.image)),
-    audios: delivery.voices.map(({ asset, roles }, i) => reference(i + 1, audioTag(i + 1), roles.map(role => role.name).join('、'), asset.voiceAudio!.url)),
+    audios: delivery.voices.map(({ asset, roles }, i) => {
+      const index = imageOffset + i + 1
+      return reference(index, audioTag(index), roles.map(role => role.name).join('、'), asset.voiceAudio!.url)
+    }),
     missingVoices: delivery.missingVoices,
     warnings: [...new Set([saveWarning, ...(delivery.warnings || [])])],
     ...((episode.cards[0]?.id !== card.id || project.episodes.findIndex(item => item.id === episode.id) > 0) &&
@@ -3952,6 +3900,7 @@ async function showFinalPrompt({ cardId, title, task, event }: {
   cardId: string; title: string; task?: Task; event?: MouseEvent
 }) {
   const projectId = currentProject.value.id, episodeId = currentEpisode.value.id
+  const promptMode = videoPromptMode.value
   const request = ++promptPreviewRequest
   promptReturnFocus = (event?.currentTarget as HTMLElement | undefined) || null
   const context = task ? ['任务记录', task.modelLabel].filter(Boolean).join(' · ') : '当前设置预览'
@@ -3977,8 +3926,8 @@ async function showFinalPrompt({ cardId, title, task, event }: {
     if (!task && !card) throw new Error('分镜已变更，请重新选择片段')
     const duration = episode.videoDurations?.[cardId]
     if (saveWarning && card) {
-      const delivery = draftFinalPrompt(currentProject.value, episode, card, duration, saveWarning.message)
-      Object.assign(promptPreview.value!, { delivery, context: '本机草稿 · 尚未同步', pending: false })
+      const delivery = draftFinalPrompt(currentProject.value, episode, card, duration, saveWarning.message, promptMode)
+      if (active()) Object.assign(promptPreview.value!, { delivery, context: '本机草稿 · 尚未同步', pending: false })
       return
     }
     const hasModel = episode.modelConfigId && episode.modelName
@@ -3987,6 +3936,7 @@ async function showFinalPrompt({ cardId, title, task, event }: {
       ...(hasModel && { configId: episode.modelConfigId, model: episode.modelName,
         aspectRatio: episode.aspectRatio, resolution: episode.resolution }),
       ...(duration !== undefined && { duration }),
+      promptMode,
     }
     const delivery = await scriptVideoRequest<FinalPromptDelivery>(
       `/projects/${projectId}/episodes/${episodeId}/final-prompt`, 'POST', body, requestController.signal,
@@ -4000,9 +3950,9 @@ async function showFinalPrompt({ cardId, title, task, event }: {
     if (active()) Object.assign(promptPreview.value!, { pending: false, error: error instanceof Error ? error.message : '提示词准备失败' })
   }
 }
-function checkForAction(list: PreviewCard[]) {
+function checkForAction(list: PreviewCard[], promptMode?: ScriptVideoPromptMode) {
   const result = validatePreviewCards(list, assets.value, {
-    ...deliveryOptions(currentProject.value, currentEpisode.value),
+    ...deliveryOptions(currentProject.value, currentEpisode.value, promptMode),
     script: confirmedScript.value, production: currentEpisode.value.production,
     scope: list.length === cards.value.length ? 'episode' : 'card',
   })
@@ -4014,7 +3964,8 @@ function checkForAction(list: PreviewCard[]) {
   return false
 }
 async function exportCards(list: PreviewCard[]) {
-  if (!list.length || exporting.value || !checkForAction(list)) return
+  const promptMode = videoPromptMode.value
+  if (!list.length || exporting.value || !checkForAction(list, promptMode)) return
   const projectId = currentProject.value.id, episodeId = currentEpisode.value.id
   const requestedIds = new Set(list.map(card => card.id))
   exporting.value = true
@@ -4026,15 +3977,17 @@ async function exportCards(list: PreviewCard[]) {
     const episodeCards = JSON.parse(JSON.stringify(episode.cards)) as PreviewCard[]
     const exportList = episodeCards.filter(card => requestedIds.has(card.id))
     if (!exportList.length || exportList.length !== requestedIds.size) throw new Error('分镜已变更，请重新选择要导出的片段')
-    const { continuations, lightingRanges } = await deliveryContinuations(project, episode, exportList)
+    const { continuations, lightingRanges } = await deliveryContinuations(project, episode, exportList, promptMode)
     const exportContext = JSON.parse(JSON.stringify({
-      production: episode.production, episodeCards, delivery: deliveryOptions(project, episode), continuations, lightingRanges,
+      production: episode.production, episodeCards,
+      delivery: deliveryOptions(project, episode, promptMode), continuations, lightingRanges,
     }))
     const name = `${project.title}-第${episode.number}集`
     const validated = await scriptVideoRequest<{ referenceImages?: Record<string, string> }>(
       `/projects/${projectId}/episodes/${episodeId}/validate`, 'POST', {
         expectedRevision: project.revision,
         prepareReferenceImages: true,
+        promptMode,
         ...(exportList.length === episodeCards.length ? {} : { cardIds: [...requestedIds] }),
       },
     )
@@ -4513,9 +4466,14 @@ const frameEditor = useScriptVideoReferenceFrames(
     const queued = sourceEpisode.id === episode.id ? queuedCardIds.value :
       referenceSourceActivity.value.scope === episodeKey.value && referenceSourceActivity.value.episodeId === sourceEpisode.id
         ? referenceSourceActivity.value.queuedCardIds : []
-    return JSON.stringify([sourceEpisode.id, previous.id, previous.version, officialScriptVideoUrl(previous), previous.videoVersions,
-      sourceEpisode.tasks.filter(task => task.cardId === previous.id).map(task => [task.id, task.status, task.videoUrl]),
-      queued.includes(previous.id)])
+    const sources = sourceEpisode.id === episode.id ? [previous] : sourceEpisode.cards
+    const ids = new Set(sources.map(source => source.id))
+    return JSON.stringify([
+      sourceEpisode.id,
+      sources.map(source => [source.id, source.title, source.version, officialScriptVideoUrl(source), source.videoVersions]),
+      sourceEpisode.tasks.filter(task => ids.has(task.cardId)).map(task => [task.cardId, task.id, task.status, task.videoUrl]),
+      queued.filter(id => ids.has(id)),
+    ])
   },
   saveProjectNow, async (path, body, signal) => {
     if (selectedCard.value?.id === currentEpisode.value.cards[0]?.id)
@@ -4678,20 +4636,7 @@ onBeforeUnmount(() => {
   font-family: monospace;
   overflow-wrap: anywhere;
 }
-.vp-task-model {
-  display: block;
-  margin-top: 5px;
-  font-size: 9px;
-  line-height: 1.5;
-  color: var(--accent-text);
-  overflow-wrap: anywhere;
-}
-.vp-task .vp-task-stale {
-  color: var(--warning);
-  line-height: 1.5;
-}
-.vp-video-voice-warning,
-.vp-task .vp-video-voice-warning {
+.vp-video-voice-warning {
   margin: 6px 0;
   color: var(--warning, #b77429);
   font-size: 12px;
@@ -4711,21 +4656,6 @@ onBeforeUnmount(() => {
 .vp-editing-warnings summary { cursor: pointer; }
 .vp-editing-warnings p { margin: 8px 0; }
 .vp-editing-warnings ul { margin: 0; padding-left: 20px; }
-.vp-task .vp-tail-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 4px;
-}
-.vp-tail-link img {
-  width: 42px;
-  height: 25px;
-  border-radius: 4px;
-  object-fit: cover;
-}
-.vp-tail-wait {
-  margin: 0 0 6px;
-}
 .vp-script-lock {
   display: flex;
   align-items: center;
@@ -5082,7 +5012,7 @@ onBeforeUnmount(() => {
   border-radius: 50%;
   box-shadow: 0 0 9px var(--accent-glow);
 }
-.vp-duration-hint {
+.vp-field-hint {
   margin: 0;
   color: var(--text-2);
   font-size: 10px;
@@ -5091,9 +5021,11 @@ onBeforeUnmount(() => {
 .vp-duration-warning {
   color: var(--warning);
 }
-.vp-inspector-divider {
-  height: 1px;
-  background: var(--border);
+.vp-inspector-actions {
+  display: grid;
+  grid-column: 1/-1;
+  gap: 6px;
+  margin-top: auto;
   flex-shrink: 0;
 }
 .vp-link {
@@ -5107,89 +5039,11 @@ onBeforeUnmount(() => {
   font-size: 10px;
   cursor: pointer;
 }
-.vp-skill-summary {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.vp-mini-icon {
-  width: 29px;
-  height: 29px;
-  display: grid;
-  place-items: center;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--accent-text);
-  flex-shrink: 0;
-}
-.vp-skill-summary > div {
-  flex: 1;
-}
-.vp-skill-summary strong {
-  display: block;
-  font-size: 11px;
-  font-weight: 500;
-}
-.vp-skill-summary small {
-  display: block;
-  font-size: 9px;
-  color: var(--text-3);
-  margin-top: 5px;
-}
-.vp-skill-summary > svg {
-  color: var(--accent-text);
-}
-.vp-combat-switch {
-  cursor: pointer;
-}
-.vp-combat-switch input,
 .vp-config-rule-grid input,
 .vp-check-label input {
   accent-color: var(--accent);
   width: 14px;
   height: 14px;
-}
-.vp-tasks {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  flex: 1;
-  min-height: 65px;
-  overflow-y: auto;
-}
-.vp-task {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.vp-task > svg {
-  color: var(--accent-text);
-  flex-shrink: 0;
-}
-.vp-task > div {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.vp-task strong {
-  display: block;
-  font-weight: 500;
-  font-size: 11px;
-}
-.vp-task small {
-  display: block;
-  font-size: 9px;
-  color: var(--text-3);
-  margin-top: 4px;
-}
-.vp-no-tasks {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-direction: column;
-  gap: 9px;
-  color: var(--text-3);
-  font-size: 10px;
-  min-height: 80px;
 }
 .vp-muted {
   color: var(--warning, #b77429);
@@ -6332,12 +6186,6 @@ onBeforeUnmount(() => {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     overflow: visible;
-  }
-  .vp-inspector .vp-tasks {
-    min-height: 50px;
-  }
-  .vp-inspector .vp-inspector-divider {
-    display: none;
   }
   .vp-production {
     overflow: visible;

@@ -402,4 +402,140 @@ test('下一集首段在选帧、预览、导出和视频提交中承接上一�
     assert.equal(stale.videoUrl, '/static/videos/result-next.mp4')
     assert.equal(stale.staleResult, true)
   })
+
+  await t.test('首段可手选上一集任一已有成片，保存后预览、导出和生成使用同一帧', async () => {
+    const { id: projectId } = await store.create('上一集整集手选')
+    const historicalUrl = '/static/videos/result-next.mp4'
+    const { targetId } = await store.mutate(projectId, record => {
+      const oldest = record.project.episodes[0]
+      const script = '场景：外墙\n时间：早晨\n天气/环境：室外散射光'
+      const card = (cardId: string) => ({ id: cardId, title: cardId, scene: '外墙｜早晨', version: 2, status: 'draft', duration: 2,
+        prompt: '小旗停步。', assetIds: [], shots: [{ id: cardId + '-1', duration: 2,
+          camera: '平视固定', action: '小旗半抬右手扶住门闩。', dialogue: '无对白。' }] })
+      oldest.number = 1
+      oldest.confirmed = true
+      oldest.confirmedScript = script
+      oldest.cards = [{ ...card('older-clip'), status: 'ready', videoUrl: archivedUrl }]
+      const previous = { ...structuredClone(oldest), id: 'whole-previous', title: '第二集', number: 2, cards: [
+        { ...card('previous-first'), status: 'ready', videoUrl },
+        card('previous-historical'),
+        card('previous-last'),
+      ] }
+      const now = new Date().toISOString()
+      previous.tasks = [{ id: 'historical-render', cardId: 'previous-historical', cardVersion: 1, taskId: 901,
+        status: 'completed', staleResult: true, videoUrl: historicalUrl, duration: 2, createdAt: now }]
+      record.jobs.push({ id: 'historical-render', projectId, episodeId: previous.id, cardId: 'previous-historical',
+        cardVersion: 1, taskId: 901, action: 'video', status: 'completed', staleResult: true, videoDuration: 2, createdAt: now, updatedAt: now })
+      const target = { ...structuredClone(previous), id: 'whole-target', title: '第三集', number: 3, tasks: [], cards: [
+        { ...card('whole-first'), opening: '同一镜头续接上一段尾帧，小旗半抬右手扶住门闩。' },
+        card('whole-second'),
+      ] }
+      record.project.episodes.push(previous, target)
+      return { documentChanged: true, result: { targetId: target.id } }
+    })
+    const wholeBase = '/projects/' + projectId + '/episodes/' + targetId
+    const firstRoute = '/cards/whole-first/reference-frames'
+    const secondRoute = '/cards/whole-second/reference-frames'
+    const request = (route: string, body: object = {}) => app.request(wholeBase + route, { method: 'POST', headers, body: JSON.stringify(body) })
+    async function wholeRead(route: string, body: object = {}) {
+      const response = await request(route, body)
+      assert.equal(response.status, 200, await response.clone().text())
+      return (await response.json()).data
+    }
+    const final = () => wholeRead('/final-prompt', { cardId: 'whole-first', cardVersion: 2 })
+    const initial = await wholeRead(firstRoute)
+    assert.equal(initial.tail.imageUrl, undefined)
+    assert.ok(initial.lighting.every((row: { imageUrl?: string }) => !row.imageUrl))
+    assert.deepEqual((initial.previousEpisodeSources ?? []).map(({ cardId, videoUrl }: { cardId: string; videoUrl: string }) => ({ cardId, videoUrl })), [
+      { cardId: 'previous-first', videoUrl }, { cardId: 'previous-historical', videoUrl: historicalUrl },
+    ])
+    assert.match(initial.previousEpisodeSources[0].sourceLabel, /上一集.*第 1 段/u)
+    assert.match(initial.previousEpisodeSources[1].sourceLabel, /上一集.*第 2 段/u)
+    assert.deepEqual((await final()).images, [])
+    const second = await wholeRead(secondRoute)
+    assert.equal(second.previousEpisodeSources, undefined)
+    assert.equal(second.tail.videoUrl, undefined)
+
+    const seek = { kind: 'tail', seconds: 0.25, sourceCardId: 'previous-first', expectedVideoUrl: videoUrl }
+    for (const [route, candidate] of [
+      [firstRoute, { ...seek, expectedVideoUrl: historicalUrl }],
+      [firstRoute, { ...seek, sourceCardId: 'older-clip', expectedVideoUrl: archivedUrl }],
+      [firstRoute, { ...seek, sourceCardId: 'previous-last' }],
+      [secondRoute, seek],
+    ] as const) {
+      const rejected = await request(route, candidate)
+      assert.equal(rejected.status, 409, await rejected.clone().text())
+      assert.equal((await rejected.json()).errorCode, 'REFERENCE_FRAME_SOURCE_CHANGED')
+    }
+    const tail = (await wholeRead(firstRoute, seek)).candidate
+    const light = (await wholeRead(firstRoute, { kind: 'lighting', startShot: 1, seconds: 0.5,
+      sourceCardId: 'previous-historical', expectedVideoUrl: historicalUrl })).candidate
+    assert.equal(tail.sourceCardId, 'previous-first')
+    assert.equal(light.sourceCardId, 'previous-historical')
+    assert.equal(tail.seconds, 0.25)
+    assert.equal(light.seconds, 0.5)
+    assert.ok(tail.imageUrl && light.imageUrl)
+    assert.notEqual(tail.imageUrl, light.imageUrl)
+
+    const referenceFrameSettings = {
+      tail: { mode: 'manual', videoUrl: tail.videoUrl, seconds: tail.seconds, sourceCardId: tail.sourceCardId },
+      lighting: { '1': { mode: 'manual', videoUrl: light.videoUrl, seconds: light.seconds, sourceCardId: light.sourceCardId } },
+    }
+    const saved = await app.request('/projects/' + projectId + '/changes', {
+      method: 'PATCH', headers, body: JSON.stringify({
+        clientId: 'manual-cross-episode-editor', sequence: 1, loadedEpisodeIds: [targetId],
+        changes: [{ target: 'card', episodeId: targetId, id: 'whole-first', fields: { referenceFrameSettings } }],
+      }),
+    })
+    assert.equal(saved.status, 200, await saved.clone().text())
+    assert.deepEqual((await store.get(projectId)).episodes[2].cards[0].referenceFrameSettings, referenceFrameSettings)
+    await store.mutate(projectId, record => {
+      const source = record.project.episodes[1].cards[0]
+      source.videoUrl = newerUrl
+      source.videoVersions = [{ url: videoUrl, duration: 2 }, { url: newerUrl, duration: 2 }]
+      return { documentChanged: true, result: null }
+    })
+    const outdated = await request(firstRoute, { ...seek, kind: 'lighting', startShot: 1 })
+    assert.equal(outdated.status, 409, await outdated.clone().text())
+    assert.equal((await outdated.json()).errorCode, 'REFERENCE_FRAME_SOURCE_CHANGED')
+    assert.deepEqual((await wholeRead(firstRoute, seek)).candidate, tail)
+    const manual = await wholeRead(firstRoute)
+    assert.equal(manual.previousEpisodeSources[0].videoUrl, newerUrl)
+    assert.equal(manual.tail.videoUrl, videoUrl, '已保存的取帧仍锁在原成片版本')
+    assert.equal(manual.tail.imageUrl, tail.imageUrl)
+    assert.equal(manual.lighting[0].imageUrl, light.imageUrl)
+    assert.deepEqual(new Set((await final()).images.map((item: { url: string }) => item.url)), new Set([tail.imageUrl, light.imageUrl]))
+    const delivered = await wholeRead('/continuations', { cardIds: ['whole-first'] })
+    assert.equal(delivered.continuations['whole-first'].previousCardId, 'previous-first')
+    assert.equal(delivered.continuations['whole-first'].imageUrl, tail.imageUrl)
+    assert.equal(delivered.lightingRanges['whole-first'][0].imageUrl, light.imageUrl)
+    const count = accepted.length
+    const generate = () => request('/cards/whole-first/video', { expectedCardVersion: 2, configId: 1,
+      model: 'seedance2.5-ae-480p', aspectRatio: '16:9', resolution: '480p' })
+    const submission = await generate()
+    assert.equal(submission.status, 201, await submission.clone().text())
+    assert.equal(accepted.length, count + 1)
+    assert.equal(accepted[count].continuationSource?.previousCardId, 'previous-first')
+    assert.equal(accepted[count].continuationSource?.manualSeconds, tail.seconds)
+    assert.equal(accepted[count].lightingRanges?.[0].imageUrl, light.imageUrl)
+    const taskId = 500 + accepted.length
+    assert.equal((await app.request('/projects/' + projectId + '/video/' + taskId)).status, 200)
+    const episode = (await store.get(projectId)).episodes[2]
+    const task = episode.tasks.find((item: { taskId?: number }) => item.taskId === taskId)
+    assert.equal(task.continuation.imageUrl, tail.imageUrl)
+    assert.equal(task.lightingRanges[0].imageUrl, light.imageUrl)
+    assert.equal(task.staleResult, undefined)
+    await store.mutate(projectId, record => {
+      const source = record.project.episodes[1].cards[0]
+      source.videoVersions = [{ url: newerUrl, duration: 2 }]
+      return { documentChanged: true, result: null }
+    })
+    const invalidated = await final()
+    assert.ok(invalidated.warnings.some((message: string) => message.includes('手选尾帧')))
+    assert.ok(!invalidated.images.some((item: { url: string }) => item.url === tail.imageUrl))
+    const blocked = await generate()
+    assert.equal(blocked.status, 422)
+    assert.equal((await blocked.json()).errorCode, 'REFERENCE_FRAME_UNAVAILABLE')
+    assert.equal(accepted.length, count + 1)
+  })
 })

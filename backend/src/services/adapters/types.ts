@@ -83,6 +83,7 @@ export interface AIConfig {
   baseUrl: string
   apiKey: string
   model: string
+  videoCliAccountId?: string
   comfyui?: import('../comfyui.js').ComfySettings
 }
 

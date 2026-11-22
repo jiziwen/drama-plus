@@ -46,6 +46,13 @@ export async function whileVideoCliAccountRemoving<T>(provider: VideoCliProvider
   removing.add(key)
   try {
     await assertVideoCliAccountRemovable(provider, accountId)
+    const { db, schema: { aiServiceConfigs } } = await import('../db/index.js')
+    if (db.select({ id: aiServiceConfigs.id }).from(aiServiceConfigs).where(and(
+      eq(aiServiceConfigs.provider, provider), eq(aiServiceConfigs.videoCliAccountId, accountId),
+    )).get()) {
+      const { VideoCliAccountError } = await import('./video-cli-accounts.js')
+      throw new VideoCliAccountError('此账号仍关联视频服务配置，请先删除对应配置', 409)
+    }
     return await action()
   } finally { removing.delete(key) }
 }

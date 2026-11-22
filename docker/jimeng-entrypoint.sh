@@ -14,6 +14,22 @@ export XDG_RUNTIME_DIR
 mkdir -p "$storage" "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$DREAMINA_CANVAS_STATE_DIR"
 chmod 0700 "$storage" "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$DREAMINA_CANVAS_STATE_DIR"
 
+# The official CLI stores OAuth sessions under ~/.local/share.
+oauth_store="$storage/home-share"
+home_share="${HOME:-/root}/.local/share"
+mkdir -p "$oauth_store" "$(dirname "$home_share")"
+chmod 0700 "$oauth_store"
+if [ -d "$home_share" ] && [ ! -L "$home_share" ]; then
+  rmdir "$home_share" || { echo 'Move the Dreamina OAuth store to its persistent volume before starting the app' >&2; exit 1; }
+fi
+if [ ! -L "$home_share" ]; then
+  ln -s "$oauth_store" "$home_share"
+fi
+if [ "$(readlink "$home_share")" != "$oauth_store" ]; then
+  echo 'Dreamina OAuth store is linked to an unexpected location' >&2
+  exit 1
+fi
+
 unlock_key="$storage/keyring-password"
 if [ ! -f "$unlock_key" ]; then
   if [ -f "$XDG_DATA_HOME/keyrings/login.keyring" ]; then

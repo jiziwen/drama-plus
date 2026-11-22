@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { execFile, spawn } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
-import { realpath, stat } from 'node:fs/promises'
+import { readFile, realpath, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { getActiveVideoCliAccountId, resolveVideoCliAccountId, updateVideoCliAccountNameFromPlatform, videoCliAccountDirectory } from './video-cli-accounts.js'
@@ -60,17 +60,20 @@ function libtvRuntime() {
   return { executable, options: { env, cwd: path.dirname(executable), windowsHide: true } }
 }
 
-export async function runLibTVCli(args: readonly string[], generation = false, timeout = 120_000): Promise<CliObject> {
+export const LIBTV_GENERATION_TIMEOUT_MS = 12 * 60_000
+
+export async function runLibTVCli(args: readonly string[], generation = false, timeout = generation ? LIBTV_GENERATION_TIMEOUT_MS : 120_000): Promise<CliObject> {
   const { executable, options } = libtvRuntime()
   return new Promise((resolve, reject) => {
     const child = execFile(executable, args, {
       ...options, maxBuffer: 4 * 1024 * 1024,
-      // The official --run process itself updates the canvas and waits for a terminal result.
-      ...(!generation && { timeout, killSignal: 'SIGKILL' }),
+      // CLI waits for terminal status itself; a stuck process must still release our worker.
+      timeout: Number.isFinite(timeout) && timeout > 0 ? Math.min(timeout, LIBTV_GENERATION_TIMEOUT_MS) : LIBTV_GENERATION_TIMEOUT_MS,
+      killSignal: 'SIGKILL',
     }, (error, stdout, stderr) => {
       const output = outputObject(stdout)
       if (output && [3, 4].includes(Number(output.status))) {
-        return reject(new LibTVCliError(videoCliFailure('libtv', output, 'LibTV 已确认视频任务失败'), true))
+        return reject(new LibTVCliError(videoCliFailure('libtv', { ...output, ...asObject(asObject(output.data)?.taskInfo) }, 'LibTV 已确认视频任务失败'), true))
       }
       if (!error && output && output.ok !== false && output.success !== false && !output.error &&
           (output.code === undefined || String(output.code) === '0')) return resolve(output)
@@ -110,7 +113,7 @@ export type LibTVAccount = {
 }
 
 type LoginFailure = { status: 'expired' | 'failed' | 'unavailable'; message: string }
-type LocalLogin = { expiresAt: number; scope: string; relayState?: string; assistantDownloadUrl?: string; verification?: string; closed: Promise<void>; cancel: () => void; stopping?: boolean }
+type LocalLogin = { expiresAt: number; scope: string; relayState?: string; assistantDownloadUrl?: string; verification?: string; closed: Promise<void>; cancel: () => void; expire: () => void; stopping?: boolean }
 type AuthorizationOptions = { scope?: string; helperOrigin?: string }
 type WebRelay = { expiresAt: number; callback: string; login: LocalLogin }
 const webRelays = new Map<string, WebRelay>()
@@ -172,11 +175,6 @@ function localVerificationUrl(line: string, login: LocalLogin, authorization: Au
     const callbackUrl = url.searchParams.get('callback_url') || ''
     const callback = /^http:\/\/127\.0\.0\.1:([1-9]\d{0,4})\/callback$/u.exec(callbackUrl)
     if (!callback || Number(callback[1]) < 1024 || Number(callback[1]) > 65_535) return
-    // LibTV's website validates the browser login before redirecting in its expiring flow.
-    // The official CLI still receives and independently validates the credential.
-    const expiringCallback = new URL(callbackUrl)
-    expiringCallback.searchParams.set('state', randomUUID())
-    expiringCallback.searchParams.set('expires_at', String(login.expiresAt))
     if (authorization.helperOrigin) {
       const origin = new URL(authorization.helperOrigin)
       if (origin.protocol !== 'https:' || origin.search || origin.hash || origin.username || origin.password || origin.pathname !== '/') return
@@ -189,7 +187,8 @@ function localVerificationUrl(line: string, login: LocalLogin, authorization: Au
       webRelays.set(state, { expiresAt: login.expiresAt, callback: callbackUrl, login })
       return url.href
     }
-    url.searchParams.set('callback_url', expiringCallback.href)
+    // Preserve the official CLI protocol. expires_at opts into a separate website
+    // profile check that can silently stall; the CLI validates every credential.
     return url.href
   } catch {}
 }
@@ -221,7 +220,7 @@ export async function completeLibTVWebAuthorization(state: string, token: string
     const response = await fetch(callback, { redirect: 'error', signal: AbortSignal.timeout(22_000) })
     await response.body?.cancel()
     if (!response.ok) return { ok: false, message: 'LibTV 未接受本次网页登录，请返回设置查看原因并重新连接。' }
-    return { ok: true, message: 'LibTV 授权已完成，请返回应用，账号和画布会自动刷新。' }
+    return { ok: true, message: 'LibTV 授权已完成，请返回应用点击「刷新账号与画布」。' }
   } catch {
     return { ok: false, message: '无法完成 LibTV 网页授权回调，请返回设置重新连接。' }
   }
@@ -320,9 +319,18 @@ function startCanvasSetup(account?: LibTVAccount): LibTVAccount {
 export async function getLibTVAccount(includeVerification = false, scope = 'local'): Promise<LibTVAccount> {
   const state = session()
   if (state.disconnectRequest) await state.disconnectRequest.catch(() => {})
+  if (expireLocalLibTVLogin(state)) return loginError('expired', 'LibTV 授权已过期，请重新发起授权')
   if (state.localLogin && !state.localLogin.stopping) return pendingAccount(state.localLogin, state.localLogin.scope === scope && (includeVerification || !!state.localLogin.assistantDownloadUrl))
   if (state.canvasSetup) return pendingCanvasSetup(state.canvasSetup)
   return checkAccountCanvas(await readLibTVAccount(), false)
+}
+
+function expireLocalLibTVLogin(state: AccountSession): LocalLogin | undefined {
+  const login = state.localLogin
+  if (login && !login.stopping && Date.now() >= login.expiresAt) {
+    login.expire()
+    return login
+  }
 }
 
 function launchLocalLibTVLogin(authorization: AuthorizationOptions): Promise<LibTVAccount> {
@@ -336,6 +344,7 @@ function launchLocalLibTVLogin(authorization: AuthorizationOptions): Promise<Lib
       scope: authorization.scope ?? 'local',
       closed: new Promise<void>(resolve => { closed = resolve }),
       cancel: () => stop('failed', 'LibTV 授权已取消'),
+      expire: () => stop('expired', 'LibTV 授权已过期，请重新发起授权'),
     }
     state.localLogin = login
     let forceKill: ReturnType<typeof setTimeout> | undefined
@@ -398,6 +407,8 @@ function launchLocalLibTVLogin(authorization: AuthorizationOptions): Promise<Lib
 export function startLibTVAuthorization(authorization: AuthorizationOptions = {}): Promise<LibTVAccount> {
   const state = session()
   if (state.disconnectRequest) return Promise.resolve(loginError('failed', 'LibTV 正在断开账号，请稍后重试'))
+  const expired = expireLocalLibTVLogin(state)
+  if (expired) return expired.closed.then(() => startLibTVAuthorization(authorization))
   if (state.localLogin && !state.localLogin.stopping && state.localLogin.scope !== (authorization.scope ?? 'local')) {
     return Promise.resolve(loginError('failed', '另一浏览器正在连接此 LibTV 账号，请等待完成或添加其他账号。'))
   }
@@ -645,7 +656,7 @@ export function bindLibTVPrompt(prompt: string, media: { kind: MediaKind; key: s
   })
 }
 
-export interface LibTVNode { projectId: string; nodeKey: string; profileId?: string }
+export interface LibTVNode { projectId: string; nodeKey: string; profileId?: string; teamId?: number; upstreamTaskId?: string }
 
 function assertNode(node: LibTVNode) {
   if (!availableProject.test(node.projectId) || !usableNodeKey.test(node.nodeKey)) {
@@ -656,6 +667,9 @@ function assertNode(node: LibTVNode) {
 export async function createLibTVVideoNode(params: GenerateVideoParams, taskId: number): Promise<LibTVNode> {
   const input = validateLibTVVideo(params)
   const project = await libtvProjectId()
+  // Pin the project's scope rather than the account's currently selected team.
+  let teamId: number | undefined
+  try { teamId = await readLibTVProjectTeamId(project) } catch {}
   const files = await Promise.all(input.refs.map(localMediaFile))
   const name = `小李短剧-${taskId}-${randomUUID().slice(0, 8)}`
   const media = []
@@ -671,7 +685,7 @@ export async function createLibTVVideoNode(params: GenerateVideoParams, taskId: 
     ...media.flatMap(({ key }) => ['--left', key]),
     `--prompt=${bindLibTVPrompt(input.prompt, media)}`,
   ])
-  return { projectId: project, nodeKey: returnedNode(output), profileId: currentProfileId() }
+  return { projectId: project, nodeKey: returnedNode(output), profileId: currentProfileId(), ...(teamId !== undefined && { teamId }) }
 }
 
 function videoUrl(source: unknown) {
@@ -681,39 +695,163 @@ function videoUrl(source: unknown) {
     try {
       const url = new URL(value)
       if (url.protocol === 'https:' && !url.username && !url.password && !url.port &&
-        /(?:^|\.)(?:liblib\.art|liblib\.cloud|liblib\.tv)$/iu.test(url.hostname)) return url.href
+        /(?:^|\.)(?:liblib\.art|liblib\.cloud|liblib\.tv|newtake\.cloud)$/iu.test(url.hostname)) return url.href
     } catch {}
   }
 }
 
-export async function runLibTVVideo(node: LibTVNode): Promise<string | undefined> {
-  if ((node.profileId ?? 'default') !== currentProfileId()) return withLibTVAccount(node.profileId ?? 'default', () => runLibTVVideo(node))
+export async function runLibTVVideo(node: LibTVNode, timeout = LIBTV_GENERATION_TIMEOUT_MS): Promise<string | undefined> {
+  if ((node.profileId ?? 'default') !== currentProfileId()) return withLibTVAccount(node.profileId ?? 'default', () => runLibTVVideo(node, timeout))
   assertNode(node)
-  const result = await runLibTVCli(['node', node.nodeKey, '--project', node.projectId, '--run'], true)
-  if (Number(result.status) !== 2 && result.ok !== true) return undefined
-  return videoUrl(result.url)
+  const result = await runLibTVCli(['node', node.nodeKey, '--project', node.projectId, '--run'], true, timeout)
+  const status = statusFromLibTVNode(result)
+  if (status.state === 'failed') throw new LibTVCliError(status.message!, true)
+  return status.state === 'completed' ? status.url : undefined
 }
 
 export async function inspectLibTVVideo(node: LibTVNode): Promise<string | undefined> {
-  if ((node.profileId ?? 'default') !== currentProfileId()) return withLibTVAccount(node.profileId ?? 'default', () => inspectLibTVVideo(node))
-  assertNode(node)
-  const output = await runLibTVCli(['node', node.nodeKey, '--project', node.projectId])
+  const result = await inspectLibTVVideoStatus(node)
+  if (result.state === 'failed') throw new LibTVCliError(result.message!, true)
+  return result.state === 'completed' ? result.url : undefined
+}
+
+export interface LibTVVideoStatus {
+  state: 'pending' | 'completed' | 'failed' | 'unknown'
+  source: 'canvas' | 'upstream'
+  url?: string
+  message?: string
+  progress?: number
+  upstreamTaskId?: string
+}
+
+function statusFromLibTVNode(output: CliObject): LibTVVideoStatus {
   const focus = asObject(output.node) || asObject(output.focus) || output
-  const data = asObject(focus.data)
-  if (data?.type !== 'video') return undefined
+  const data = asObject(focus.data) ?? focus
   const task = asObject(data.taskInfo)
-  if ([3, 4].includes(Number(task?.status ?? data.status))) {
-    throw new LibTVCliError(videoCliFailure('libtv', { ...data, ...task }, 'LibTV 已确认视频任务失败'), true)
+  const rawStatus = task?.status ?? output.status ?? data.status
+  const status = rawStatus === undefined ? undefined : Number(rawStatus)
+  const upstreamTaskId = typeof task?.taskId === 'string' ? task.taskId : typeof output.taskId === 'string' ? output.taskId : undefined
+  const base = { source: 'canvas' as const, ...(upstreamTaskId && { upstreamTaskId }),
+    ...(typeof task?.progressPercent === 'number' && { progress: task.progressPercent }) }
+  if ([3, 4].includes(status!)) return { ...base, state: 'failed', message: videoCliFailure('libtv', { ...output, ...data, ...task }, status === 4 ? 'LibTV 视频生成超时' : 'LibTV 已确认视频任务失败') }
+  if ([0, 1].includes(status!)) return { ...base, state: 'pending' }
+  const url = videoUrl(data.url ?? output.url)
+  if (url && (status === 2 || rawStatus === undefined)) return { ...base, state: 'completed', url }
+  return { ...base, state: 'unknown', message: status === 2 ? 'LibTV 已生成完成，但尚未返回有效视频地址' : 'LibTV 尚未返回可确认的任务状态' }
+}
+
+/** Query the original upstream task when CLI snapshots were left behind by an interrupted run. */
+export async function inspectLibTVVideoStatus(node: LibTVNode): Promise<LibTVVideoStatus> {
+  if ((node.profileId ?? 'default') !== currentProfileId()) return withLibTVAccount(node.profileId ?? 'default', () => inspectLibTVVideoStatus(node))
+  assertNode(node)
+  // A saved upstream identity remains authoritative if the canvas node is rerun elsewhere.
+  if (node.upstreamTaskId) return inspectOriginalLibTVTask(node, node.upstreamTaskId)
+  const output = await runLibTVCli(['node', node.nodeKey, '--project', node.projectId], false, ACCOUNT_TIMEOUT_MS)
+  const snapshot = statusFromLibTVNode(output)
+  if (snapshot.state === 'completed' || snapshot.state === 'failed' || !snapshot.upstreamTaskId) return snapshot
+  return inspectOriginalLibTVTask(node, snapshot.upstreamTaskId)
+}
+
+async function inspectOriginalLibTVTask(node: LibTVNode, taskId: string): Promise<LibTVVideoStatus> {
+  let teamId = node.teamId
+  if (typeof teamId !== 'number' || !Number.isSafeInteger(teamId) || teamId < 0) {
+    try { teamId = await readLibTVProjectTeamId(node.projectId) } catch (error) {
+      return { state: 'unknown', source: 'upstream', upstreamTaskId: taskId,
+        message: videoCliFailure('libtv', { message: error instanceof Error ? error.message : undefined }, '无法读取 LibTV 原画布所属的团队空间')
+          + '；无法确认原画布所属空间，请恢复原账号对画布的访问后查询原任务' }
+    }
   }
-  return videoUrl(data.url)
+  return readOriginalLibTVTask(taskId, teamId)
+}
+
+async function readLibTVProjectTeamId(projectId: string): Promise<number> {
+  const output = await libtvReadonlyRequest(`/api/canvas/project/detail?uuid=${encodeURIComponent(projectId)}`)
+  const meta = asObject(asObject(output.data)?.projectMeta)
+  if (!meta) throw new LibTVCliError('LibTV 未返回原画布所属空间信息')
+  if (meta.teamId === undefined || meta.teamId === null || meta.teamId === 0) return 0
+  if (typeof meta.teamId === 'number' && Number.isSafeInteger(meta.teamId) && meta.teamId > 0) return meta.teamId
+  throw new LibTVCliError('LibTV 原画布返回了无效的团队编号')
+}
+
+async function libtvReadonlyRequest(endpoint: string, body?: CliObject): Promise<CliObject> {
+  const { options } = libtvRuntime()
+  const credentialsDirectory = options.env.LIBTV_CONFIG_DIR || path.join(homedir(), '.libtv')
+  let credential: CliObject | undefined
+  try { credential = asObject(JSON.parse(await readFile(path.join(credentialsDirectory, 'credentials.json'), 'utf8'))) } catch {}
+  const token = typeof credential?.usertoken === 'string' ? credential.usertoken.trim() : ''
+  const webid = typeof credential?.webid === 'string' ? credential.webid.trim() : ''
+  if (!token || !webid) throw new LibTVCliError('请重新授权原 LibTV 账号后查询原视频任务', false, 'auth_required')
+  let response: Response
+  try {
+    // Same read-only progress request and headers used by official CLI 1.2.0.
+    response = await fetch(`https://api.liblib.tv${endpoint}`, {
+      method: body ? 'POST' : 'GET', headers: { token, webid, 'x-language': 'zh', 'X-Log-ID': randomUUID(), 'X-from-client': 'cli', 'Content-Type': 'application/json' },
+      ...(body && { body: JSON.stringify(body) }),
+      signal: AbortSignal.timeout(ACCOUNT_TIMEOUT_MS), redirect: 'error',
+    })
+  } catch (error) {
+    throw new LibTVCliError((error as Error)?.name === 'TimeoutError' ? '查询 LibTV 原视频任务超时，可稍后继续查询' : '连接 LibTV 原视频任务查询接口失败，可稍后继续查询', false, 'timeout')
+  }
+  const output = asObject(await response.json().catch(() => undefined))
+  if (response.status === 401) throw new LibTVCliError('原 LibTV 账号授权已失效，请重新授权后查询原任务', false, 'auth_required')
+  if (!response.ok || !output || Number(output.code) !== 0) throw new LibTVCliError(videoCliFailure('libtv', output, `查询 LibTV 原任务失败（HTTP ${response.status}）`))
+  return output
+}
+
+async function readOriginalLibTVTask(taskId: string, teamId: number): Promise<LibTVVideoStatus> {
+  if (!/^[\w.-]{1,160}$/u.test(taskId)) throw new LibTVCliError('LibTV 原任务编号无效，请核对画布任务')
+  const output = await libtvReadonlyRequest('/api/task/generation/progress', { taskIds: [taskId], ...(teamId > 0 && { teamId }) })
+  const progresses = asObject(output.data)?.progresses
+  const rows = Array.isArray(progresses) ? progresses.map(asObject).filter((item): item is CliObject => !!item) : []
+  const progress = rows.find(item => item.taskId === taskId || item.task_id === taskId)
+    ?? (rows.length === 1 && rows[0].taskId === undefined && rows[0].task_id === undefined ? rows[0] : undefined)
+  if (!progress) return { state: 'unknown', source: 'upstream', upstreamTaskId: taskId, message: 'LibTV 未返回原任务的状态，请稍后继续查询' }
+  const status = Number(progress.status)
+  const base = { source: 'upstream' as const, upstreamTaskId: taskId,
+    ...(typeof progress.progressPercent === 'number' && { progress: progress.progressPercent }) }
+  if ([3, 4].includes(status)) return { ...base, state: 'failed', message: videoCliFailure('libtv', progress, status === 4 ? 'LibTV 视频生成超时' : 'LibTV 已确认视频任务失败') }
+  if ([0, 1].includes(status)) return { ...base, state: 'pending' }
+  if (status === 2) {
+    let result = asObject(progress.taskResult)
+    if (typeof progress.taskResult === 'string') { try { result = asObject(JSON.parse(progress.taskResult)) } catch {} }
+    const videos = Array.isArray(result?.videos) && result.videos.length ? result.videos : result?.images
+    const urls = Array.isArray(videos) ? videos.flatMap(item => {
+      const video = asObject(item)
+      return video ? [video.videoUrl, video.previewPath, video.url, video.originalPath, video.storagePath] : []
+    }) : []
+    const url = videoUrl([...urls, result?.videoUrl])
+    if (url) return { ...base, state: 'completed', url }
+    return { ...base, state: 'unknown', message: 'LibTV 原任务已完成，但未返回有效成片地址，请到原画布核对' }
+  }
+  return { ...base, state: 'unknown', message: 'LibTV 原任务返回了未识别的状态，请稍后继续查询' }
 }
 
 // A node command saves canvas revisions. Avoid interleaving mutations and terminal writeback in one canvas.
 const canvasTails = new Map<string, Promise<unknown>>()
-export async function withLibTVCanvas<T>(update: () => Promise<T>): Promise<T> {
+export async function withLibTVCanvas<T>(update: () => Promise<T>, waitTimeoutMs = LIBTV_GENERATION_TIMEOUT_MS): Promise<T> {
   const canvasId = await libtvProjectId()
-  const result = (canvasTails.get(canvasId) ?? Promise.resolve()).then(update)
-  const tail = result.catch(() => {})
+  const waitMs = Number.isFinite(waitTimeoutMs) && waitTimeoutMs >= 0 ? Math.min(waitTimeoutMs, LIBTV_GENERATION_TIMEOUT_MS) : LIBTV_GENERATION_TIMEOUT_MS
+  const deadline = Date.now() + waitMs
+  const timeoutError = () => new LibTVCliError('LibTV 排队等待超时，尚未提交生成，请稍后重试', false, 'timeout')
+  let expired = false
+  let started = false
+  let timer: ReturnType<typeof setTimeout>
+  const queued = (canvasTails.get(canvasId) ?? Promise.resolve()).then(() => {
+    if (expired || Date.now() >= deadline) throw timeoutError()
+    started = true
+    clearTimeout(timer)
+    return update()
+  })
+  // Reject while waiting, then keep a skipped queue entry so it can never submit later.
+  const result = new Promise<T>((resolve, reject) => {
+    timer = setTimeout(() => {
+      if (started) return
+      expired = true
+      reject(timeoutError())
+    }, waitMs)
+    queued.then(resolve, reject).finally(() => clearTimeout(timer))
+  })
+  const tail = queued.catch(() => {})
   canvasTails.set(canvasId, tail)
   void tail.finally(() => { if (canvasTails.get(canvasId) === tail) canvasTails.delete(canvasId) })
   return result

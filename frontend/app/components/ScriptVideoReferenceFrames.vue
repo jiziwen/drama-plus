@@ -5,19 +5,27 @@
       <button type="button" class="btn btn-sm btn-ghost" :disabled="busy" @click="$emit('retry')">重新读取</button>
     </p>
     <div v-for="row in rows" :key="keyOf(row)" class="sv-frame-row">
-      <img v-if="row.imageUrl" :src="row.imageUrl" :alt="label(row)" class="sv-frame-thumb" loading="lazy" />
+      <button v-if="row.imageUrl" type="button" class="sv-frame-preview" :aria-label="`查看${label(row)}图片`"
+        aria-haspopup="dialog" title="点击查看大图" @click="previewFrame(row)">
+        <img :src="row.imageUrl" :alt="label(row)" class="sv-frame-thumb" loading="lazy" />
+      </button>
       <div v-else class="sv-frame-thumb sv-frame-placeholder" aria-hidden="true" />
       <div class="sv-frame-details">
         <strong>{{ label(row) }}</strong>
         <span>{{ frameStatus(row) }}<template v-if="row.sourceLabel"> · 来源 {{ row.sourceLabel }}</template><template v-if="row.state === 'ready' && row.seconds !== undefined"> · {{ row.seconds.toFixed(2) }} 秒</template></span>
       </div>
       <div class="sv-frame-actions">
-        <button type="button" class="btn btn-sm btn-ghost" :aria-label="`为${label(row)}选帧`" :disabled="busy || !row.videoUrl" @click="openPicker(row)">选帧</button>
+        <button type="button" class="btn btn-sm btn-ghost" :aria-label="`为${label(row)}选帧`" :disabled="busy || !canPick(row)" @click="openPicker(row)">选帧</button>
         <button v-if="row.mode !== 'off' && (row.state !== 'missing' || row.mode === 'manual')" type="button" class="btn btn-sm btn-ghost" :aria-label="`移除${label(row)}`" :disabled="busy" @click="change(row, 'off')">移除</button>
         <button v-if="row.mode !== 'auto'" type="button" class="btn btn-sm btn-ghost" :aria-label="`恢复${label(row)}自动选帧`" :disabled="busy" @click="change(row, 'auto')">恢复自动</button>
       </div>
-      <div v-if="pickedKey === keyOf(row) && row.videoUrl" class="sv-frame-picker">
-        <video ref="videos" :key="row.videoUrl" :src="row.videoUrl" controls playsinline preload="metadata"
+      <div v-if="pickedKey === keyOf(row) && pickedSource" class="sv-frame-picker">
+        <div v-if="sourceOptions.length" class="sv-frame-source">
+          <span>上集来源片段</span>
+          <BaseSelect aria-label="上集来源片段" :model-value="sourceKey(pickedSource, pickedSourceCardId)" :options="sourceOptions"
+            :searchable="false" :disabled="busy" @update:model-value="changeSource" />
+        </div>
+        <video ref="videos" :key="sourceKey(pickedSource, pickedSourceCardId)" :src="pickedSource" controls playsinline preload="metadata"
           :aria-label="`${label(row)}来源成片`" @loadedmetadata="metadata($event, row)"
           @timeupdate="readTime" @seeked="readTime" @error="playbackError = '来源成片暂时无法播放。'" />
         <span v-if="playbackError" role="alert">{{ playbackError }}</span>
@@ -34,70 +42,114 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import type { ScriptVideoReferenceFrameRow as Row, ScriptVideoReferenceFrames } from '../../../backend/src/services/script-video-reference-settings'
-import type { FrameSelection } from '~/composables/useScriptVideoReferenceFrames'
+import type { FrameSelection, FrameSource } from '~/composables/useScriptVideoReferenceFrames'
 
 const props = defineProps<{
   frames?: ScriptVideoReferenceFrames
   loading: boolean
   changing: boolean
   error: string
-  choose: (row: Row, mode: FrameSelection, seconds?: number) => Promise<boolean>
+  choose: (row: Row, mode: FrameSelection, seconds?: number, source?: FrameSource) => Promise<boolean>
 }>()
-defineEmits<{ retry: [] }>()
+const emit = defineEmits<{ retry: []; preview: [name: string, url: string] }>()
 const emptyTail: Row = { kind: 'tail', mode: 'auto', state: 'missing' }
 const emptyStyle: Row = { kind: 'lighting', mode: 'auto', state: 'missing' }
 const rows = computed(() => [props.frames?.tail ?? emptyTail, ...(props.frames?.lighting.length ? props.frames.lighting : [emptyStyle])])
 const busy = computed(() => props.loading || props.changing)
 const pickedKey = ref(''), pickedSource = ref(''), ready = ref(false), seconds = ref<number>(), playbackError = ref('')
+const pickedSourceCardId = ref<string>()
 const videos = ref<HTMLVideoElement[]>([])
 const keyOf = (row: Row) => row.kind === 'tail' ? 'tail' : 'lighting-' + row.startShot
+const previousEpisodeSources = computed(() => props.frames?.previousEpisodeSources ?? [])
+const pickerRow = computed(() => rows.value.find(row => keyOf(row) === pickedKey.value))
+const sourceKey = (videoUrl: string, cardId?: string) => JSON.stringify([cardId, videoUrl])
+function sourceChoices(row: Row) {
+  const choices = previousEpisodeSources.value
+  if (!choices.length || !row.videoUrl || !row.sourceCardId ||
+      choices.some(source => source.cardId === row.sourceCardId && source.videoUrl === row.videoUrl)) return choices
+  return [{ cardId: row.sourceCardId, videoUrl: row.videoUrl, sourceLabel: (row.sourceLabel || '当前参考帧') + '（已选版本）' }, ...choices]
+}
+const pickerSources = computed(() => pickerRow.value ? sourceChoices(pickerRow.value) : [])
+const sourceOptions = computed(() => pickerSources.value.map(source => ({
+  value: sourceKey(source.videoUrl, source.cardId), label: source.sourceLabel,
+})))
+const selectedSource = computed(() => pickerSources.value.find(source =>
+  source.cardId === pickedSourceCardId.value && source.videoUrl === pickedSource.value))
+function canPick(row: Row) {
+  return !!row.videoUrl || (row.kind === 'tail' || row.startShot !== undefined) && previousEpisodeSources.value.length > 0
+}
 function label(row: Row) {
-  if (row.kind === 'tail') return '上一段尾帧'
+  if (row.kind === 'tail') return previousEpisodeSources.value.length ? '续接参考帧' : '上一段尾帧'
   const span = row.endShot && row.endShot !== row.startShot ? `${row.startShot}–${row.endShot}` : row.startShot
   return ['风格参考', row.sceneName, row.endShot && span && `镜头 ${span}`].filter(Boolean).join(' · ')
 }
+function previewFrame(row: Row) {
+  if (row.imageUrl) emit('preview', label(row), row.imageUrl)
+}
 function frameStatus(row: Row) {
   if (row.state === 'off') return '已移除'
-  if (row.state === 'pending') return '等待来源成片'
-  if (row.state === 'missing') return row.videoUrl ? '未选帧' : '暂无可选成片'
+  if (row.state === 'pending') return previousEpisodeSources.value.length ? '等待自动来源成片' : '等待来源成片'
+  if (row.state === 'missing') return canPick(row) ? '未选帧' : '暂无可选成片'
   return row.mode === 'manual' ? '手动选帧' : '自动选帧'
 }
-const source = computed(() => rows.value.find(row => keyOf(row) === pickedKey.value)?.videoUrl)
-watch(source, next => { if (pickedKey.value && pickedSource.value !== next) pickedKey.value = '' })
-function openPicker(row: Row) {
-  if (pickedKey.value === keyOf(row)) return
+const sourceAvailable = computed(() => pickedSourceCardId.value ? !!selectedSource.value :
+  !!pickedSource.value && pickerRow.value?.videoUrl === pickedSource.value)
+watch(sourceAvailable, available => { if (pickedKey.value && !available) pickedKey.value = '' })
+function showSource(videoUrl: string, cardId?: string) {
   ready.value = false
   seconds.value = undefined
   playbackError.value = ''
-  pickedSource.value = row.videoUrl || ''
+  pickedSource.value = videoUrl
+  pickedSourceCardId.value = cardId
+}
+function openPicker(row: Row) {
+  if (pickedKey.value === keyOf(row)) return
+  const choices = sourceChoices(row)
+  const saved = choices.find(source => source.videoUrl === row.videoUrl && (!row.sourceCardId || source.cardId === row.sourceCardId))
+  const preferred = saved ?? choices.at(-1)
+  showSource(preferred?.videoUrl ?? row.videoUrl ?? '', preferred?.cardId)
   pickedKey.value = keyOf(row)
+}
+function changeSource(key: string) {
+  if (busy.value) return
+  const source = pickerSources.value.find(item => sourceKey(item.videoUrl, item.cardId) === key)
+  if (!source || (pickedSource.value === source.videoUrl && pickedSourceCardId.value === source.cardId)) return
+  showSource(source.videoUrl, source.cardId)
 }
 function metadata(event: Event, row: Row) {
   const video = event.currentTarget as HTMLVideoElement
-  if (!row.videoUrl || video.currentSrc !== new URL(row.videoUrl, video.baseURI).href) return
-  if (row.seconds !== undefined) video.currentTime = Math.min(row.seconds, video.duration || row.seconds)
+  if (video !== videos.value[0] || !pickedSource.value || video.currentSrc !== new URL(pickedSource.value, video.baseURI).href) return
+  if (row.seconds !== undefined && row.videoUrl === pickedSource.value &&
+      (!row.sourceCardId || row.sourceCardId === pickedSourceCardId.value))
+    video.currentTime = Math.min(row.seconds, video.duration || row.seconds)
   readTime(event)
   ready.value = true
 }
-function readTime(event: Event) { seconds.value = (event.currentTarget as HTMLVideoElement).currentTime }
-async function change(row: Row, mode: FrameSelection, time?: number) {
-  if (await props.choose(row, mode, time)) pickedKey.value = ''
+function readTime(event: Event) {
+  const video = event.currentTarget as HTMLVideoElement
+  if (video === videos.value[0]) seconds.value = video.currentTime
+}
+async function change(row: Row, mode: FrameSelection, time?: number, source?: FrameSource) {
+  const saved = source ? await props.choose(row, mode, time, source) : await props.choose(row, mode, time)
+  if (saved) pickedKey.value = ''
 }
 function useFrame(row: Row) {
   const video = videos.value[0]
-  if (!video || !ready.value || !row.videoUrl || row.videoUrl !== pickedSource.value ||
-      video.currentSrc !== new URL(row.videoUrl, video.baseURI).href) return
+  if (!video || !ready.value || !sourceAvailable.value ||
+      video.currentSrc !== new URL(pickedSource.value, video.baseURI).href) return
   video.pause()
   const time = Number.isFinite(video.duration) && video.currentTime >= video.duration
     ? Math.max(0, video.duration - 0.001) : video.currentTime
-  void change(row, 'manual', time)
+  void change(row, 'manual', time, selectedSource.value)
 }
 </script>
 
 <style scoped>
 .sv-frame-list { display: grid; gap: 8px; margin-top: 10px; }
 .sv-frame-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 9px 12px; border: 1px solid var(--border); border-radius: 8px; }
-.sv-frame-thumb { width: 76px; height: 46px; border-radius: 4px; object-fit: contain; background: var(--surface-input); }
+.sv-frame-preview { display: block; flex-shrink: 0; padding: 0; border: 0; border-radius: 4px; background: transparent; cursor: zoom-in; }
+.sv-frame-preview:is(:hover, :focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sv-frame-thumb { display: block; width: 76px; height: 46px; border-radius: 4px; object-fit: contain; background: var(--surface-input); }
 .sv-frame-placeholder { border: 1px dashed var(--border); }
 .sv-frame-details { display: grid; gap: 3px; margin-right: auto; font-size: 13px; }
 .sv-frame-details span, .sv-frame-status, .sv-frame-picker span { color: var(--text-3); font-size: 12px; }
@@ -105,5 +157,6 @@ function useFrame(row: Row) {
 .sv-frame-error { color: var(--warning); }
 .sv-frame-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .sv-frame-picker { flex-basis: 100%; display: grid; justify-items: start; gap: 7px; }
+.sv-frame-source { width: min(100%, 360px); display: grid; gap: 4px; }
 .sv-frame-picker video { width: min(100%, 520px); max-height: 36vh; background: black; border-radius: 6px; }
 </style>

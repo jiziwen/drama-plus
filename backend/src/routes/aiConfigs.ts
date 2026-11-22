@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { and, eq, isNull, ne } from 'drizzle-orm'
-import { db, getInsertId, schema } from '../db/index.js'
+import { db, schema } from '../db/index.js'
 import { success, notFound, created, badRequest, now } from '../utils/response.js'
 import { toSnakeCase } from '../utils/transform.js'
 import { joinProviderUrl } from '../services/adapters/url.js'
@@ -10,9 +10,11 @@ import { checkComfyWorkflow, parseComfySettings, validateComfySettings } from '.
 import { recordedFetch as fetch, withApiCallContext } from '../services/api-call-log.js'
 import { jimengVideoModels } from '../services/jimeng-video.js'
 import { denyJimengPrivateAccess, publicJimengAccount, requireJimengPrivateAccess } from './jimeng.js'
-import { disconnectJimengAccount, JimengCliError } from '../services/jimeng-cli.js'
-import { checkLibTVConnection, disconnectLibTVAccount, LibTVCliError } from '../services/libtv-cli.js'
+import { disconnectJimengAccount, JimengCliError, withJimengAccount } from '../services/jimeng-cli.js'
+import { checkLibTVConnection, disconnectLibTVAccount, LibTVCliError, withLibTVAccount } from '../services/libtv-cli.js'
 import { libtvVideoModels } from '../services/libtv-video-models.js'
+import { createVideoCliAccount, listVideoCliAccounts, removeVideoCliAccount, resolveVideoCliAccountId, VideoCliAccountError, type VideoCliAccountProvider } from '../services/video-cli-accounts.js'
+import { assertVideoCliNotDisconnecting } from '../services/video-cli-tasks.js'
 import { hasLoopbackAccess, hasPrivateGatewayAccess } from '../utils/private-access.js'
 import { trustedSiteLoginScope } from './site-session.js'
 
@@ -22,6 +24,41 @@ const denyLibTVAccess = (c: Parameters<typeof hasLoopbackAccess>[0]) => c.json({
 const isLibTVModelList = (models: unknown) =>
   Array.isArray(models) && models.length > 0 && models.every(model => libtvVideoModels.includes(model))
 
+function videoCliAccountId(value: unknown) {
+  if (value == null) return undefined
+  if (typeof value !== 'string' || !value) throw new VideoCliAccountError('视频账号 ID 无效', 400)
+  return value
+}
+
+function bindVideoCliAccount<T>(provider: VideoCliAccountProvider, requestedId: string | undefined, write: (id: string) => T): T {
+  let createdId: string | undefined
+  try {
+    return db.transaction(() => {
+      const configs = schema.aiServiceConfigs
+      const rows = db.select({ accountId: configs.videoCliAccountId }).from(configs).where(and(
+        eq(configs.provider, provider), eq(configs.serviceType, 'video'),
+      )).all()
+      let accountId = requestedId
+      if (accountId) {
+        resolveVideoCliAccountId(provider, accountId)
+        if (rows.some(row => row.accountId === accountId)) throw new VideoCliAccountError('此账号已关联其他视频服务配置', 409)
+      } else if (!rows.length && listVideoCliAccounts(provider).some(account => account.id === 'default')) {
+        accountId = 'default'
+      } else {
+        createdId = createVideoCliAccount(provider).id
+        accountId = createdId
+      }
+      try { assertVideoCliNotDisconnecting(provider, accountId) } catch {
+        throw new VideoCliAccountError('此账号正在断开或移除，请刷新后重试', 409)
+      }
+      return write(accountId)
+    }, { behavior: 'immediate' })
+  } catch (error) {
+    if (createdId) removeVideoCliAccount(provider, createdId)
+    throw error
+  }
+}
+
 /** 归一化 temperature 入参：null=未设置；合法值 0~2；非法抛错 */
 function normalizeTemperature(v: any): number | null {
   if (v === null || v === undefined || v === '') return null
@@ -30,7 +67,7 @@ function normalizeTemperature(v: any): number | null {
   return n
 }
 
-/** 把 settings JSON 中的 temperature 透出为顶层字段，便于前端直接读写 */
+/** 将常用设置透出为顶层字段，便于前端直接读写 */
 function withParsedFields(r: any) {
   return {
     ...toSnakeCase(r),
@@ -185,8 +222,12 @@ app.post('/', async (c) => {
       return badRequest(c, 'temperature 须为 0 到 2 之间的数字')
     }
   }
+  const settings = {
+    ...(temperature !== null && { temperature }),
+    ...(comfyui && { comfyui }),
+  }
 
-  const res = await db.insert(schema.aiServiceConfigs).values({
+  const rowValues = {
     serviceType: body.service_type,
     provider: jimeng ? 'jimeng' : libtv ? 'libtv' : body.provider,
     name: body.name || `${body.provider}-${body.service_type}`,
@@ -195,15 +236,22 @@ app.post('/', async (c) => {
     model: JSON.stringify(body.model || []),
     priority: body.priority || 0,
     isActive: true,
-    settings: temperature !== null || comfyui ? JSON.stringify({ ...(temperature !== null ? { temperature } : {}), ...(comfyui ? { comfyui } : {}) }) : null,
+    settings: Object.keys(settings).length ? JSON.stringify(settings) : null,
     createdAt: ts,
     updatedAt: ts,
-  })
-
-  const [row] = await db.select().from(schema.aiServiceConfigs)
-    .where(eq(schema.aiServiceConfigs.id, getInsertId(res)))
-
-  return created(c, withParsedFields(row))
+  }
+  const insert = (accountId?: string) => db.insert(schema.aiServiceConfigs)
+    .values({ ...rowValues, videoCliAccountId: accountId }).returning().get()
+  try {
+    const accountId = videoCliAccountId(body.video_cli_account_id)
+    const provider = jimeng ? 'jimeng' : libtv ? 'libtv' : undefined
+    if (accountId && !provider) return badRequest(c, '此视频服务不支持关联官方账号')
+    const row = provider ? bindVideoCliAccount(provider, accountId, insert) : insert()
+    return created(c, withParsedFields(row))
+  } catch (error) {
+    if (!(error instanceof VideoCliAccountError)) throw error
+    return c.json({ code: error.status, message: error.message }, error.status)
+  }
 })
 
 // POST /ai-configs/test
@@ -213,18 +261,24 @@ app.post('/test', async (c) => {
     if (!libtvPrivateAccess(c)) return denyLibTVAccess(c)
     const result = { method: 'CLI', url: '', response_preview: '' }
     try {
-      await checkLibTVConnection()
+      const accountId = videoCliAccountId(body.video_cli_account_id)
+      await (accountId ? withLibTVAccount(accountId, checkLibTVConnection) : checkLibTVConnection())
       return success(c, { ...result, ok: true, reachable: true, message: 'LibTV 官方 CLI 已登录，画布可访问' })
     } catch (error) {
       return success(c, { ...result, ok: false, reachable: false,
-        message: error instanceof LibTVCliError ? error.message : 'LibTV 官方 CLI 连接检查失败' })
+        message: error instanceof LibTVCliError || error instanceof VideoCliAccountError ? error.message : 'LibTV 官方 CLI 连接检查失败' })
     }
   }
   if (body.service_type === 'video' && String(body.provider).toLowerCase() === 'jimeng') {
     try { requireJimengPrivateAccess(c) } catch { return denyJimengPrivateAccess(c) }
-    const account = await publicJimengAccount()
-    return success(c, { ok: account.authenticated, reachable: account.available, method: 'CLI', url: '',
-      message: account.authenticated ? '已连接即梦账号' : account.message || '请先授权即梦账号', response_preview: '' })
+    try {
+      const account = await withJimengAccount(videoCliAccountId(body.video_cli_account_id), publicJimengAccount)
+      return success(c, { ok: account.authenticated, reachable: account.available, method: 'CLI', url: '',
+        message: account.authenticated ? '已连接即梦账号' : account.message || '请先授权即梦账号', response_preview: '' })
+    } catch (error) {
+      if (!(error instanceof VideoCliAccountError)) throw error
+      return success(c, { ok: false, reachable: false, method: 'CLI', url: '', message: error.message, response_preview: '' })
+    }
   }
   if (!body.service_type || !body.provider || !body.base_url) {
     return badRequest(c, '需要 service_type、provider 与 base_url')
@@ -326,7 +380,7 @@ app.get('/:id', async (c) => {
 app.put('/:id', async (c) => {
   const id = Number(c.req.param('id'))
   const body = await c.req.json()
-  const [existing] = await db.select().from(schema.aiServiceConfigs).where(eq(schema.aiServiceConfigs.id, id))
+  const existing = db.select().from(schema.aiServiceConfigs).where(eq(schema.aiServiceConfigs.id, id)).get()
   if (!existing) return notFound(c)
 
   const serviceType = 'service_type' in body ? body.service_type : existing.serviceType
@@ -365,32 +419,50 @@ app.put('/:id', async (c) => {
   }
   if ('priority' in body) updates.priority = body.priority
   if ('is_active' in body) updates.isActive = body.is_active
-  if ('temperature' in body) {
-    let temperature: number | null
+  if ('temperature' in body || 'comfyui' in body) {
+    let settings: Record<string, unknown> = {}
     try {
-      temperature = normalizeTemperature(body.temperature)
-    } catch {
-      return badRequest(c, 'temperature 须为 0 到 2 之间的数字')
+      const saved = JSON.parse(existing.settings || '{}')
+      if (saved && typeof saved === 'object' && !Array.isArray(saved)) settings = saved
+    } catch { /* unreadable settings can be replaced */ }
+    if ('temperature' in body) {
+      try {
+        const temperature = normalizeTemperature(body.temperature)
+        if (temperature === null) delete settings.temperature
+        else settings.temperature = temperature
+      } catch { return badRequest(c, 'temperature 须为 0 到 2 之间的数字') }
     }
-    // 与已有 settings 合并，清空的 temperature 从 JSON 中移除
-    let settings: Record<string, any> = {}
-    try { settings = existing.settings ? JSON.parse(existing.settings) : {} } catch { settings = {} }
-    if (temperature === null) delete settings.temperature
-    else settings.temperature = temperature
-    updates.settings = Object.keys(settings).length ? JSON.stringify(settings) : null
-  }
-  if ('comfyui' in body) {
-    let settings: Record<string, any> = {}
-    try { settings = JSON.parse(('settings' in updates ? updates.settings : existing.settings) || '{}') || {} } catch {}
-    try {
-      if (body.comfyui == null) delete settings.comfyui
-      else settings.comfyui = validateComfySettings(body.comfyui)
-    } catch (error: any) { return badRequest(c, error.message) }
+    if ('comfyui' in body) {
+      try {
+        if (body.comfyui == null) delete settings.comfyui
+        else settings.comfyui = validateComfySettings(body.comfyui)
+      } catch (error: any) { return badRequest(c, error.message) }
+    }
     updates.settings = Object.keys(settings).length ? JSON.stringify(settings) : null
   }
 
-  await db.update(schema.aiServiceConfigs).set(updates).where(eq(schema.aiServiceConfigs.id, id))
-  return success(c)
+  try {
+    const accountId = videoCliAccountId(body.video_cli_account_id)
+    const cliProvider = jimeng ? 'jimeng' : libtv ? 'libtv' : undefined
+    if (!cliProvider && accountId) return badRequest(c, '此视频服务不支持关联官方账号')
+    const write = (currentAccountId: string | null) => {
+      const row = db.update(schema.aiServiceConfigs).set({ ...updates, videoCliAccountId: currentAccountId })
+        .where(eq(schema.aiServiceConfigs.id, id)).returning().get()
+      if (!row) throw new VideoCliAccountError('视频服务配置不存在', 404)
+      return row
+    }
+    if (!cliProvider) {
+      write(null)
+      return success(c)
+    }
+    const retained = cliProvider === existing.provider ? existing.videoCliAccountId : null
+    if (retained && accountId && accountId !== retained) return badRequest(c, '请在独立的视频服务配置中添加其他账号')
+    const row = retained ? write(retained) : bindVideoCliAccount(cliProvider, accountId, write)
+    return success(c, withParsedFields(row))
+  } catch (error) {
+    if (!(error instanceof VideoCliAccountError)) throw error
+    return c.json({ code: error.status, message: error.message }, error.status)
+  }
 })
 
 function isJimengModelList(models: unknown) {
@@ -401,14 +473,14 @@ function isJimengModelList(models: unknown) {
 app.delete('/:id', async (c) => {
   const id = Number(c.req.param('id'))
   const configs = schema.aiServiceConfigs
-  const existing = db.select({ provider: configs.provider, serviceType: configs.serviceType }).from(configs).where(eq(configs.id, id)).get()
+  const existing = db.select({ provider: configs.provider, serviceType: configs.serviceType, accountId: configs.videoCliAccountId }).from(configs).where(eq(configs.id, id)).get()
   if (!existing) return success(c)
   const { provider, serviceType } = existing
   if (provider === 'jimeng') {
     try { requireJimengPrivateAccess(c) } catch { return denyJimengPrivateAccess(c) }
   }
   if (provider === 'libtv' && !hasLoopbackAccess(c) && !trustedSiteLoginScope(c)) return denyLibTVAccess(c)
-  if (serviceType === 'video' && (provider === 'jimeng' || provider === 'libtv')) {
+  if (!existing.accountId && serviceType === 'video' && (provider === 'jimeng' || provider === 'libtv')) {
     const other = db.select({ id: configs.id }).from(configs).where(and(
       eq(configs.provider, provider), eq(configs.serviceType, serviceType), ne(configs.id, id),
     )).get()

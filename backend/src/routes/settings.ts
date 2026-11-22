@@ -2,7 +2,8 @@
  * 应用设置路由 — 全局配置的读写入口
  */
 import { Hono } from 'hono'
-import { getContentLanguage, setContentLanguage, getToursSeen, setToursSeen, CONTENT_LANGUAGES, type ContentLanguage } from '../services/app-settings.js'
+import { getContentLanguage, setContentLanguage, getToursSeen, setToursSeen, getVideoPromptMode, setVideoPromptMode, CONTENT_LANGUAGES, type ContentLanguage } from '../services/app-settings.js'
+import { isVideoPromptMode } from '../services/video-prompt-mode.js'
 import { success, badRequest } from '../utils/response.js'
 import feedback from './feedback.js'
 import releaseNotes from './release-notes.js'
@@ -10,6 +11,17 @@ import releaseNotes from './release-notes.js'
 const app = new Hono()
 app.route('/feedback', feedback)
 app.route('/release-notes', releaseNotes)
+
+app.get('/video-prompt-mode', c => {
+  c.header('Cache-Control', 'no-store')
+  return success(c, { mode: getVideoPromptMode() })
+})
+
+app.put('/video-prompt-mode', async c => {
+  const body = await c.req.json().catch(() => null)
+  if (!isVideoPromptMode(body?.mode)) return badRequest(c, '请选择有效的视频提示词排版模式')
+  return success(c, { mode: setVideoPromptMode(body.mode) })
+})
 
 // GET /content-language — 当前 AI 内容语言
 app.get('/content-language', async (c) => {

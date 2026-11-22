@@ -15,6 +15,7 @@ export interface AIConfig {
   baseUrl: string
   apiKey: string
   model: string
+  videoCliAccountId?: string
   comfyui?: ComfySettings
   /** 采样温度，null 表示不设置（跟随服务商默认）。存于 ai_service_configs.settings JSON */
   temperature?: number | null
@@ -160,6 +161,7 @@ export async function getConfigById(id: number): Promise<AIConfig | null> {
     baseUrl: row.baseUrl,
     apiKey: row.apiKey,
     model: models[0] || '',
+    videoCliAccountId: row.videoCliAccountId ?? undefined,
     temperature: parseConfigTemperature(row.settings),
     comfyui: parseComfySettings(row.settings),
   }

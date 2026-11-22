@@ -8,6 +8,7 @@ import {
   createJimengCanvas, createJimengVideoDraft, getJimengPersonalSpaceAccountId, getCurrentJimengAccountId, JimengCliError, uploadJimengReference, withJimengAccount,
 } from './jimeng-cli.js'
 import { jimengVideoModel } from './jimeng-video-models.js'
+import { formatJimengReferenceLabel } from './jimeng-reference-labels.js'
 
 export { jimengVideoModels } from './jimeng-video-models.js'
 const maxReferenceBytes = 100 * 1024 * 1024
@@ -75,13 +76,13 @@ async function resolveReference(ref: Reference, scratch: string, index: number) 
   } catch { throw new Error('即梦参考素材无法读取、格式不支持或超过 100 MB，请重新上传') }
 }
 
-function providerPrompt(prompt: string, references: { kind: Reference['kind']; resourceId: string }[]) {
+export function bindJimengPrompt(prompt: string, references: readonly { kind: Reference['kind']; resourceId: string }[]) {
   const byKind = { image: [] as string[], video: [] as string[], audio: [] as string[] }
   for (const { kind, resourceId } of references) byKind[kind].push(resourceId)
-  return prompt.replace(/\{\{/gu, '\\{{').replace(/@?(图片|图像|视频|音频|声音)\s*(\d+)/gu, (label, type, number) => {
+  return prompt.replace(/\{\{/gu, '\\{{').replace(/@(图片|图像|视频|音频|声音)[\t ]*(\d+)/gu, (label, type, number) => {
     const kind = type === '视频' ? 'video' : type === '音频' || type === '声音' ? 'audio' : 'image'
     const resourceId = byKind[kind][Number(number) - 1]
-    return resourceId ? `${label}{{res:${resourceId}}}` : label
+    return resourceId ? `{{res:${resourceId}}}` : label
   })
 }
 
@@ -116,11 +117,12 @@ async function prepareScopedJimengVideo(params: GenerateVideoParams, config: AIC
     const references = []
     for (const [index, ref] of draft.references.entries()) {
       signal?.throwIfAborted()
-      references.push({ kind: ref.kind, resourceId: await uploadJimengReference(projectId, files[index], ref.kind) })
+      const displayName = formatJimengReferenceLabel(ref.kind, index + 1)
+      references.push({ kind: ref.kind, resourceId: await uploadJimengReference(projectId, files[index], ref.kind, displayName) })
     }
     signal?.throwIfAborted()
     const { references: _references, ...input } = draft
-    return await createJimengVideoDraft({ ...input, projectId, prompt: providerPrompt(input.prompt, references), references }, accountId)
+    return await createJimengVideoDraft({ ...input, projectId, prompt: bindJimengPrompt(input.prompt, references), references }, accountId)
   } finally {
     if (scratch) await rm(scratch, { recursive: true, force: true }).catch(() => {})
     preparing--

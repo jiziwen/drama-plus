@@ -28,7 +28,7 @@ import path from 'node:path'
 import { STORAGE_ROOT } from '../utils/paths.js'
 import { downloadJimengVideo, inspectJimengVideo, JimengCliError, runJimengVideo, withJimengAccount, type JimengVideoRunInput } from './jimeng-cli.js'
 import { prepareJimengVideo, validateJimengVideo } from './jimeng-video.js'
-import { createLibTVVideoNode, inspectLibTVVideo, LibTVCliError, libtvProjectId, runLibTVVideo, validateLibTVVideo, withLibTVAccount, withLibTVCanvas, type LibTVNode } from './libtv-cli.js'
+import { createLibTVVideoNode, inspectLibTVVideoStatus, LIBTV_GENERATION_TIMEOUT_MS, LibTVCliError, libtvProjectId, runLibTVVideo, validateLibTVVideo, withLibTVAccount, withLibTVCanvas, type LibTVNode } from './libtv-cli.js'
 import { assertVideoCliNotDisconnecting, holdVideoCliSubmission } from './video-cli-tasks.js'
 import { resolveVideoCliAccountId } from './video-cli-accounts.js'
 import { cancelUpstreamVideo } from './video-upstream-cancel.js'
@@ -159,11 +159,12 @@ export async function generateVideo(params: GenerateVideoParams, control?: Video
     }
     const config = await resolveMediaConfig('video', params)
     if (config.provider === 'jimeng' || config.provider === 'libtv') {
-      params = { ...params, videoCliAccountId: resolveVideoCliAccountId(config.provider, params.videoCliAccountId) }
+      const accountId = resolveVideoCliAccountId(config.provider, params.videoCliAccountId ?? config.videoCliAccountId)
+      params = { ...params, videoCliAccountId: accountId }
       releaseCliSubmission = holdVideoCliSubmission(config.provider, params.videoCliAccountId)
     }
     if (config.provider === 'libtv') {
-      if (!params.allowLibTV) throw new Error('请通过私有站点的「剧本转视频」使用 LibTV')
+      if (!params.allowLibTV) throw new LibTVCliError('请通过私有站点的「剧本转视频」使用 LibTV')
       await withLibTVAccount(params.videoCliAccountId!, () => libtvProjectId())
       validateLibTVVideo({ ...params, model: config.model })
     }
@@ -362,7 +363,10 @@ async function processTask(id: number, config: AIConfig) {
       return
     }
     if (config.provider === 'libtv') {
+      const createdAt = Date.parse(record.createdAt || '')
+      const deadline = (Number.isFinite(createdAt) ? createdAt : Date.now()) + LIBTV_GENERATION_TIMEOUT_MS
       await withLibTVAccount(params.videoCliAccountId || 'default', () => withLibTVCanvas(async () => {
+        if (Date.now() >= deadline) throw new LibTVCliError('LibTV 排队等待超时，尚未提交生成，请稍后重试', false, 'timeout')
         const node = await createLibTVVideoNode({
           ...params, model: record.model || config.model, prompt: record.prompt || '', generateAudio: params.generateAudio !== 0,
         }, id).catch(async error => {
@@ -376,10 +380,14 @@ async function processTask(id: number, config: AIConfig) {
           taskId: record.taskId, params: record.params,
           stage: record.stage === 'preparing' ? 'preparing' : 'polling', updatedAt: now(),
         }).where(and(eq(schema.sysTask.id, id), ne(schema.sysTask.status, 'canceled')))
+        if (Date.now() >= deadline) {
+          await failTask(id, 'LibTV 准备素材超时，尚未提交生成，请稍后重试', 'submission_not_sent')
+          return
+        }
         beginSubmission('polling')
         let url: string | undefined
         let submissionFailure: string | undefined
-        try { url = await runLibTVVideo(node) } catch (error) {
+        try { url = await runLibTVVideo(node, Math.max(1, deadline - Date.now())) } catch (error) {
           if (error instanceof LibTVCliError && error.terminal) {
             await failTask(id, safeTaskError(error), 'generation_failed')
             return
@@ -388,7 +396,7 @@ async function processTask(id: number, config: AIConfig) {
         }
         if (url) await handleVideoComplete(record, url, params.duration)
         else await recoverLibTVNode(record, node, submissionFailure)
-      }))
+      }, Math.max(1, deadline - Date.now())))
       return
     }
     if (config.provider === 'comfyui') {
@@ -539,7 +547,8 @@ async function processTask(id: number, config: AIConfig) {
     const [current] = await db.select().from(schema.sysTask).where(eq(schema.sysTask.id, id))
     const uncertain = submittedVideoRequest && current?.type === 'video' && !current.taskId && !current.resultUrl
       && (err instanceof TypeError || err instanceof SyntaxError || /timeout|abort|No task_id|API error 5/i.test(err.message))
-    await failTask(id, safeTaskError(err), uncertain ? 'submission_unknown' : undefined)
+    await failTask(id, safeTaskError(err), uncertain ? 'submission_unknown'
+      : current?.provider === 'libtv' && !current.taskId && err instanceof LibTVCliError ? 'submission_not_sent' : undefined)
   }
 }
 
@@ -686,14 +695,28 @@ async function pollTaskResponse(record: SysTaskRecord, config: AIConfig, taskId:
 }
 
 async function recoverLibTVNode(record: SysTaskRecord, node: LibTVNode, submissionFailure?: string) {
-  let url: string | undefined
-  try { url = await inspectLibTVVideo(node) } catch (error) {
+  let result: Awaited<ReturnType<typeof inspectLibTVVideoStatus>>
+  try { result = await inspectLibTVVideoStatus(node) } catch (error) {
     await failTask(record.id, [submissionFailure, safeTaskError(error)].filter(Boolean).join('；'),
       error instanceof LibTVCliError && error.terminal ? 'generation_failed' : 'submission_unknown')
     return
   }
-  if (url) await handleVideoComplete(record, url, parseTaskParams(record.params).duration)
-  else await failTask(record.id, [submissionFailure, 'LibTV 原画布节点尚未返回成片。请先在 LibTV 核对原任务，或恢复任务再查。'].filter(Boolean).join('；'), 'submission_unknown')
+  if (result.upstreamTaskId && node.upstreamTaskId !== result.upstreamTaskId) {
+    node.upstreamTaskId = result.upstreamTaskId
+    record.params = JSON.stringify({ ...parseTaskParams(record.params), libtv: node })
+    await db.update(schema.sysTask).set({ params: record.params, updatedAt: now() })
+      .where(and(eq(schema.sysTask.id, record.id), ne(schema.sysTask.status, 'canceled')))
+  }
+  if (result.state === 'completed' && result.url) {
+    await handleVideoComplete(record, result.url, parseTaskParams(record.params).duration)
+  } else if (result.state === 'failed') {
+    await failTask(record.id, result.message || 'LibTV 已确认原视频任务失败', 'generation_failed')
+  } else {
+    const pending = result.state === 'pending'
+      ? 'LibTV 原任务仍在排队或生成，站内已停止本次等待。可点击「查询原任务」获取结果，不会重新生成。'
+      : '暂未确认 LibTV 原任务结果。可点击「查询原任务」继续查询，不会重新生成。'
+    await failTask(record.id, [submissionFailure, result.message, pending].filter(Boolean).join('；'), 'submission_unknown')
+  }
 }
 
 async function pollJimengTask(record: SysTaskRecord, input: JimengVideoRunInput) {

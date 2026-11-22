@@ -151,8 +151,7 @@ if (args[0] === 'account') {
   const callbackUrl = new URL(callback)
   assert.equal(callbackUrl.hostname, '127.0.0.1')
   assert.equal(callbackUrl.pathname, '/callback')
-  assert.equal(callbackUrl.searchParams.get('expires_at'), String(login.expires_at))
-  assert.match(callbackUrl.searchParams.get('state') ?? '', /^[\da-f-]{36}$/u)
+  assert.equal(callbackUrl.search, '', '保留官方CLI回调协议，由CLI验证凭据、服务器控制授权时限')
   assert.equal((await fetch(callback)).status, 200)
   let authorized = await account('/auth/status')
   let canvasPreparing = authorized.canvas_preparing === true
@@ -228,7 +227,7 @@ if (args[0] === 'account') {
   const stale = await account('/auth/start', local, 'POST')
   const staleCallback = new URL(String(stale.verification_url)).searchParams.get('callback_url')
   assert.ok(staleCallback)
-  assert.notEqual(new URL(staleCallback).searchParams.get('state'), callbackUrl.searchParams.get('state'))
+  assert.notEqual(new URL(staleCallback).port, callbackUrl.port)
   assert.equal((await fetch(staleCallback)).status, 500)
   let failed = await account('/auth/status')
   for (let i = 0; i < 100 && failed.status === 'pending'; i++) {

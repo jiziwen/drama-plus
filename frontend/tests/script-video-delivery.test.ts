@@ -30,7 +30,7 @@ const options = {model:'doubao-seedance-2-5-260628',provider:'volcengine'}
 
 test('角色音频参考放在本段事件之后、第一镜之前', () => {
   const settings = [
-    { model: 'jimeng-seedance-2.5', provider: 'jimeng' },
+    { model: 'jimeng-seedance-2.5', provider: 'jimeng', promptMode: 'inline' as const },
     options,
     { model: 'doubao-seedance-2-0-fast', provider: 'volcengine' },
   ]
@@ -39,7 +39,9 @@ test('角色音频参考放在本段事件之后、第一镜之前', () => {
     assert.match(prompt, /(?:本段事件|独立生成)：[^\n]+\n\n[^\n]+只参考音色，不照搬音频中的内容。\n\n镜头 ?01/u)
     assert.equal(prompt.match(/只参考音色，不照搬音频中的内容。/gu)?.length, 1)
     assert.ok(prompt.endsWith('手写镜头备注'))
-    assert.equal(portableDeliveryCard(card, assets, config).prompt, prompt)
+    const exported = portableDeliveryCard(card, assets, config).prompt
+    if (config.provider === 'jimeng') assert.match(exported, /顾凌天_龙袍 @音频3/u)
+    else assert.equal(exported, prompt)
   }
   const legacy = {
     ...card,
@@ -97,15 +99,19 @@ test('ZIP 内模型提示词与 Markdown、JSON 完全一致，附件去重且�
     lightingRanges: { [card.id]: lightingRanges },
   })
   assert.ok(zip)
-  const bytes = Buffer.from(await zip.arrayBuffer())
-  const files = new Map<string, Buffer>()
-  let offset=0
-  while (bytes.readUInt32LE(offset) === 0x04034b50) {
-    const len=bytes.readUInt32LE(offset+18), nameLen=bytes.readUInt16LE(offset+26)
-    const start=offset+30+nameLen+bytes.readUInt16LE(offset+28)
-    files.set(bytes.toString('utf8',offset+30,offset+30+nameLen), bytes.subarray(start,start+len))
-    offset=start+len
+  async function zipFiles(blob: Blob) {
+    const bytes = Buffer.from(await blob.arrayBuffer())
+    const files = new Map<string, Buffer>()
+    let offset = 0
+    while (bytes.readUInt32LE(offset) === 0x04034b50) {
+      const len = bytes.readUInt32LE(offset+18), nameLen = bytes.readUInt16LE(offset+26)
+      const start = offset+30+nameLen+bytes.readUInt16LE(offset+28)
+      files.set(bytes.toString('utf8',offset+30,offset+30+nameLen), bytes.subarray(start,start+len))
+      offset = start+len
+    }
+    return files
   }
+  const files = await zipFiles(zip)
   const { prompt, imageBindings } = buildScriptVideoDelivery(current,projectAssets,{ ...options, continuation, lightingRanges })
   assert.deepEqual(imageBindings.find(binding => binding.assetId === reflection.id), { assetId: reflection.id, index: 1 })
   assert.match(prompt, /@图片1镜中倒影随他转身/u)
@@ -118,6 +124,20 @@ test('ZIP 内模型提示词与 Markdown、JSON 完全一致，附件去重且�
   assert.deepEqual(files.get('片段01/图4-场景光线参考.jpg'),Buffer.from([13,14,15]))
   assert.match(prompt,/用@图片4参考同场人物受光/u)
   assert.deepEqual([...files.keys()].filter(name => /片段01\/声音/u.test(name)), ['片段01/声音1-顾凌天_龙袍.wav'])
+
+  await exportPreviewPackage([current], projectAssets, '即梦片段.zip', {
+    delivery: { model: 'jimeng-seedance-2.5', provider: 'jimeng', promptMode: 'reference-guide' },
+    referenceImages: prepared, continuations: { [card.id]: continuation },
+    lightingRanges: { [card.id]: lightingRanges },
+  })
+  const jimengFiles = await zipFiles(zip)
+  const jimengPrompt = jimengFiles.get('片段01/视频提示词.txt')!.toString()
+  assert.match(jimengPrompt, /^参考素材：[\s\S]+@图片3 是 @同图 的道具形态参考图/u)
+  assert.match(jimengPrompt, /@音频6 是 @顾凌天_龙袍/u)
+  assert.match(jimengPrompt.split('镜头 01')[1], /@顾凌天_龙袍 @音频6/u)
+  assert.ok(jimengFiles.get('分镜脚本.md')!.toString().includes(jimengPrompt))
+  assert.equal(JSON.parse(jimengFiles.get('分镜数据.json')!.toString()).cards[0].prompt, jimengPrompt)
+  assert.ok(jimengFiles.has('片段01/音频6-顾凌天_龙袍.wav'))
 })
 
 test('有逐镜画面的稿件只发送本段实际配图，旧的自由提示词保留手选参考', () => {
@@ -281,7 +301,7 @@ test('同场切镜前回顾中的人物正式提交参考图，旧造型不因�
       '对白／音效：无对白。',
     ].join('\n'),
   }
-  const settings = { model: 'jimeng-seedance-2.5', provider: 'jimeng' }
+  const settings = { model: 'jimeng-seedance-2.5', provider: 'jimeng', promptMode: 'inline' as const }
   const cut = buildScriptVideoDelivery(current, roles, settings)
   assert.deepEqual(cut.images.map(asset => asset.id), ['wei', 'q'])
   assert.match(cut.prompt, /@图片1魏忠国仍站在柱旁/u)
@@ -407,7 +427,9 @@ test('即梦同一角色的每处对白和心声都有对应音频引用，原�
       '对白／音效：@顾凌天_龙袍：“去问王禄。”；@王禄(OS)：“好。”；@顾凌天_龙袍：“现在。”',
     ].join('\n'),
   }
-  const { prompt, voices } = buildScriptVideoDelivery(script, assets, { model: 'jimeng-seedance-2.5-flash', provider: 'jimeng' })
+  const { prompt, voices } = buildScriptVideoDelivery(script, assets, {
+    model: 'jimeng-seedance-2.5-flash', provider: 'jimeng', promptMode: 'inline',
+  })
   assert.deepEqual(voices.map(voice => voice.asset.id), ['costume', 'first'])
   assert.match(prompt, /画面与动作：@图片1顾凌天_龙袍望向@图片2王禄。/)
   assert.match(prompt, /顾凌天_龙袍 @音频1：“去问王禄。”/)

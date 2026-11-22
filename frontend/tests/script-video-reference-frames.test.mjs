@@ -85,6 +85,41 @@ test('仅保存服务端截取成功的正确视频时间，保留并发更新�
   assert.equal(Object.hasOwn(selected.value.card, 'referenceFrameSettings'), false)
 })
 
+test('首段可从上一集早段选尾帧或风格帧，保存对应片段和成片时间', async t => {
+  const earlier = { cardId: 'previous-first', videoUrl: '/static/videos/earlier.mp4', sourceLabel: '上一集 · 第 1 段' }
+  const state = () => ({
+    tail: { kind: 'tail', mode: 'auto', state: 'missing' },
+    lighting: [{ kind: 'lighting', startShot: 2, mode: 'auto', state: 'missing' }],
+    previousEpisodeSources: [earlier],
+  })
+  const { app, selected, calls } = await setup(t, () => ({
+    ...state(), candidate: { imageUrl: '/static/early.jpg', videoUrl: earlier.videoUrl, seconds: 1.125, sourceCardId: earlier.cardId },
+  }), state)
+  assert.equal(await app.choose(app.frames.value.tail, 'manual', 1.125, earlier), true)
+  assert.deepEqual(calls.find(call => call.body.kind === 'tail').body,
+    { kind: 'tail', seconds: 1.125, expectedVideoUrl: earlier.videoUrl, sourceCardId: earlier.cardId })
+  assert.equal(await app.choose(app.frames.value.lighting[0], 'manual', 1.125, earlier), true)
+  const selection = { mode: 'manual', videoUrl: earlier.videoUrl, seconds: 1.125, sourceCardId: earlier.cardId }
+  assert.deepEqual(selected.value.card.referenceFrameSettings, { tail: selection, lighting: { 2: selection } })
+})
+
+test('跨集截帧期间所选早段成片发生变化，拒绝保存已失效的旧来源', async t => {
+  const earlier = { cardId: 'previous-first', videoUrl: '/static/videos/earlier.mp4', sourceLabel: '上一集 · 第 1 段' }
+  const updated = { ...earlier, videoUrl: '/static/videos/earlier-remade.mp4' }
+  const reply = Promise.withResolvers()
+  let reads = 0
+  const { app, selected, revision } = await setup(t, () => reply.promise, () => ({
+    ...rows(), previousEpisodeSources: [reads++ ? updated : earlier],
+  }))
+  const applying = app.choose(app.frames.value.tail, 'manual', 1, earlier)
+  revision.value = '2'
+  await nextTick()
+  reply.resolve({ ...rows(), candidate: { imageUrl: '/static/early.jpg', videoUrl: earlier.videoUrl, seconds: 1, sourceCardId: earlier.cardId } })
+  assert.equal(await applying, false)
+  assert.match(app.error.value, /来源成片已变化/u)
+  assert.equal(selected.value.card.referenceFrameSettings, undefined)
+})
+
 test('截帧出错或返回另一条视频时不改参考设置，错误可见', async t => {
   for (const candidate of [
     () => { throw new Error('无法截帧') },
@@ -132,22 +167,27 @@ test('截帧中切换片段，迟到的结果与原片段按钮无法修改新�
   assert.equal(selected.value.card.referenceFrameSettings, undefined)
 })
 
-test('播放器用当前停帧的时间提交，另一视频元素的时间不会套用到新行', async t => {
+function framePlayer(t, frames, calls) {
   const component = readFileSync(new URL('../app/components/ScriptVideoReferenceFrames.vue', import.meta.url), 'utf8')
   const body = component.split('<script setup lang="ts">')[1].split('</script>')[0].replace(/^import .*$/gm, '')
   const script = ts.transpileModule(body, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
-  const props = { frames: rows(), choose: async (...params) => { calls.push(params); return true } }
-  const calls = [], scope = effectScope()
+  const props = { frames, choose: async (...params) => { calls.push(params); return true } }
+  const scope = effectScope()
   t.after(() => scope.stop())
-  const picker = scope.run(() => runInNewContext(script + '\n;({ openPicker, metadata, useFrame, videos })', {
+  return scope.run(() => runInNewContext(script + '\n;({ openPicker, metadata, useFrame, videos, canPick, pickedSource, sourceOptions, changeSource, ready, seconds })', {
     URL, computed, ref, watch, defineProps: () => props, defineEmits: () => () => {},
   }))
-  const row = props.frames.lighting[0]
+}
+
+test('播放器用当前停帧的时间提交，另一视频元素的时间不会套用到新行', async t => {
+  const frames = rows(), calls = []
+  const picker = framePlayer(t, frames, calls)
+  const row = frames.lighting[0]
   picker.openPicker(row)
   let paused = false
-  const video = { currentSrc: 'https://test.invalid' + clip, baseURI: 'https://test.invalid/', duration: 5,
-    currentTime: 0, pause() { paused = true } }
-  picker.videos.value = [video]
+  picker.videos.value = [{ currentSrc: 'https://test.invalid' + clip, baseURI: 'https://test.invalid/', duration: 5,
+    currentTime: 0, pause() { paused = true } }]
+  const video = picker.videos.value[0]
   picker.metadata({ currentTarget: video }, row)
   video.currentTime = 2.875
   video.currentSrc = 'https://test.invalid/static/videos/other.mp4'
@@ -157,6 +197,37 @@ test('播放器用当前停帧的时间提交，另一视频元素的时间不�
   picker.useFrame(row)
   assert.deepEqual(calls, [[row, 'manual', 2.875]])
   assert.equal(paused, true)
+})
+
+test('上一集尾段没有成片时仍可打开选帧，切到其他段会重置播放器', t => {
+  const first = { cardId: 'previous-1', videoUrl: '/static/videos/previous-1.mp4', sourceLabel: '第 1 段' }
+  const third = { cardId: 'previous-3', videoUrl: '/static/videos/previous-3.mp4', sourceLabel: '第 3 段' }
+  const row = { kind: 'tail', mode: 'auto', state: 'missing' }
+  const calls = []
+  const picker = framePlayer(t, { tail: row, lighting: [], previousEpisodeSources: [first, third] }, calls)
+  assert.equal(picker.canPick(row), true)
+  picker.openPicker(row)
+  assert.equal(picker.pickedSource.value, third.videoUrl)
+  const video = source => ({ currentSrc: 'https://test.invalid' + source.videoUrl, baseURI: 'https://test.invalid/',
+    duration: 5, currentTime: 2, pause() {} })
+  const oldVideo = video(third)
+  picker.videos.value = [oldVideo]
+  const wrappedOld = picker.videos.value[0]
+  picker.metadata({ currentTarget: wrappedOld }, row)
+  assert.equal(picker.ready.value, true)
+  picker.changeSource(picker.sourceOptions.value[0].value)
+  assert.equal(picker.pickedSource.value, first.videoUrl)
+  assert.equal(picker.ready.value, false)
+  assert.equal(picker.seconds.value, undefined)
+  picker.useFrame(row)
+  assert.deepEqual(calls, [])
+  picker.videos.value = [video(first)]
+  const newVideo = picker.videos.value[0]
+  picker.metadata({ currentTarget: wrappedOld }, row)
+  assert.equal(picker.ready.value, false)
+  picker.metadata({ currentTarget: newVideo }, row)
+  picker.useFrame(row)
+  assert.deepEqual(calls, [[row, 'manual', 2, first]])
 })
 
 test('应用旧的AI正文或历史文本时沿用当前片段的参考帧设置', () => {

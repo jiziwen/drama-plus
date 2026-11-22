@@ -121,6 +121,36 @@
           </div>
         </div>
 
+        <!-- ===== 提示词入参模式 ===== -->
+        <div v-else-if="tab === 'prompt-mode'" class="settings-scroll">
+          <div class="settings-head">
+            <h2 class="settings-title">{{ t('settings.promptMode.title') }}</h2>
+            <p class="settings-desc">{{ t('settings.promptMode.desc') }}</p>
+          </div>
+          <form class="card svc-group" :aria-label="t('settings.promptMode.title')" @submit.prevent="savePromptMode">
+            <div class="config-row">
+              <div class="config-main">
+                <label class="field">
+                  <span class="field-label">{{ t('settings.promptMode.mode') }}</span>
+                  <BaseSelect v-model="globalPromptMode" :options="promptModeOptions" :aria-label="t('settings.promptMode.mode')" :searchable="false" :disabled="promptModeLoading || promptModeSaving || !promptModeLoaded" />
+                  <span class="field-hint">{{ t(globalPromptMode === 'inline' ? 'settings.promptMode.inlineDesc' : 'settings.promptMode.referenceGuideDesc') }}</span>
+                </label>
+              </div>
+            </div>
+            <div v-if="promptModeError" class="config-row" role="alert">
+              <span class="field-hint">{{ promptModeError }}</span>
+              <button v-if="!promptModeLoaded" type="button" class="btn btn-ghost btn-sm ml-auto" :disabled="promptModeLoading" @click="loadPromptMode">{{ t('settings.promptMode.retry') }}</button>
+            </div>
+            <div class="svc-group-head">
+              <span v-if="promptModeLoading || promptModeSaved" class="field-hint" role="status">{{ t(promptModeLoading ? 'common.loading' : 'common.saved') }}</span>
+              <button type="submit" class="btn btn-primary btn-sm ml-auto" :disabled="promptModeLoading || promptModeSaving || !promptModeLoaded">
+                <Loader2 v-if="promptModeSaving" :size="13" class="animate-spin" />
+                {{ t(promptModeSaving ? 'settings.promptMode.saving' : 'common.save') }}
+              </button>
+            </div>
+          </form>
+        </div>
+
         <!-- ===== 风格预设 ===== -->
         <div v-else-if="tab === 'styles'" class="settings-scroll">
           <div class="settings-head">
@@ -375,39 +405,26 @@
               <span v-if="cliAccount?.authenticated" class="tag tag-success">{{ cliLabel('connected') }}</span>
               <span v-else-if="cliAccount?.available" class="tag tag-accent">{{ cliLabel(cliPending ? 'pending' : 'disconnected') }}</span>
             </div>
-            <div class="video-cli-account-picker">
-              <label v-if="cliAccounts?.length" class="field">
-                <span class="field-label">{{ t('settings.cliAccount.selected') }}</span>
-                <BaseSelect :model-value="cliSelectedAccountId" :options="cliAccountOptions" :aria-label="t('settings.cliAccount.selected')" :disabled="cliBusy || cliPhoneBusy || cfgOperationPending" @update:model-value="selectCliAccount" />
-              </label>
-              <button type="button" class="btn btn-sm" :disabled="cliBusy || cliPhoneBusy || cfgOperationPending" @click="addCliAccount">{{ t('settings.cliAccount.add') }}</button>
+            <p v-if="!cliDialogAccountId" class="field-hint">{{ t('settings.cliAccount.saveToConnect') }}</p>
+            <template v-else>
+            <div v-if="cliSelectedAccountName" class="video-cli-account-name">{{ cliSelectedAccountName }}</div>
+            <div class="video-cli-account-actions">
               <a v-if="cliAssistantDownloadUrl && !cfgOperationPending" class="btn btn-sm" :href="cliAssistantDownloadUrl" download>{{ t('settings.cliAccount.authorizeWeb') }}</a>
-              <a v-else-if="cliVerificationUrl && !cfgOperationPending" class="btn btn-sm" :href="cliVerificationUrl" target="_blank" rel="noopener noreferrer">{{ t('settings.cliAccount.authorizeWeb') }}</a>
-              <button v-else-if="cliSelectedAccountId && !cliAccount?.authenticated && !cliAccount?.canvas_preparing && !cliPhoneOpen" ref="cliConnectButton" type="button" class="btn btn-sm" :disabled="cliBusy || cfgOperationPending" @click="authorizeCli">{{ t('settings.cliAccount.authorizeWeb') }}</button>
-              <button v-if="cliSelectedAccountId" type="button" class="btn btn-ghost btn-sm" :disabled="cliBusy || cliPhoneBusy || cfgOperationPending" @click="openCliAccountEditor('rename')">{{ t('settings.cliAccount.rename') }}</button>
-              <button v-if="cliSelectedAccountId" type="button" class="btn btn-ghost btn-sm" :disabled="cliBusy || cliPhoneBusy || cfgOperationPending" @click="cliAccountEditor = 'remove'">{{ t('settings.cliAccount.remove') }}</button>
+              <button v-else-if="!cliAccount?.authenticated && !cliAccount?.canvas_preparing && !cliPhoneOpen" ref="cliConnectButton" type="button" class="btn btn-sm" :disabled="cliBusy || cfgOperationPending" @click="authorizeCli">{{ t('settings.cliAccount.authorizeWeb') }}</button>
+              <button type="button" class="btn btn-ghost btn-sm" :disabled="cliBusy || cliPhoneBusy || cfgOperationPending" @click="openCliAccountEditor">{{ t('settings.cliAccount.rename') }}</button>
             </div>
-            <p v-if="!cliBusy && !cliAccounts?.length && !cliAccount" class="field-hint">{{ t('settings.cliAccount.empty') }}</p>
-            <p class="field-hint">{{ t('settings.cliAccount.selectionHint') }}</p>
-            <form v-if="cliAccountEditor === 'rename'" class="video-cli-account-edit" @submit.prevent="saveCliAccountName">
+            <div v-if="cliEditingAccountName" class="video-cli-account-edit">
               <label class="field">
                 <span class="field-label">{{ t('settings.cliAccount.name') }}</span>
-                <input v-model="cliAccountName" class="input" maxlength="80" :placeholder="t('settings.cliAccount.namePlaceholder')" :disabled="cliBusy" />
+                <input v-model="cliAccountName" class="input" maxlength="80" :placeholder="t('settings.cliAccount.namePlaceholder')" :disabled="cliBusy" @keydown.enter.prevent="saveCliAccountName" />
               </label>
               <div class="video-cli-account-actions">
-                <button type="submit" class="btn btn-sm" :disabled="!cliAccountName.trim() || cliBusy">{{ t('common.save') }}</button>
-                <button type="button" class="btn btn-ghost btn-sm" :disabled="cliBusy" @click="cliAccountEditor = ''">{{ t('common.cancel') }}</button>
-              </div>
-            </form>
-            <div v-else-if="cliAccountEditor === 'remove'" class="video-cli-account-edit" role="group" :aria-label="t('settings.cliAccount.remove')">
-              <p class="field-hint">{{ t('settings.cliAccount.removeConfirm', { name: cliSelectedAccountName }) }}</p>
-              <div class="video-cli-account-actions">
-                <button type="button" class="btn btn-danger btn-sm" :disabled="cliBusy" @click="confirmRemoveCliAccount">{{ t('settings.cliAccount.confirmRemove') }}</button>
-                <button type="button" class="btn btn-ghost btn-sm" :disabled="cliBusy" @click="cliAccountEditor = ''">{{ t('common.cancel') }}</button>
+                <button type="button" class="btn btn-sm" :disabled="!cliAccountName.trim() || cliBusy" @click="saveCliAccountName">{{ t('common.save') }}</button>
+                <button type="button" class="btn btn-ghost btn-sm" :disabled="cliBusy" @click="cliEditingAccountName = false">{{ t('common.cancel') }}</button>
               </div>
             </div>
             <div v-if="cliAccount?.authenticated" class="video-cli-account-details">
-              <span v-if="cliAccount.username">{{ cliAccount.username }}</span>
+              <span v-if="cliAccount.username && cliAccount.username !== cliSelectedAccountName">{{ cliAccount.username }}</span>
               <span v-if="cliAccount.plan || cliAccount.membership">{{ cliAccount.plan || cliAccount.membership }}</span>
               <strong v-if="activeVideoCli === 'jimeng' || cliAccount.credits != null">{{ cliAccount.credits == null ? cliLabel('creditsUnknown') : t(`settings.${activeVideoCli}.credits`, { n: cliAccount.credits }) }}</strong>
               <span v-if="activeVideoCli === 'libtv' && cliAccount.canvas_ready" class="tag tag-success">{{ cliAccount.canvas_name || cliLabel('canvasReady') }}</span>
@@ -461,6 +478,7 @@
               <p v-if="cliPhoneError" id="libtv-phone-error" class="field-hint" role="alert">{{ cliPhoneError }}</p>
               <p v-else-if="cliPhoneExpired" id="libtv-phone-error" class="field-hint" role="status">{{ t('settings.libtv.phoneCodeExpired') }}</p>
             </div>
+            </template>
           </section>
           <template v-else>
             <label class="field"><span class="field-label">API Key</span><input v-model="cfgForm.api_key" class="input" type="password" placeholder="sk-..." /></label>
@@ -544,12 +562,12 @@
           </div>
         </div>
         <div class="dialog-foot">
-          <button v-if="cfgForm.provider !== 'jimeng'" type="button" class="btn btn-ghost test-draft-btn" :disabled="cfgTesting || cfgOperationPending" @click="testDraftCfg">
+          <button v-if="cfgForm.provider !== 'jimeng' && (!activeVideoCli || cliDialogAccountId)" type="button" class="btn btn-ghost test-draft-btn" :disabled="cfgTesting || cfgOperationPending" @click="testDraftCfg">
             <Loader2 v-if="cfgTesting" :size="12" class="animate-spin" />
             <span v-else>{{ t('settings.cfg.test') }}</span>
           </button>
-          <button type="button" class="btn" :disabled="cfgOperationPending" @click="closeCfgDialog">{{ t('common.cancel') }}</button>
-          <button type="submit" class="btn btn-primary" :disabled="cfgOperationPending">{{ t('common.save') }}</button>
+          <button type="button" class="btn" :disabled="cfgOperationPending" @click="closeCfgDialog">{{ t(cfgSavedForAuthorization ? 'common.close' : 'common.cancel') }}</button>
+          <button type="submit" class="btn btn-primary" :disabled="cfgOperationPending">{{ t(activeVideoCli && !cliDialogAccountId ? 'settings.cliAccount.saveAndConnect' : 'common.save') }}</button>
         </div>
       </form>
     </div>
@@ -695,7 +713,7 @@ import FeedbackPanel from '~/components/FeedbackPanel.vue'
 import { toast } from 'vue-sonner'
 import { toastError } from '~/composables/useToast'
 import { useI18n } from 'vue-i18n'
-import { aiConfigAPI, api, promptAPI, releaseNotesAPI, skillsAPI, storageAPI, stylePresetAPI } from '~/composables/useApi'
+import { aiConfigAPI, api, promptAPI, promptModeAPI, releaseNotesAPI, skillsAPI, storageAPI, stylePresetAPI } from '~/composables/useApi'
 import { useDesktopBridge } from '~/composables/useDesktopBridge'
 import { useMigrateState } from '~/composables/useMigrateState'
 import { useVideoCliAccount } from '~/composables/useVideoCliAccount'
@@ -710,7 +728,7 @@ const { t } = useI18n()
 const showBrandImage = ref(true)
 const props = defineProps({ initialTab: String, configId: Number, embedded: Boolean })
 const route = useRoute()
-const settingsTabs = ['ai', 'calls', 'general', 'styles', 'agents', 'storage', 'feedback', 'release-notes']
+const settingsTabs = ['ai', 'prompt-mode', 'calls', 'general', 'styles', 'agents', 'storage', 'feedback', 'release-notes']
 const initialSettingsTab = props.initialTab || route.query.tab
 const tab = ref(settingsTabs.includes(initialSettingsTab) ? initialSettingsTab : 'ai')
 const { account: siteAccount } = useSiteSession()
@@ -728,6 +746,7 @@ onMounted(async () => {
 })
 const baseTabs = computed(() => [
   { id: 'ai', label: t('settings.tabs.ai'), icon: Cpu },
+  { id: 'prompt-mode', label: t('settings.tabs.promptMode'), icon: FileText },
   { id: 'calls', label: '接口调用记录', icon: FileText },
   { id: 'general', label: t('settings.tabs.general'), icon: Languages },
   { id: 'styles', label: t('settings.tabs.styles'), icon: Palette },
@@ -736,6 +755,53 @@ const baseTabs = computed(() => [
   ...(canPublishUpdates.value ? [{ id: 'release-notes', label: t('settings.tabs.releaseNotes'), icon: Bell }] : []),
   { id: 'feedback', label: t('settings.tabs.feedback'), icon: MessageSquare },
 ])
+
+// ===== 全局提示词入参模式 =====
+const globalPromptMode = ref('reference-guide')
+const promptModeLoading = ref(false), promptModeSaving = ref(false), promptModeLoaded = ref(false)
+const promptModeError = ref(''), promptModeSaved = ref(false)
+const promptModeOptions = computed(() => [
+  { value: 'reference-guide', label: t('settings.promptMode.referenceGuide') },
+  { value: 'inline', label: t('settings.promptMode.inline') },
+])
+let promptModeReadRequest = 0
+async function loadPromptMode() {
+  if (promptModeSaving.value) return
+  const request = ++promptModeReadRequest
+  promptModeLoading.value = true
+  promptModeLoaded.value = false
+  promptModeError.value = ''
+  promptModeSaved.value = false
+  try {
+    const saved = await promptModeAPI.get()
+    if (request !== promptModeReadRequest) return
+    globalPromptMode.value = saved?.mode === 'inline' ? 'inline' : 'reference-guide'
+    promptModeLoaded.value = true
+  } catch (error) {
+    if (request === promptModeReadRequest) promptModeError.value = error?.message || t('settings.promptMode.loadFailed')
+  } finally {
+    if (request === promptModeReadRequest) promptModeLoading.value = false
+  }
+}
+async function savePromptMode() {
+  if (promptModeLoading.value || promptModeSaving.value || !promptModeLoaded.value) return
+  promptModeSaving.value = true
+  promptModeSaved.value = false
+  promptModeError.value = ''
+  try {
+    const saved = await promptModeAPI.save(globalPromptMode.value)
+    globalPromptMode.value = saved.mode
+    promptModeSaved.value = true
+    toast.success(t('common.saved'))
+  } catch (error) {
+    promptModeError.value = error?.message || t('settings.promptMode.saveFailed')
+  } finally {
+    promptModeSaving.value = false
+  }
+}
+watch(globalPromptMode, () => { promptModeSaved.value = false }, { flush: 'sync' })
+watch(tab, active => { if (active === 'prompt-mode') void loadPromptMode() }, { immediate: true })
+onBeforeUnmount(() => { promptModeReadRequest++ })
 
 // ===== AI Service Configs =====
 const cfgs = ref([])
@@ -750,29 +816,29 @@ const deletingCfg = ref(false)
 const cfgForm = reactive({ name: '', provider: '', api_key: '', base_url: '', models: [], service_type: 'text', priority: 0, temperature: '', comfy_timeout: 120, comfy_resolution: 'auto', comfy_width: 1024, comfy_height: 1024, comfy_json: '' })
 const isServerVideoCli = provider => provider === 'jimeng' || provider === 'libtv'
 const activeVideoCli = computed(() => cfgDialog.value && isServerVideoCli(cfgForm.provider) ? cfgForm.provider : undefined)
+const cfgAccountBinding = ref(null)
+const cfgSavedForAuthorization = ref(false)
+const cliDialogAccountId = computed(() => {
+  const binding = cfgAccountBinding.value
+  return binding?.provider === activeVideoCli.value ? binding?.id : undefined
+})
 const {
-  account: cliAccount, busy: cliBusy, pending: cliPending, error: cliError, verificationUrl: cliVerificationUrl,
+  account: cliAccount, busy: cliBusy, pending: cliPending, error: cliError,
   phone: cliPhone, refresh: refreshCliAccount, authorize: authorizeCli, prepare: prepareCliCanvas,
   canDisconnect: canDisconnectCli, disconnecting: cliDisconnecting, disconnect: disconnectCli,
-  accounts: cliAccounts = ref([]), activeAccountId: cliActiveAccountId = ref(''), selectedAccountId: cliSelectedAccountId = ref(''),
+  accounts: cliAccounts = ref([]),
   assistantDownloadUrl: cliAssistantDownloadUrl = ref(''),
-  selectAccount: selectCliAccount, addAccount: addCliAccount, renameAccount: renameCliAccount, removeAccount: removeCliAccount,
-} = useVideoCliAccount(activeVideoCli, t)
-const cliAccountEditor = ref('')
+  renameAccount: renameCliAccount,
+} = useVideoCliAccount(activeVideoCli, t, { accountId: cliDialogAccountId })
+const cliEditingAccountName = ref(false)
 const cliAccountName = ref('')
-const cliAccountOptions = computed(() => (cliAccounts.value || []).map(account => ({
-  value: account.id, label: account.name + (account.id === cliActiveAccountId.value ? ` · ${t('settings.cliAccount.current')}` : ''),
-})))
-const cliSelectedAccountName = computed(() => cliAccounts.value?.find(account => account.id === cliSelectedAccountId.value)?.name || '')
-function openCliAccountEditor(mode) {
-  cliAccountEditor.value = mode
-  cliAccountName.value = mode === 'rename' ? cliSelectedAccountName.value : ''
+const cliSelectedAccountName = computed(() => cliAccounts.value.find(account => account.id === cliDialogAccountId.value)?.name || '')
+function openCliAccountEditor() {
+  cliEditingAccountName.value = true
+  cliAccountName.value = cliSelectedAccountName.value
 }
 async function saveCliAccountName() {
-  if (await renameCliAccount(cliAccountName.value)) cliAccountEditor.value = ''
-}
-async function confirmRemoveCliAccount() {
-  if (await removeCliAccount()) cliAccountEditor.value = ''
+  if (await renameCliAccount(cliAccountName.value)) cliEditingAccountName.value = false
 }
 const {
   open: cliPhoneOpen, number: cliPhoneNumber, code: cliPhoneCode, challenge: cliPhoneChallenge,
@@ -783,8 +849,8 @@ const libtvPhoneInput = ref(null)
 const cliConnectButton = ref(null)
 const cliDisconnectConfirm = ref(false)
 const cliJustDisconnected = ref(false)
-watch(cliSelectedAccountId, () => {
-  cliAccountEditor.value = ''
+watch([activeVideoCli, cliDialogAccountId], () => {
+  cliEditingAccountName.value = false
   cliAccountName.value = ''
   cliDisconnectConfirm.value = false
   cliJustDisconnected.value = false
@@ -797,14 +863,9 @@ const cfgDeleteMessage = computed(() => {
   const config = cfgToDelete.value
   if (!config) return ''
   const name = config.name || `${config.provider}-${config.service_type}`
+  if (config.video_cli_account_id) return t('settings.cliAccount.deleteConfig', { name })
   const multiple = cfgs.value.some(item => item.id !== config.id && item.service_type === 'video' && item.provider === config.provider)
   return t(multiple ? 'settings.cfg.deleteMessage' : 'settings.cfg.deleteLastCli', { name, provider: cliProviderName(config.provider) })
-})
-watch(activeVideoCli, () => {
-  cliAccountEditor.value = ''
-  cliAccountName.value = ''
-  cliDisconnectConfirm.value = false
-  cliJustDisconnected.value = false
 })
 watch([cliPhoneOpen, cliPhoneChallenge], ([open]) => {
   if (open) libtvPhoneInput.value?.focus()
@@ -1031,6 +1092,8 @@ async function removeCfg(config) {
 }
 function startAddCfg(t) {
   cfgEditId.value = null
+  cfgAccountBinding.value = null
+  cfgSavedForAuthorization.value = false
   cfgTestResult.value = null
   Object.assign(cfgForm, { name: '', provider: '', api_key: '', base_url: '', models: [], service_type: t, priority: 0, temperature: '', comfy_timeout: 120, comfy_resolution: 'auto', comfy_width: t === 'video' ? 608 : 1024, comfy_height: t === 'video' ? 320 : 1024, comfy_json: '' })
   comfyConfigError.value = ''
@@ -1041,6 +1104,8 @@ function startAddCfg(t) {
 function startEditCfg(c) {
   comfyConfigError.value = ''
   cfgEditId.value = c.id
+  cfgAccountBinding.value = { provider: c.provider, id: c.video_cli_account_id }
+  cfgSavedForAuthorization.value = false
   cfgTestResult.value = null
   Object.assign(cfgForm, {
     name: c.name || '',
@@ -1082,6 +1147,7 @@ async function testDraftCfg() {
     base_url: cfgForm.base_url,
     model: [...cfgForm.models],
     comfyui,
+    ...(cliDialogAccountId.value && { video_cli_account_id: cliDialogAccountId.value }),
   })
 }
 async function testExistingCfg(c) {
@@ -1118,9 +1184,19 @@ async function saveCfg() {
       temperature,
       comfyui,
     }
-    if (cfgEditId.value) await aiConfigAPI.update(cfgEditId.value, payload)
-    else await aiConfigAPI.create({ ...payload, service_type: cfgForm.service_type, name: cfgForm.name || `${cfgForm.provider}-${cfgForm.service_type}` })
-    cfgDialog.value = false; toast.success(t('common.saved')); loadCfgs()
+    const needsAuthorization = isCli && !cliDialogAccountId.value
+    const saved = cfgEditId.value
+      ? await aiConfigAPI.update(cfgEditId.value, payload)
+      : await aiConfigAPI.create({ ...payload, service_type: cfgForm.service_type, name: cfgForm.name || `${cfgForm.provider}-${cfgForm.service_type}` })
+    if (needsAuthorization && saved?.video_cli_account_id) {
+      cfgEditId.value = saved.id
+      cfgAccountBinding.value = { provider: cfgForm.provider, id: saved.video_cli_account_id }
+      cfgSavedForAuthorization.value = true
+    } else {
+      cfgDialog.value = false
+    }
+    toast.success(t('common.saved'))
+    void loadCfgs()
   } catch (e) {
     if (cfgForm.provider === 'comfyui') comfyConfigError.value = e.message
     toastError(e)
@@ -1833,8 +1909,7 @@ onBeforeUnmount(stopUsagePoll)
 .video-cli-account-details { font-size: 12px; color: var(--text-2); }
 .video-cli-account-details strong { color: var(--text-0); }
 .video-cli-account-actions a { text-decoration: none; }
-.video-cli-account-picker { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; }
-.video-cli-account-picker .field { flex: 1 1 240px; min-width: 0; }
+.video-cli-account-name { font-weight: 600; overflow-wrap: anywhere; }
 .video-cli-account-edit { display: grid; gap: 9px; padding: 10px 0; border-block: 1px solid var(--border); }
 .video-cli-switch-link { color: var(--accent); text-decoration: underline; }
 .video-cli-phone { display: grid; gap: 9px; padding-top: 10px; border-top: 1px solid var(--border); }

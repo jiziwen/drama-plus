@@ -34,6 +34,8 @@ test('the Windows assistant runs a loopback callback and returns credentials onl
   assert.equal(callback.protocol, 'http:')
   assert.equal(callback.hostname, '127.0.0.1')
   assert.equal(callback.pathname, '/callback')
+  assert.equal(callback.searchParams.get('state'), 'be076ff1-694e-41d7-b5c0-b87c89dff0f4')
+  assert.equal(callback.searchParams.has('expires_at'), false, '官网不进入可能静默失败的过期回调校验分支，过期由助手和服务器控制')
   const badState = new URL(callback)
   badState.searchParams.set('state', 'another-browser')
   badState.searchParams.set('token', 'fixture-token')

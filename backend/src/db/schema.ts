@@ -230,6 +230,7 @@ export const aiServiceConfigs = sqliteTable('ai_service_configs', {
   model: text('model'),
   endpoint: text('endpoint'),
   queryEndpoint: text('query_endpoint'),
+  videoCliAccountId: text('video_cli_account_id'),
   priority: integer('priority').default(0),
   isDefault: integer('is_default', { mode: 'boolean' }).default(false),
   isActive: integer('is_active', { mode: 'boolean' }).default(true),

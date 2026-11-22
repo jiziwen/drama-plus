@@ -17,7 +17,7 @@ export type PreviewValidation = ReturnType<typeof validateStoryboard> & {
   warnings: { code: string; message: string }[];
 };
 
-export type PreviewAssetContext = Pick<ScriptVideoDeliveryOptions, "stylePreset" | "cast"> & {
+export type PreviewAssetContext = Pick<ScriptVideoDeliveryOptions, "stylePreset" | "cast" | "promptMode"> & {
   script?: string;
   production?: ScriptVideoProduction;
   scope?: "episode" | "card" | "prefix";

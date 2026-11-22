@@ -1,9 +1,9 @@
 import type { ScriptVideoLightingRange } from './script-video-delivery.js'
 import { buildScriptVideoEpisodeLightingPlan, type ScriptVideoLightingSceneRange } from './script-video-lighting-plan.js'
-import { previousScriptVideoCard } from './script-video-predecessor.js'
+import { previousScriptVideoCard, previousScriptVideoRender } from './script-video-predecessor.js'
 import type { ScriptVideoJob, ScriptVideoProject } from './script-video-store.js'
-import { listScriptVideoVersions, officialScriptVideoUrl, type ScriptVideoVersion } from './script-video-versions.js'
-import { scriptVideoReferenceSourceUrl, type ScriptVideoFrameChoice } from './script-video-reference-settings.js'
+import { officialScriptVideoUrl, type ScriptVideoVersion } from './script-video-versions.js'
+import type { ScriptVideoFrameChoice } from './script-video-reference-settings.js'
 import { compareVideoLightingFrames, extractVideoLightingFrame } from '../utils/video-lighting-frame.js'
 import { extractVideoReferenceFrame } from '../utils/video-reference-frame.js'
 
@@ -64,18 +64,7 @@ export function selectedScriptVideoRenders(episode: ScriptVideoProject['episodes
   return ready
 }
 
-/** A manual selection can keep an archived take from the immediately preceding segment. */
-export function previousScriptVideoRender(project: ScriptVideoProject, episodeId: string, cardId: string, videoUrl: string) {
-  const url = scriptVideoReferenceSourceUrl(videoUrl)
-  if (!url) return
-  const predecessor = previousScriptVideoCard(project, episodeId, cardId)
-  if (!predecessor) return
-  const { card: previous, episode } = predecessor
-  if (!previous || !listScriptVideoVersions(previous, episode.tasks).some(version => scriptVideoReferenceSourceUrl(version.url) === url)) return
-  const task = episode.tasks?.find((item: { cardId: string; videoUrl?: string; status: string }) =>
-    item.cardId === previous.id && item.status === 'completed' && scriptVideoReferenceSourceUrl(item.videoUrl) === url)
-  return { cardId: previous.id as string, taskId: task?.taskId as number | undefined, videoUrl: url }
-}
+export { previousScriptVideoRender } from './script-video-predecessor.js'
 
 export function fallbackScriptVideoLightingRange(shotCount: number): ScriptVideoLightingRange {
   return { startShot: 1, endShot: Math.max(1, shotCount), sceneName: '本片段' }
@@ -85,7 +74,7 @@ function manualLightingSource(
   project: ScriptVideoProject, episodeId: string, cardId: string, choice: ScriptVideoFrameChoice | undefined,
 ): LightingSource | undefined {
   if (choice?.mode !== 'manual') return
-  const owner = previousScriptVideoRender(project, episodeId, cardId, choice.videoUrl)
+  const owner = previousScriptVideoRender(project, episodeId, cardId, choice.videoUrl, choice.sourceCardId)
   if (owner) return { ...owner, start: choice.seconds, end: choice.seconds, stableStart: choice.seconds, manualSeconds: choice.seconds }
 }
 
@@ -190,7 +179,8 @@ export async function prepareScriptVideoLighting(
   }
   for (const { range, sceneKey, source, previous, sampleStart, sampleEnd, choice } of plans) {
     const imageUrl = source && await frame(source)
-    if (choice?.mode === 'manual' && source && !imageUrl) warnings.push('镜头' + range.startShot + '的手选光线参考帧不可用，请重新选帧或恢复自动。')
+    if (choice?.mode === 'manual' && (source || choice.sourceCardId) && !imageUrl)
+      warnings.push('镜头' + range.startShot + '的手选光线参考帧不可用，请重新选帧或恢复自动。')
     ranges.push({ ...range, sceneKey, ...(imageUrl && { source, imageUrl }) })
     if (previous && sampleEnd > sampleStart) {
       const reference = await frame(previous)

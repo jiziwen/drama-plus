@@ -3,6 +3,61 @@ import test from 'node:test'
 import { effectScope, nextTick, ref } from 'vue'
 import { useVideoCliAccount, type VideoCliProvider } from '../app/composables/useVideoCliAccount'
 
+test('配置新增不读取其他账号，编辑和授权只使用配置绑定的账号', async t => {
+  const originalFetch = globalThis.fetch
+  const scope = effectScope()
+  t.after(() => { scope.stop(); globalThis.fetch = originalFetch })
+  const calls: { method: string; path: string }[] = []
+  const entries = [{ id: 'first', name: '当前账号' }, { id: 'second', name: '已绑定账号' }]
+  let finishSecondRead: ((response: Response) => void) | undefined
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input), 'http://localhost')
+    calls.push({ method: init?.method || 'GET', path: url.pathname + url.search })
+    if (url.pathname.endsWith('/accounts')) return Response.json({ data: { accounts: entries, activeAccountId: 'first' } })
+    if (url.pathname.endsWith('/accounts/second')) {
+      entries[1]!.name = JSON.parse(String(init?.body)).name
+      return Response.json({ data: entries[1] })
+    }
+    const id = url.searchParams.get('accountId')
+    if (url.pathname.endsWith('/auth/start')) {
+      return Response.json({ data: { available: true, status: 'pending', verification_url: 'https://jimeng.jianying.com/authorize' } })
+    }
+    if (id === 'second' && !finishSecondRead) {
+      return new Promise<Response>(resolve => { finishSecondRead = resolve })
+    }
+    return Response.json({ data: { available: true, authenticated: true, username: id } })
+  }
+  const provider = ref<VideoCliProvider | undefined>('jimeng')
+  const accountId = ref<string>()
+  const state = scope.run(() => useVideoCliAccount(provider, key => key, { accountId }))!
+  const settle = async () => { for (let i = 0; i < 40; i++) await nextTick() }
+
+  await state.refresh()
+  assert.equal(await state.authorize(), false)
+  assert.deepEqual(calls, [])
+
+  accountId.value = 'second'
+  await settle()
+  assert.equal(state.selectedAccountId.value, 'second')
+  assert.deepEqual(state.accounts.value, [entries[1]])
+  assert.ok(finishSecondRead)
+  accountId.value = 'first'
+  await settle()
+  finishSecondRead(Response.json({ data: { available: true, username: '过期的账号结果' } }))
+  await settle()
+  assert.equal(state.account.value?.username, 'first')
+
+  accountId.value = 'second'
+  await settle()
+  assert.equal(await state.selectAccount('first'), false)
+  assert.equal(await state.renameAccount('绑定账号新名称'), true)
+  assert.deepEqual(state.accounts.value, [{ id: 'second', name: '绑定账号新名称' }])
+  assert.equal(await state.authorize(), true)
+  assert.ok(calls.some(call => call.method === 'PUT' && call.path.endsWith('/accounts/second')))
+  assert.ok(calls.some(call => call.method === 'POST' && call.path.endsWith('/auth/start?accountId=second')))
+  assert.ok(!calls.some(call => call.path.endsWith('/activate')))
+})
+
 test('添加、切换、重命名和删除后仅查询当前账号', async t => {
   const originalFetch = globalThis.fetch
   const scope = effectScope()

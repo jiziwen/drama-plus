@@ -337,9 +337,11 @@ export async function createJimengCanvas(title: string, projectId = randomUUID()
   return { projectId, webUrl: officialVerificationUrl(project.webUrl) }
 }
 
-export async function uploadJimengReference(projectId: string, filePath: string, kind: JimengReferenceKind): Promise<string> {
+export async function uploadJimengReference(projectId: string, filePath: string, kind: JimengReferenceKind, displayName?: string): Promise<string> {
   const resourceId = randomUUID()
-  const data = await invoke(['resource', 'upload', `--project-id=${projectId}`, `--resource-id=${resourceId}`, `--file=${filePath}`, `--type=${kind}`], 120_000)
+  const data = await invoke(['resource', 'upload', `--project-id=${projectId}`, `--resource-id=${resourceId}`, `--file=${filePath}`, `--type=${kind}`,
+    ...(displayName ? [`--name=${displayName}`] : []),
+  ], 120_000)
   if (data.resourceId !== resourceId || String(data.mediaType).toLowerCase() !== kind) throw new JimengCliError('即梦没有返回预期的参考素材')
   return resourceId
 }

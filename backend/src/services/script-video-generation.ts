@@ -16,6 +16,8 @@ import { extractVideoTailFrame } from '../utils/video-poster.js'
 import { extractVideoReferenceFrame } from '../utils/video-reference-frame.js'
 import type { TailShotRange } from '../utils/video-tail-frame.js'
 import { resolveMediaConfig } from './media-selection.js'
+import { getVideoPromptMode } from './app-settings.js'
+import type { ScriptVideoPromptMode } from './video-prompt-mode.js'
 import { isScriptVideoGenerationDuration, scriptVideoCapabilities, type ScriptVideoCapabilities } from './script-video-capabilities.js'
 import { buildScriptVideoDelivery, scriptVideoDeliveryTags, type ScriptVideoContinuation, type ScriptVideoDeliveryAsset, type ScriptVideoDeliveryCard, type ScriptVideoDeliveryOptions, type ScriptVideoLightingRange } from './script-video-delivery.js'
 import { safeTaskError } from './video-download.js'
@@ -24,6 +26,8 @@ import { aliyunWanVideoPrompt } from './adapters/aliyun-wan-video.js'
 import { hasScriptVideoPromptBody, splitScriptVideoPromptStyle, type ScriptVideoStylePreset } from './script-video-style.js'
 import { manualScriptVideoLightingRanges, sceneGradedStyle } from './script-video-lighting-delivery.js'
 import { JimengCliError } from './jimeng-cli.js'
+import { LibTVCliError } from './libtv-cli.js'
+import { formatJimengScriptPrompt } from './jimeng-reference-labels.js'
 import { jimengVideoModel } from './jimeng-video-models.js'
 import { LIBTV_VIDEO_RATIOS, libtvVideoModel } from './libtv-video-models.js'
 
@@ -48,6 +52,7 @@ export interface ScriptVideoGenerationInput {
   aspectRatio: string
   resolution: string
   duration?: number
+  promptMode?: ScriptVideoPromptMode
   stylePreset?: ScriptVideoStylePreset
   continuationSource?: ScriptVideoContinuationSource
   lightingRanges?: readonly ScriptVideoLightingRange[]
@@ -104,8 +109,9 @@ export async function prepareScriptVideoArchiveImages(
   cards: ScriptVideoDeliveryCard[], assets: Asset[], options: ScriptVideoDeliveryOptions, resolution: string,
 ): Promise<Record<string, string>> {
   const selected = new Map<string, Asset>()
+  const deliveryOptions = { ...options, promptMode: options.promptMode ?? getVideoPromptMode() }
   for (const card of cards) {
-    const { images } = buildScriptVideoDelivery(card, assets, options)
+    const { images } = buildScriptVideoDelivery(card, assets, deliveryOptions)
     for (const asset of images) selected.set(asset.image, asset)
   }
   const urls = Object.create(null) as Record<string, string>
@@ -189,9 +195,10 @@ export async function prepareScriptVideoDeliveryReferences(
   if (!selected.length) return { continuations, lightingRanges }
   const config = options.configId !== undefined ? await resolveMediaConfig('video', options) : undefined
   const provider = config?.provider, model = config?.model
+  const promptMode = options.promptMode ?? getVideoPromptMode()
   const referenceLimits = config ? scriptVideoCapabilities(config.provider, config.model, config.comfyui) ?? undefined : undefined
   for (const { card, source } of selected) {
-    const deliveryOptions = { ...options, provider, model, referenceLimits,
+    const deliveryOptions = { ...options, provider, model, referenceLimits, promptMode,
       lightingRanges: lightingRangesByCard[card.id] ?? options.lightingRanges }
     const { delivery, continuation } = await prepareCardDelivery(card, assets, deliveryOptions, source)
     if (continuation) continuations[card.id] = continuation
@@ -271,7 +278,9 @@ function formatScriptVideoPrompt(
   stylePreset?: ScriptVideoStylePreset, lightingRanges: readonly ScriptVideoLightingRange[] = [],
 ) {
   const { imageTag, audioTag } = scriptVideoDeliveryTags(options)
-  const text = options.provider === 'aliyun' ? aliyunWanVideoPrompt(prompt) : prompt
+  const jimeng = options.provider === 'jimeng'
+  const text = jimeng ? formatJimengScriptPrompt(prompt, images.length, audios.length)
+    : options.provider === 'aliyun' ? aliyunWanVideoPrompt(prompt) : prompt
   const { style, prefix } = splitScriptVideoPromptStyle(text, stylePreset, value => {
     const graded = sceneGradedStyle(value, lightingRanges)
     return options.provider === 'aliyun' ? aliyunWanVideoPrompt(graded) : graded
@@ -280,7 +289,10 @@ function formatScriptVideoPrompt(
     prompt: text,
     ...(style && { style: { ...style, bodyStart: prefix.length } }),
     images: images.map((image, i) => ({ ...image, index: i + 1, tag: imageTag(i + 1) })),
-    audios: audios.map((audio, i) => ({ ...audio, index: i + 1, tag: audioTag(i + 1) })),
+    audios: audios.map((audio, i) => {
+      const index = (jimeng ? images.length : 0) + i + 1
+      return { ...audio, index, tag: audioTag(index) }
+    }),
     ...(firstFrameUrl && { firstFrame: promptReference(firstFrameUrl, tailFrameName) }),
   }
 }
@@ -319,6 +331,7 @@ export async function previewScriptVideoPrompt(input: PromptPreviewInput) {
   const config = selection && await resolveMediaConfig('video', selection)
   const limits = config && scriptVideoCapabilities(config.provider, config.model, config.comfyui)
   const options: ScriptVideoDeliveryOptions = { preview: true, provider: config?.provider, model: config?.model, cast, stylePreset, lightingRanges,
+    promptMode: input.promptMode ?? getVideoPromptMode(),
     referenceLimits: limits ?? undefined, duration: input.duration === undefined ? undefined : resolveGenerationDuration(input, limits ?? undefined) }
 
   let assets = input.assets
@@ -425,7 +438,7 @@ async function prepareSubmission(input: ScriptVideoGenerationInput) {
   if (!resolutions.includes(size)) throw new Error(`所选模型支持 ${resolutions.join('、')}，请调整分辨率`)
   if (!Array.isArray(card.assetIds) || new Set(card.assetIds).size !== card.assetIds.length) throw new Error('分镜资产绑定无效')
   const options = { model: config.model, provider: config.provider, stylePreset: input.stylePreset, cast: input.cast,
-    lightingRanges: input.lightingRanges, referenceLimits: capabilities, duration, requireVoices: true }
+    lightingRanges: input.lightingRanges, referenceLimits: capabilities, promptMode: input.promptMode ?? getVideoPromptMode(), duration, requireVoices: true }
   const { delivery, continuation } = await prepareCardDelivery(card, assets, options, input.continuationSource)
   const firstFrameUrl = continuation?.mode === 'first-frame' ? continuation.imageUrl : undefined
   const tailReference = continuation?.mode === 'reference' ? continuation.imageUrl : undefined
@@ -478,7 +491,9 @@ export async function startScriptVideoGeneration(input: ScriptVideoGenerationInp
   let taskId: number
   try { taskId = await generateVideo(prepared.params, control) }
   catch (error) {
-    if (error instanceof JimengCliError) throw new ScriptVideoGenerationValidationError(error.message)
+    // CLI 账号、画布与参数检查都在创建生成任务前完成，此时尚未向服务商提交。
+    if (error instanceof JimengCliError || error instanceof LibTVCliError)
+      throw new ScriptVideoGenerationValidationError(safeTaskError(error))
     throw error
   }
   return { taskId, status: 'processing' as const, continuation: prepared.continuation,
@@ -494,6 +509,8 @@ export interface ScriptVideoGenerationStatus {
   finalShotRange?: TailShotRange
   error?: string
   code?: 'SUBMISSION_UNKNOWN' | 'DELIVERY_FAILED' | 'VIDEO_FAILED'
+  /** 仅查询已保存的 LibTV 原节点，不重新提交生成。 */
+  canRecover?: boolean
 }
 
 function readSubmittedFinalShotRange(prompt: string | null, finalShotNumber?: number | 'last'): TailShotRange | undefined {
@@ -547,8 +564,19 @@ export async function getScriptVideoGeneration(taskId: number, options: {
   if (task.status === 'failed') {
     const rejected = options.reconcileRejection !== false && reconcileAicostVideoRejection(task)
     if (rejected) return { taskId, status: 'failed', stage: task.stage || 'failed', code: 'VIDEO_FAILED', error: safeTaskError(rejected) }
-    const code = task.errorCode === 'submission_unknown' ? 'SUBMISSION_UNKNOWN' : task.errorCode === 'delivery_failed' ? 'DELIVERY_FAILED' : 'VIDEO_FAILED'
-    return { taskId, status: 'failed', stage: task.stage || 'failed', code, error: safeTaskError(task.errorMsg || '视频生成失败') }
+    let canRecover = false
+    if (task.provider === 'libtv' && task.taskId && !['generation_failed', 'submission_not_sent'].includes(task.errorCode || '')) {
+      try {
+        const node = JSON.parse(task.params || '{}').libtv
+        canRecover = node?.nodeKey === task.taskId && typeof node.projectId === 'string' &&
+          /^(?:[\da-f]{32}|[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12})$/iu.test(node.projectId) &&
+          /^[\w][\w.-]{0,127}$/u.test(node.nodeKey)
+      } catch { /* 历史未保存原节点的任务不可推断或重建。 */ }
+    }
+    const code = task.errorCode === 'delivery_failed' ? 'DELIVERY_FAILED'
+      : task.errorCode === 'submission_unknown' || canRecover ? 'SUBMISSION_UNKNOWN' : 'VIDEO_FAILED'
+    return { taskId, status: 'failed', stage: task.stage || 'failed', code, error: safeTaskError(task.errorMsg || '视频生成失败'),
+      ...(canRecover && { canRecover }) }
   }
   if (task.status === 'completed') {
     const file = task.localPath?.match(/^static\/videos\/([^/\\]+\.(?:mp4|webm))$/iu)

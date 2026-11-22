@@ -66,7 +66,11 @@ function authorizationFailed(state: AccountState) {
   return state.status === 'expired' || state.status === 'failed' || state.status === 'unavailable'
 }
 
-export function useVideoCliAccount(provider: Ref<VideoCliProvider | undefined>, translate: (key: string) => string) {
+export function useVideoCliAccount(
+  provider: Ref<VideoCliProvider | undefined>,
+  translate: (key: string) => string,
+  scope?: { accountId: Readonly<Ref<string | undefined>> },
+) {
   const account = ref<AccountState | null>(null)
   const accounts = ref<VideoCliSavedAccount[]>([])
   const activeAccountId = ref('')
@@ -89,9 +93,39 @@ export function useVideoCliAccount(provider: Ref<VideoCliProvider | undefined>, 
     ? phoneNumber.value.slice(0, 3) + '****' + phoneNumber.value.slice(-4) : '')
   const canDisconnect = computed(() => !!(account.value?.authenticated || pending.value && !account.value?.canvas_preparing))
   let phoneTimer: ReturnType<typeof setTimeout> | undefined
+  let authorizationTimer: ReturnType<typeof setTimeout> | undefined
   let version = 0
   let phoneVersion = 0
   let openingTab: Window | null = null
+
+  function clearAuthorizationTimer() {
+    clearTimeout(authorizationTimer)
+    authorizationTimer = undefined
+  }
+
+  function authorizationState(name: VideoCliProvider, state: AccountState): AccountState {
+    if (isPending(state) && !isAuthenticated(name, state) && !state.canvas_preparing &&
+        Number.isFinite(state.expires_at) && state.expires_at! <= Date.now()) {
+      return { ...state, status: 'expired', pending: false, verification_url: undefined,
+        assistant_download_url: undefined, message: message(name, 'expired') }
+    }
+    return state
+  }
+
+  function scheduleAuthorizationExpiry(name: VideoCliProvider, state: AccountState) {
+    clearAuthorizationTimer()
+    if (!isPending(state) || isAuthenticated(name, state) || state.canvas_preparing ||
+        !Number.isFinite(state.expires_at) || state.expires_at! <= Date.now()) return
+    const current = version
+    authorizationTimer = setTimeout(() => {
+      if (current !== version || !pending.value) return
+      pending.value = false
+      verificationUrl.value = ''
+      assistantDownload.value = ''
+      if (account.value) account.value = authorizationState(name, account.value)
+      error.value = message(name, 'expired')
+    }, state.expires_at! - Date.now())
+  }
 
   function accountPath(name: VideoCliProvider, path: string, id = selectedAccountId.value) {
     return `/${name}/${path}${id ? `?accountId=${encodeURIComponent(id)}` : ''}`
@@ -102,10 +136,16 @@ export function useVideoCliAccount(provider: Ref<VideoCliProvider | undefined>, 
     if (current !== version) return
     // Older servers can continue serving the single account during an application update.
     if (!Array.isArray(result.accounts)) return
+    if (scope) {
+      accounts.value = result.accounts.filter(entry => entry.id === selectedAccountId.value)
+      activeAccountId.value = result.activeAccountId
+      return true
+    }
     accounts.value = result.accounts
     const selected = result.accounts.some(entry => entry.id === result.activeAccountId) ? result.activeAccountId : result.accounts[0]?.id || ''
     activeAccountId.value = selected
     if (selected !== selectedAccountId.value) {
+      clearAuthorizationTimer()
       pending.value = false
       verificationUrl.value = ''
       assistantDownload.value = ''
@@ -138,7 +178,7 @@ export function useVideoCliAccount(provider: Ref<VideoCliProvider | undefined>, 
 
   async function refresh() {
     const name = provider.value
-    if (!name || busy.value) return
+    if (!name || (scope && !selectedAccountId.value) || busy.value) return
     const current = version
     busy.value = true
     error.value = ''
@@ -148,15 +188,17 @@ export function useVideoCliAccount(provider: Ref<VideoCliProvider | undefined>, 
         if ((caught as { status?: number })?.status !== 404) throw caught
       }
       if (current !== version) return
-      if (listed && !accounts.value.length) {
+      if (!scope && listed && !accounts.value.length) {
+        clearAuthorizationTimer()
         account.value = null
         pending.value = false
         verificationUrl.value = ''
         return
       }
-      const state = await api.get<AccountState>(accountPath(name, 'account'))
+      const state = authorizationState(name, await api.get<AccountState>(accountPath(name, 'account')))
       if (current !== version) return
       account.value = state
+      scheduleAuthorizationExpiry(name, state)
       if (name === 'jimeng') {
         const wasPending = pending.value
         const authenticated = isAuthenticated(name, state)
@@ -202,7 +244,7 @@ export function useVideoCliAccount(provider: Ref<VideoCliProvider | undefined>, 
 
   async function start(prepareCanvas: boolean, reservedTab?: Window | null): Promise<boolean> {
     const name = provider.value
-    if (!name || busy.value) {
+    if (!name || (scope && !selectedAccountId.value) || busy.value) {
       reservedTab?.close()
       return false
     }
@@ -217,13 +259,14 @@ export function useVideoCliAccount(provider: Ref<VideoCliProvider | undefined>, 
     const current = version
     busy.value = true
     error.value = ''
+    clearAuthorizationTimer()
     assistantDownload.value = ''
     if (!prepareCanvas) {
       // 新增账号在第一次请求前已预开窗口，直接复用，避免异步请求后被拦截。
       openingTab = reservedTab === undefined ? openAuthorizationTab() : reservedTab
     }
     try {
-      const state = await api.post<AccountState>(accountPath(name, 'auth/start'), {})
+      const state = authorizationState(name, await api.post<AccountState>(accountPath(name, 'auth/start'), {}))
       if (current !== version) return false
       remember(state)
       if (authorizationFailed(state)) throw new Error(state.message || message(name, state.status === 'expired' ? 'expired' : 'unavailable'))
@@ -244,6 +287,7 @@ export function useVideoCliAccount(provider: Ref<VideoCliProvider | undefined>, 
       verificationUrl.value = link || ''
       assistantDownload.value = helper || ''
       pending.value = true
+      scheduleAuthorizationExpiry(name, state)
       if (openingTab && link) {
         try { openingTab.location.replace(link) } catch { closeOpeningTab() }
         openingTab = null
@@ -252,6 +296,7 @@ export function useVideoCliAccount(provider: Ref<VideoCliProvider | undefined>, 
     } catch (caught) {
       if (current !== version) return false
       closeOpeningTab()
+      clearAuthorizationTimer()
       pending.value = false
       verificationUrl.value = ''
       error.value = caught instanceof Error ? caught.message : message(name, 'unavailable')
@@ -273,6 +318,7 @@ export function useVideoCliAccount(provider: Ref<VideoCliProvider | undefined>, 
       if (current !== version || provider.value !== name) return false
       if (isAuthenticated(name, state) || isPending(state)) throw new Error(message(name, 'disconnectFailed'))
       account.value = state
+      clearAuthorizationTimer()
       pending.value = false
       verificationUrl.value = ''
       closeOpeningTab()
@@ -391,6 +437,7 @@ export function useVideoCliAccount(provider: Ref<VideoCliProvider | undefined>, 
 
   function resetCurrent() {
     version++
+    clearAuthorizationTimer()
     closeOpeningTab()
     account.value = null
     pending.value = false
@@ -430,7 +477,7 @@ export function useVideoCliAccount(provider: Ref<VideoCliProvider | undefined>, 
   }
 
   function selectAccount(id: string) {
-    if (!accounts.value.some(entry => entry.id === id)) return Promise.resolve(false)
+    if (scope || !accounts.value.some(entry => entry.id === id)) return Promise.resolve(false)
     return changeSavedAccount(async name => {
       await api.post(`/${name}/accounts/${encodeURIComponent(id)}/activate`, {})
       return id
@@ -439,7 +486,7 @@ export function useVideoCliAccount(provider: Ref<VideoCliProvider | undefined>, 
 
   async function addAccount(): Promise<boolean> {
     const providerName = provider.value
-    if (!providerName || busy.value || phoneBusy.value) return false
+    if (scope || !providerName || busy.value || phoneBusy.value) return false
     resetCurrent()
     const current = version
     busy.value = true
@@ -478,7 +525,7 @@ export function useVideoCliAccount(provider: Ref<VideoCliProvider | undefined>, 
 
   function removeAccount() {
     const id = selectedAccountId.value
-    if (!id) return Promise.resolve(false)
+    if (scope || !id) return Promise.resolve(false)
     return changeSavedAccount(async name => {
       await api.del(`/${name}/accounts/${encodeURIComponent(id)}`)
       accounts.value = accounts.value.filter(entry => entry.id !== id)
@@ -488,8 +535,9 @@ export function useVideoCliAccount(provider: Ref<VideoCliProvider | undefined>, 
     })
   }
 
-  watch(provider, (name, _previous, onCleanup) => {
+  watch([provider, () => scope?.accountId.value], ([name, id], _previous, onCleanup) => {
     if (!name) return
+    if (scope) selectedAccountId.value = id ?? ''
     void refresh()
     onCleanup(() => {
       resetCurrent()
@@ -503,7 +551,7 @@ export function useVideoCliAccount(provider: Ref<VideoCliProvider | undefined>, 
       verificationUrl.value = ''
       closePhone()
     })
-  }, { immediate: true })
+  }, { immediate: true, flush: scope ? 'sync' : 'pre' })
 
   const phone = { open: phoneOpen, number: phoneNumber, code: phoneCode, challenge: phoneChallenge, expired: phoneExpired,
     busy: phoneBusy, error: phoneError, masked: maskedPhone, start: openPhone, close: closePhone, change: changePhone,

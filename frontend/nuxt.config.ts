@@ -3,6 +3,10 @@ import { fileURLToPath } from 'node:url'
 export default defineNuxtConfig({
   srcDir: 'app/',
   ssr: false,
+  // Static builds clear their build directory. Keep it separate from a running dev server.
+  $production: {
+    buildDir: 'node_modules/.cache/nuxt/production',
+  },
   // Keep parallel dev startup non-interactive in Cursor and other terminals.
   telemetry: false,
   devServer: { host: '127.0.0.1' },

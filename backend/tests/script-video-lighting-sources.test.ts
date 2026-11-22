@@ -20,18 +20,19 @@ function fixture() {
   return { episode, cards, tasks, jobs, plan }
 }
 
-test('only the selected ready result is a source, including a deliberately restored historical version', () => {
+test('only the adjacent selected ready result is a source, including a restored historical version', () => {
   const { plan, tasks, cards, jobs } = fixture()
   jobs[2].staleResult = true
   assert.equal(plan().d[0].source?.taskId, jobs[2].taskId)
   cards[2].status = 'draft'
-  assert.equal(plan().d[0].source?.cardId, 'b')
-  tasks[1].videoUrl = '/static/videos/other.mp4'
-  assert.deepEqual([plan().d[0].source?.videoUrl, plan().d[0].source?.taskId], [cards[1].videoUrl, undefined])
-  cards[1].status = 'draft'
-  assert.equal(plan().d[0].source?.cardId, 'a')
-  cards[0].status = 'draft'
   assert.equal(plan().d[0].source, undefined)
+  tasks[1].videoUrl = '/static/videos/other.mp4'
+  assert.deepEqual([plan().c[0].source?.videoUrl, plan().c[0].source?.taskId], [cards[1].videoUrl, undefined])
+  cards[1].status = 'draft'
+  assert.equal(plan().c[0].source, undefined)
+  jobs.push({ ...jobs[0], id: 'remake-a', status: 'running', cardVersion: cards[0].version })
+  assert.equal(plan().b[0].pendingCardId, 'a')
+  assert.equal(plan().c[0].pendingCardId, undefined)
 })
 
 test('recompute light from the adjacent official ending instead of inheriting its saved image', async () => {
@@ -69,23 +70,26 @@ test('a generating same-scene clip invalidates the prior lighting image until th
   assert.equal(plan().c[0].source?.taskId, jobs[1].taskId)
 })
 
-test('per-range manual frames stay pinned to an earlier saved render; off ranges keep lighting text', async () => {
-  const { cards, jobs, plan } = fixture()
+test('manual frames can use an archived take of the adjacent segment; off ranges keep lighting text', async () => {
+  const { cards, jobs, plan, tasks } = fixture()
   jobs.push({ ...jobs[1], id: 'retry', status: 'running', cardVersion: cards[1].version })
   assert.equal(plan().c[0].pendingCardId, 'b')
-  const settings = { lighting: { '1': { mode: 'manual', videoUrl: cards[0].videoUrl!, seconds: 0.125 } } }
+  const archived = '/static/videos/archived-b.mp4'
+  tasks.push({ ...tasks[1], id: 'archived-b', videoUrl: archived })
+  const settings = { lighting: { '1': { mode: 'manual', videoUrl: archived, seconds: 0.125 } } }
   Object.assign(cards[2], { referenceFrameSettings: settings })
   const manual = plan().c
   assert.equal(manual[0].pendingCardId, undefined)
-  assert.equal(manual[0].source?.cardId, 'a')
+  assert.equal(manual[0].source?.cardId, 'b')
   const generated = await prepareScriptVideoLighting(manual, async () => assert.fail('automatic extraction'), async (url, seconds) => {
-    assert.deepEqual([url, seconds], [cards[0].videoUrl, 0.125])
+    assert.deepEqual([url, seconds], [archived, 0.125])
     return '/static/manual.jpg'
   })
   assert.equal(generated.ranges[0].imageUrl, '/static/manual.jpg')
-  settings.lighting['1'].videoUrl = '/static/videos/unrelated.mp4'
-  const invalid = await prepareScriptVideoLighting(plan().c, async () => assert.fail('automatic fallback'), async () => assert.fail('unauthorized source'))
-  assert.ok(invalid.warnings.length)
+  settings.lighting['1'].videoUrl = cards[0].videoUrl!
+  const invalid = await prepareScriptVideoLighting(plan().c, async () => assert.fail('automatic fallback'), async () => assert.fail('non-adjacent source'))
+  assert.equal(invalid.ranges[0].imageUrl, undefined)
+  assert.deepEqual(invalid.warnings, [])
   Object.assign(cards[2], { referenceFrameSettings: { lighting: { '1': { mode: 'off' } } } })
   const off = await prepareScriptVideoLighting(plan().c, async () => assert.fail('disabled reference'))
   assert.deepEqual(off.checks, [])

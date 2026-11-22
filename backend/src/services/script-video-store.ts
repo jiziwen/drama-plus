@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { isDeepStrictEqual } from 'node:util'
 import 'dotenv/config'
 import { scriptVideoPromptStylePrefix, isScriptVideoStylePreset, styleVisualSpecs, type ScriptVideoStylePreset } from './script-video-style.js'
+import { getCurrentScriptVideoStyleRevision, resolveBuiltinStyleSnapshot } from './script-video-style-source.js'
 import { annotateScriptVideoAssets, scriptVideoMaterialIds, type MentionAsset } from './script-video-mentions.js'
 import { annotateScriptVideoInnerOs } from './script-video-inner-os.js'
 import { hasScriptVideoShotHeadings } from './script-video-asset-scope.js'
@@ -21,6 +22,7 @@ import type { ScriptVideoReferenceNames } from './script-video-generation.js'
 import { isScriptVideoGenerationDuration } from './script-video-capabilities.js'
 import { listScriptVideoVersions } from './script-video-versions.js'
 import { scriptVideoReferenceSettings } from './script-video-reference-settings.js'
+import { isScriptVideoEpisodeProgress } from './script-video-episode-progress.js'
 
 export const OUTLINE_DURATION_POLICY = '30-except-tail-v1' as const
 
@@ -42,7 +44,7 @@ export type ScriptVideoJob = {
   requestId?: string
   taskId?: number
   baseDigest?: string
-  videoDigestVersion?: 2 | 3 | 4 | 5 | 6 | 7
+  videoDigestVersion?: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9
   videoModel?: string
   videoProvider?: string
   videoDuration?: number
@@ -111,18 +113,19 @@ function validateAsset(asset: any) {
     !validId(asset.id) ||
     typeof asset.name !== 'string' ||
     !asset.name.trim() ||
-    !['character', 'scene', 'prop', 'creature'].includes(asset.kind)
+    !['character', 'scene', 'prop', 'creature', 'audio'].includes(asset.kind)
   )
     throw new ScriptVideoStoreError('资产信息无效')
   if (asset.voiceMode !== undefined && (asset.kind !== 'character' || !['model', 'reference'].includes(asset.voiceMode))) {
     throw new ScriptVideoStoreError('角色配音设置无效')
   }
-  if (asset.voiceAudio !== undefined) {
+  if (asset.voiceAudio !== undefined || asset.kind === 'audio') {
     const voice = asset.voiceAudio
-    if (asset.kind !== 'character' || !voice || typeof voice !== 'object' || Array.isArray(voice) || Object.keys(voice).some(key => !['url', 'name', 'mimeType', 'duration'].includes(key)) || typeof voice.url !== 'string' || !/^\/static\/uploads\/[a-z0-9_-]+\.(?:mp3|wav|m4a|aac)$/iu.test(voice.url) || typeof voice.name !== 'string' || !voice.name.trim() || voice.name.length > 255 || (voice.mimeType !== undefined && (typeof voice.mimeType !== 'string' || voice.mimeType.length > 100 || !/^audio\/[a-z0-9.+-]+$/iu.test(voice.mimeType))) || (voice.duration !== undefined && (typeof voice.duration !== 'number' || !Number.isFinite(voice.duration) || voice.duration <= 0 || voice.duration > 86400))) {
-      throw new ScriptVideoStoreError('角色参考音频信息无效，请重新上传音频')
+    if (!['character', 'audio'].includes(asset.kind) || !voice || typeof voice !== 'object' || Array.isArray(voice) || Object.keys(voice).some(key => !['url', 'name', 'mimeType', 'duration'].includes(key)) || typeof voice.url !== 'string' || !/^\/static\/uploads\/[a-z0-9_-]+\.(?:mp3|wav|m4a|aac)$/iu.test(voice.url) || typeof voice.name !== 'string' || !voice.name.trim() || voice.name.length > 255 || (voice.mimeType !== undefined && (typeof voice.mimeType !== 'string' || voice.mimeType.length > 100 || !/^audio\/[a-z0-9.+-]+$/iu.test(voice.mimeType))) || (voice.duration !== undefined && (typeof voice.duration !== 'number' || !Number.isFinite(voice.duration) || voice.duration <= 0 || voice.duration > 86400))) {
+      throw new ScriptVideoStoreError('参考音频信息无效，请重新上传音频')
     }
   }
+  if (asset.kind === 'audio' && asset.image === '') return
   if (
     typeof asset.image !== 'string' ||
     !asset.image.startsWith('/static/') ||
@@ -197,30 +200,45 @@ function scanCardReferences(card: ScriptVideoDeliveryCard, prompt: string, asset
 function missingExplicitCardAssets(card: ScriptVideoDeliveryCard, prompt: string, scan: ReturnType<typeof scanCardReferences>) {
   const bound = new Set(card.assetIds)
   const excluded = new Set(card.excludedAssetIds)
-  const explicit = new Set(scan.mentions.filter(hit => hit.explicit && hit.usage !== 'context' &&
+  const explicit = new Set(scan.mentions.filter(hit => hit.explicit && (hit.usage !== 'context' || !hit.literal) &&
     !bound.has(hit.id) && !excluded.has(hit.id)).map(hit => hit.id))
   if (!explicit.size) return []
   const { imageIds, speakerIds } = scriptVideoMaterialIds({
     ...card, shots: Array.isArray(card.shots) ? card.shots : [],
   }, prompt, scan)
-  return [...new Set([...imageIds, ...speakerIds])].filter(id => explicit.has(id))
+  const audioIds = scan.mentions.filter(hit => hit.usage === 'audio').map(hit => hit.id)
+  const characterReferenceIds = scan.mentions.filter(hit => hit.usage === 'context' && !hit.literal).map(hit => hit.id)
+  return [...new Set([...imageIds, ...speakerIds, ...audioIds, ...characterReferenceIds])].filter(id => explicit.has(id))
 }
 
 // Old drafts can already contain a valid @ token that was saved without its
 // binding. Expose the same effective bindings to reads and edits.
 function restoreSavedPromptReferences(project: ScriptVideoProject, episodes = project.episodes) {
-  if (!project.assets.length) return
+  const characters = new Map(project.assets.filter(asset => asset.kind === 'character').map(asset => [asset.id, asset]))
+  const referenceAudioNames = project.assets.filter(asset => asset.kind === 'audio').map(asset => asset.name)
   for (const episode of episodes) {
     const style = episode.production?.stylePreset || project.settings?.stylePreset
     const prefix = validStyle(style) ? scriptVideoPromptStylePrefix(style) : undefined
+    const speakers = [...characters.values()].map(asset => asset.name).concat(episode.production?.characters?.map((role: { name: string }) => role.name) ?? [])
     for (const card of episode.cards || []) {
-      const { prompt, assetIds } = card
-      if (typeof prompt !== 'string' || !prompt.includes('@') || !Array.isArray(assetIds)) continue
-      const bound = new Set(assetIds)
-      if (!project.assets.some(asset => asset.name && !bound.has(asset.id) && prompt.includes('@' + asset.name))) continue
+      const { prompt: savedPrompt, assetIds } = card
+      if (typeof savedPrompt !== 'string' || !savedPrompt.trim()) continue
+      const prompt = annotateScriptVideoInnerOs(savedPrompt, { protectedPrefix: prefix, speakers, referenceAudioNames })
+      card.prompt = prompt
+      if (!project.assets.length || !Array.isArray(assetIds)) continue
       const scan = scanCardReferences(card, prompt, project.assets, episode.production?.characters, prefix)
       const missing = missingExplicitCardAssets(card, prompt, scan)
-      if (missing.length) card.assetIds = [...assetIds, ...missing]
+      const excluded = new Set(card.excludedAssetIds)
+      const references = scan.mentions.filter(hit => !hit.literal && characters.has(hit.id) && !excluded.has(hit.id))
+      // Normalize live character references on reads without changing stored
+      // revisions, quoted dialogue, historical prompts or other asset prose.
+      let cursor = 0, output = ''
+      for (const hit of references) {
+        output += prompt.slice(cursor, hit.start) + '@' + hit.name
+        cursor = hit.end
+      }
+      if (references.length) card.prompt = output + prompt.slice(cursor)
+      if (missing.length || references.length) card.assetIds = [...new Set([...assetIds, ...missing, ...references.map(hit => hit.id)])]
     }
   }
 }
@@ -232,13 +250,14 @@ function cardReferences(card: any, assets: MentionAsset[], production: any, styl
   const protectedPrefix = style && scriptVideoPromptStylePrefix(style)
   const prompt = annotateScriptVideoInnerOs(card.prompt, {
     protectedPrefix,
+    referenceAudioNames: assets.filter(asset => asset.kind === 'audio').map(asset => asset.name),
     speakers: [...assets.filter(asset => asset.kind === 'character').map(asset => asset.name),
       ...(production?.characters?.map((role: { name: string }) => role.name) ?? [])],
   })
   if (!assets.length) return { ...card, prompt }
   const result = scanCardReferences(card, prompt, assets, production?.characters, protectedPrefix)
   const explicit = new Set(missingExplicitCardAssets(card, prompt, result))
-  const references = result.mentions.filter(mention => mention.usage !== 'context' &&
+  const references = result.mentions.filter(mention => (mention.usage !== 'context' || !mention.literal) &&
     (!mention.explicit || explicit.has(mention.id))).map(mention => mention.id)
   const used = new Set(result.assetIds)
   const contextual = new Set(result.contextAssetIds)
@@ -246,6 +265,43 @@ function cardReferences(card: any, assets: MentionAsset[], production: any, styl
     ? card.assetIds
     : card.assetIds.filter((id: string) => !contextual.has(id) || used.has(id))
   return { ...card, prompt: result.text, assetIds: [...new Set([...assigned, ...references])] }
+}
+
+/** Built-in presets follow the source; authored custom snapshots and archived
+ * generation inputs remain untouched. Only current prompt prefixes are replaced. */
+function syncBuiltinStyleSnapshots(project: ScriptVideoProject, updateVersions = false): ScriptVideoProject {
+  const previousStyle = project.settings?.stylePreset
+  const latestStyle = resolveBuiltinStyleSnapshot(previousStyle)
+  const settingsChanged = latestStyle && !isDeepStrictEqual(previousStyle, latestStyle)
+  const settings = settingsChanged ? { ...project.settings, stylePreset: latestStyle } : project.settings
+  let changed = !!settingsChanged
+  const episodes = project.episodes.map(episode => {
+    if (!episode || !Array.isArray(episode.cards)) return episode
+    const oldStyle = episode.production?.stylePreset || previousStyle
+    const style = resolveBuiltinStyleSnapshot(oldStyle)
+    if (!style || isDeepStrictEqual(style, oldStyle)) return episode
+    const cards = episode.cards.map((card: any) => {
+      if (!card || typeof card.prompt !== 'string' || !card.prompt.trim()) return card
+      const prompt = replaceScriptVideoPromptStyle(card.prompt, style, oldStyle, episode.production)
+      if (prompt === card.prompt) return card
+      return { ...card, prompt,
+        promptVersions: [...(card.promptVersions || []), {
+          id: 'prompt-' + randomUUID(), prompt: card.prompt, assetIds: [...(card.assetIds || [])],
+          ...(card.excludedAssetIds?.length && { excludedAssetIds: [...card.excludedAssetIds] }),
+          createdAt: new Date().toISOString(), instruction: '同步内置风格预设', summary: '更新风格前的提示词',
+        }],
+        ...(updateVersions && { version: (Number(card.version) || 0) + 1, status: 'draft' }),
+      }
+    })
+    if (!episode.production && cards.every((card: any, index: number) => card === episode.cards[index])) return episode
+    changed = true
+    return { ...episode, cards,
+      ...(episode.production && { production: { ...episode.production, stylePreset: style,
+        visualSpecs: styleVisualSpecs(style, { aspectRatio: episode.aspectRatio, resolution: episode.resolution, videoModel: episode.modelName }),
+      } }),
+    }
+  })
+  return changed ? { ...project, settings, episodes } : project
 }
 
 function sanitizeProject(
@@ -264,8 +320,10 @@ function sanitizeProject(
   )
     throw new ScriptVideoStoreError('项目字段无效')
   if (input.settings !== undefined && (!input.settings || typeof input.settings !== 'object' || Array.isArray(input.settings))) throw new ScriptVideoStoreError('项目设置无效')
-  const settings = partialWrite ? input.settings || {} : { ...(previous?.settings || {}), ...(input.settings || {}) }
+  let settings = partialWrite ? input.settings || {} : { ...(previous?.settings || {}), ...(input.settings || {}) }
   if (settings.stylePreset !== undefined && !validStyle(settings.stylePreset)) throw new ScriptVideoStoreError('风格预设无效，请检查名称、字段或长度')
+  input = syncBuiltinStyleSnapshots({ ...input, settings })
+  settings = input.settings
   const assetIds = new Set<string>()
   for (const asset of input.assets) {
     validateAsset(asset)
@@ -291,6 +349,10 @@ function sanitizeProject(
     episodes.add(episode.id)
     if (episode.production?.stylePreset !== undefined && !validStyle(episode.production.stylePreset)) throw new ScriptVideoStoreError('制作规格中的风格预设无效')
     const old = previous?.episodes.find((item) => item.id === episode.id)
+    const progressOverride = episode.progressOverride === undefined && !partialWrite
+      ? old?.progressOverride : episode.progressOverride
+    if (progressOverride != null && !isScriptVideoEpisodeProgress(progressOverride))
+      throw new ScriptVideoStoreError('分集状态无效')
     const incomingNotes = episode.characterAppearanceNotes
     if (incomingNotes !== undefined && (typeof incomingNotes !== 'string' || incomingNotes.length > 1500))
       throw new ScriptVideoStoreError('本集角色造型备注须为 1500 字以内的文本')
@@ -386,11 +448,13 @@ function sanitizeProject(
       return false
     })
     const { production: _incomingProduction, outlineDurationPolicy: _incomingPolicy, characterAppearanceNotes: _incomingNotes,
+      progressOverride: _incomingProgressOverride,
       videoDurations: incomingDurations, ...episodeFields } = episode
     if (incomingDurations !== undefined && (!incomingDurations || typeof incomingDurations !== 'object' || Array.isArray(incomingDurations)))
       throw new ScriptVideoStoreError('视频生成时长设置无效')
     const videoDurations = Object.entries(incomingDurations ?? (partialWrite ? {} : old?.videoDurations) ?? {}).filter(([cardId, duration]) => ids.has(cardId) && isScriptVideoGenerationDuration(duration))
     return { ...episodeFields, ...(production === undefined ? {} : { production }), ...(outlineDurationPolicy === undefined ? {} : { outlineDurationPolicy }), ...(characterAppearanceNotes ? { characterAppearanceNotes } : {}),
+      ...(progressOverride !== undefined && { progressOverride }),
       ...(videoDurations.length ? { videoDurations: Object.fromEntries(videoDurations) } : {}),
       cards, tasks: remainingTasks, generationsHistory: old?.generationsHistory || [], busy: false }
   })
@@ -408,7 +472,7 @@ function sanitizeProject(
   }
 }
 // Resolve mentions against the old asset index before replacing or deleting the name.
-function propagateSharedEdits(before: ScriptVideoProject, after: ScriptVideoProject) {
+function propagateSharedEdits(before: ScriptVideoProject, after: ScriptVideoProject, reapplyStyle = false) {
   const nextAssets = new Map<string, MentionAsset>(after.assets.map(asset => [asset.id, asset]))
   const renamed = new Map<string, string>()
   const removed = new Set<string>()
@@ -418,10 +482,11 @@ function propagateSharedEdits(before: ScriptVideoProject, after: ScriptVideoProj
     else if (next.name !== asset.name) renamed.set(asset.id, next.name)
   }
   const style = after.settings?.stylePreset
-  const styleChanged = validStyle(style) && !isDeepStrictEqual(style, before.settings?.stylePreset)
-  if (!renamed.size && !removed.size && !styleChanged) return
+  const applyStyle = validStyle(style) && (reapplyStyle || !isDeepStrictEqual(style, before.settings?.stylePreset))
+  if (!renamed.size && !removed.size && !applyStyle) return
   for (const episode of after.episodes) {
     const oldStyle = episode.production?.stylePreset || before.settings?.stylePreset
+    const styleChanged = applyStyle && !isDeepStrictEqual(style, oldStyle)
     for (const card of episode.cards) {
       const ids: string[] = card.assetIds || []
       const rewrite = (value: unknown, dialogue = false) => {
@@ -501,6 +566,7 @@ export function defaultScriptVideoStoreDirectory() {
 }
 export class ScriptVideoStore {
   private locks = new Map<string, Promise<void>>()
+  private builtinStyleVersions = new Map<string, { source: string; storage: number }>()
   private episodeLeases = new Map<string, Map<string, EpisodeLease>>()
   private init: Promise<void>
   private generationQueue?: ScriptVideoQueue
@@ -585,8 +651,36 @@ export class ScriptVideoStore {
     throw new ScriptVideoStoreError('项目不存在', 404, 'NOT_FOUND')
   }
 
-  private readRecord(id: string, scope?: string, trackChanges = true): RecordFile {
-    const row = this.projectRow(id)
+  private syncBuiltinStyles(row: ProjectRow): ProjectRow {
+    const source = getCurrentScriptVideoStyleRevision()
+    const cached = this.builtinStyleVersions.get(row.id)
+    if (cached?.source === source && cached.storage === row.version) return row
+    const before = this.catalog.shared(row)
+    const hasBuiltin = resolveBuiltinStyleSnapshot(before.settings?.stylePreset) || this.catalog.db.prepare(`
+      SELECT 1 FROM episodes WHERE project_id=? AND CASE WHEN json_valid(document) THEN
+        (json_extract(document,'$.production.stylePreset.id')='cool' AND json_extract(document,'$.production.stylePreset.name')='冷色调') OR
+        (json_extract(document,'$.production.stylePreset.id')='warm' AND json_extract(document,'$.production.stylePreset.name')='暖色调')
+        ELSE 0 END LIMIT 1`).get(row.id)
+    if (!hasBuiltin) {
+      this.builtinStyleVersions.set(row.id, { source, storage: row.version })
+      return row
+    }
+    before.episodes = this.catalog.allEpisodes(row)
+    const project = syncBuiltinStyleSnapshots(before, true)
+    if (project !== before) {
+      project.revision = row.revision + 1
+      this.catalog.putProject(project, JSON.parse(row.episode_order), row)
+      for (const [index, episode] of project.episodes.entries()) {
+        if (episode !== before.episodes[index]) this.catalog.putEpisode(project.id, episode)
+      }
+      row = this.projectRow(row.id)
+    }
+    this.builtinStyleVersions.set(row.id, { source, storage: row.version })
+    return row
+  }
+
+  private readRecord(id: string, scope?: string, trackChanges = true, includePrevious = false): RecordFile {
+    const row = this.syncBuiltinStyles(this.projectRow(id))
     const project = this.catalog.shared(row)
     let episodeRevision: number | undefined
     if (scope) {
@@ -594,10 +688,18 @@ export class ScriptVideoStore {
       if (!episode) throw new ScriptVideoStoreError('分集不存在', 404, 'NOT_FOUND')
       episodeRevision = episode.episodeRevision
       project.episodes = [episode.episode]
+      if (includePrevious) {
+        const order: string[] = JSON.parse(row.episode_order)
+        const previousId = order[order.indexOf(scope) - 1]
+        const previous = previousId && this.catalog.episode(id, previousId)
+        if (previous) project.episodes.unshift(previous.episode)
+      }
     } else project.episodes = this.catalog.allEpisodes(row)
     const originalEpisodes = trackChanges ? new Map(project.episodes.map(episode => [episode.id, JSON.stringify(episode)])) : undefined
     restoreSavedPromptReferences(project)
-    return { project, jobs: this.catalog.jobs(id, scope), storageVersion: row.version, scope, episodeRevision, originalEpisodes }
+    const jobs = this.catalog.jobs(id, scope)
+    if (scope && includePrevious && project.episodes.length > 1) jobs.unshift(...this.catalog.jobs(id, project.episodes[0].id))
+    return { project, jobs, storageVersion: row.version, scope, episodeRevision, originalEpisodes }
   }
 
   private normalizeRecord(record: RecordFile, episodes: ScriptVideoProject['episodes']) {
@@ -639,13 +741,16 @@ export class ScriptVideoStore {
   }
 
   private writeRecord(record: RecordFile) {
-    const { project, jobs } = record
+    const { project } = record
+    // An adjacent episode can be loaded as read-only reference context.
+    const jobs = record.scope ? record.jobs.filter(job => job.episodeId === record.scope) : record.jobs
     const db = this.catalog.db
     const cleanupNeeded = db.transaction(() => {
       const prior = this.catalog.project(project.id)
       if (record.storageVersion !== undefined && record.storageVersion !== prior?.version)
         throw new ScriptVideoStoreError('项目刚刚更新，请重试', 409, 'CONFLICT')
-      const changedEpisodes = record.originalEpisodes ? project.episodes.filter(episode => record.originalEpisodes!.get(episode.id) !== JSON.stringify(episode)) : project.episodes
+      const writableEpisodes = record.scope ? project.episodes.filter(episode => episode.id === record.scope) : project.episodes
+      const changedEpisodes = record.originalEpisodes ? writableEpisodes.filter(episode => record.originalEpisodes!.get(episode.id) !== JSON.stringify(episode)) : writableEpisodes
       this.normalizeRecord(record, changedEpisodes)
       const ids: string[] = record.scope && prior ? JSON.parse(prior.episode_order) : project.episodes.map(ep => ep.id)
       this.catalog.putProject(project, ids, prior)
@@ -693,7 +798,7 @@ export class ScriptVideoStore {
     }
   }
   private readProject(id: string) {
-    const row = this.projectRow(id)
+    const row = this.syncBuiltinStyles(this.projectRow(id))
     const project = { ...this.catalog.shared(row), episodes: this.catalog.allEpisodes(row) }
     restoreSavedPromptReferences(project)
     return project
@@ -715,16 +820,17 @@ export class ScriptVideoStore {
   }
   async summary(id: string) {
     await this.init
-    return this.catalog.db.transaction(() => this.catalog.summary(this.projectRow(id)))()
+    return this.catalog.db.transaction(() => this.catalog.summary(this.syncBuiltinStyles(this.projectRow(id))))()
   }
   async episode(id: string, episodeId: string) {
     await this.init
     assertId(episodeId)
     assertId(id)
     return this.catalog.db.transaction(() => {
+      const row = this.syncBuiltinStyles(this.projectRow(id))
       const result = this.catalog.episode(id, episodeId)
       if (!result) throw new ScriptVideoStoreError('分集不存在', 404, 'NOT_FOUND')
-      restoreSavedPromptReferences(this.catalog.shared(this.projectRow(id)), [result.episode])
+      restoreSavedPromptReferences(this.catalog.shared(row), [result.episode])
       return result
     })()
   }
@@ -732,9 +838,12 @@ export class ScriptVideoStore {
     await this.init
     assertId(id)
     assertId(episodeId)
-    const result = this.catalog.activity(id, episodeId)
-    if (!result) throw new ScriptVideoStoreError('分集不存在', 404, 'NOT_FOUND')
-    return result
+    return this.catalog.db.transaction(() => {
+      this.syncBuiltinStyles(this.projectRow(id))
+      const result = this.catalog.activity(id, episodeId)
+      if (!result) throw new ScriptVideoStoreError('分集不存在', 404, 'NOT_FOUND')
+      return result
+    })()
   }
   async create(title: string, stylePreset?: ScriptVideoStylePreset): Promise<ScriptVideoProject> {
     if (typeof title !== 'string' || !title.trim())
@@ -872,7 +981,7 @@ export class ScriptVideoStore {
       const db = this.catalog.db
       let assetsChanged = false
       const result = db.transaction(() => {
-        const row = this.projectRow(id)
+        const row = this.syncBuiltinStyles(this.projectRow(id))
         const last = db.prepare<[string, string], { sequence: number }>('SELECT sequence FROM client_writes WHERE project_id=? AND client_id=?').get(id, client)
         const fresh = !last || sequence > last.sequence
         if (fresh && changes.length) {
@@ -884,6 +993,9 @@ export class ScriptVideoStore {
           const whole = !voiceModesOnly && changes.some(change => change.target === 'asset' && !change.order ||
             change.target === 'project' && [...Object.keys(change.fields || {}), ...(change.unset || [])].some(field =>
               field === 'settings' || field === 'settings.stylePreset' || field.startsWith('settings.stylePreset.')))
+          const reapplyStyle = changes.some(change => change.target === 'project' && Object.entries(change.fields || {}).some(([field, value]) =>
+            field === 'settings.stylePreset' || field.startsWith('settings.stylePreset.') ||
+            field === 'settings' && value && typeof value === 'object' && Object.hasOwn(value, 'stylePreset')))
           before.episodes = whole ? this.catalog.allEpisodes(row)
             : [...edits].map(eid => this.catalog.episode(id, eid)?.episode).filter(Boolean)
           restoreSavedPromptReferences(before)
@@ -892,7 +1004,7 @@ export class ScriptVideoStore {
           catch (error) { throw new ScriptVideoStoreError((error as Error).message, 409, 'CHANGE_CONFLICT') }
           for (const episode of next.episodes) if (!before.episodes.some(prior => prior.id === episode.id))
             Object.assign(episode, { ...makeEpisode(), ...episode })
-          if (whole) propagateSharedEdits(before, next)
+          if (whole) propagateSharedEdits(before, next, reapplyStyle)
           // Directory operations only need IDs, including when the new episode is inserted between unloaded ones.
           let nextOrder = order
           for (const change of changes) {
@@ -970,7 +1082,7 @@ export class ScriptVideoStore {
   }
   /** Server-only mutation under the project lock. Document changes bump revision;
    * pass recordChanged: false when a conditional mutation found nothing to write. */
-  async mutate<T>(id: string, fn: MutateRecord<T>, episodeId?: string): Promise<T> {
+  async mutate<T>(id: string, fn: MutateRecord<T>, episodeId?: string, includePrevious = false): Promise<T> {
     return this.exclusive(id, async () => {
       const commit = (record: RecordFile, change: Mutation<T>) => {
         if (change.documentChanged) record.project.revision++
@@ -980,7 +1092,7 @@ export class ScriptVideoStore {
       // A reservation and an edit arriving in different server processes must
       // observe one another. Synchronous checks and writes share the SQLite writer.
       const state = this.catalog.db.transaction(() => {
-        const record = this.readRecord(id, episodeId)
+        const record = this.readRecord(id, episodeId, true, includePrevious)
         const change = fn(record)
         if (change instanceof Promise) return { pending: change, record }
         return { result: commit(record, change) }
@@ -991,15 +1103,15 @@ export class ScriptVideoStore {
       return state.result as T
     })
   }
-  mutateEpisode<T>(id: string, episodeId: string, fn: MutateRecord<T>) {
+  mutateEpisode<T>(id: string, episodeId: string, fn: MutateRecord<T>, includePrevious = false) {
     assertId(episodeId)
-    return this.mutate(id, fn, episodeId)
+    return this.mutate(id, fn, episodeId, includePrevious)
   }
 
-  async episodeSnapshot(id: string, episodeId: string) {
+  async episodeSnapshot(id: string, episodeId: string, includePrevious = false) {
     await this.init
     assertId(episodeId)
-    return this.catalog.db.transaction(() => this.readRecord(id, episodeId, false))()
+    return this.catalog.db.transaction(() => this.readRecord(id, episodeId, false, includePrevious))()
   }
 
   // sys_task has committed its exact input URLs before this synchronous callback.

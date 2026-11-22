@@ -3,6 +3,11 @@ import { api, libtvPhoneAPI } from './useApi'
 
 export type VideoCliProvider = 'jimeng' | 'libtv'
 
+export interface VideoCliSavedAccount {
+  id: string
+  name: string
+}
+
 interface AccountState {
   available: boolean
   authenticated?: boolean
@@ -15,6 +20,8 @@ interface AccountState {
   status?: string
   pending?: boolean
   verification_url?: string
+  login_method?: 'local_helper' | 'browser'
+  assistant_download_url?: string
   expires_at?: number
   can_authorize?: boolean
   can_authorize_phone?: boolean
@@ -22,14 +29,13 @@ interface AccountState {
   canvas_ready?: boolean
   canvas_preparing?: boolean
   canvas_name?: string
+  profileId?: string
 }
 
 const authorizationOrigins: Record<VideoCliProvider, readonly string[]> = {
   jimeng: ['https://jimeng.jianying.com'],
   libtv: ['https://www.liblib.tv'],
 }
-const verificationLifetime = 5 * 60_000
-const pollInterval = 2500
 
 function verifiedUrl(provider: VideoCliProvider, url: string | undefined) {
   if (!url) return
@@ -37,6 +43,15 @@ function verifiedUrl(provider: VideoCliProvider, url: string | undefined) {
     const link = new URL(url)
     if (authorizationOrigins[provider].includes(link.origin) && !link.username && !link.password) return link.href
   } catch { /* A provider must return an absolute HTTPS authorization URL. */ }
+}
+
+function verifiedAssistantUrl(url: string | undefined) {
+  if (!url) return
+  try {
+    const link = new URL(url, window.location.href)
+    if (link.origin === window.location.origin && !link.username && !link.password &&
+        link.pathname === '/api/v1/libtv/auth/assistant' && link.protocol === 'https:') return link.href
+  } catch { /* Only the application's HTTPS download endpoint may provide the helper. */ }
 }
 
 function isPending(state: AccountState) {
@@ -51,18 +66,18 @@ function authorizationFailed(state: AccountState) {
   return state.status === 'expired' || state.status === 'failed' || state.status === 'unavailable'
 }
 
-function expiresAt(state: AccountState) {
-  return typeof state.expires_at === 'number' && Number.isFinite(state.expires_at)
-    ? state.expires_at : Date.now() + verificationLifetime
-}
-
 export function useVideoCliAccount(provider: Ref<VideoCliProvider | undefined>, translate: (key: string) => string) {
   const account = ref<AccountState | null>(null)
+  const accounts = ref<VideoCliSavedAccount[]>([])
+  const activeAccountId = ref('')
+  const selectedAccountId = ref('')
   const busy = ref(false)
   const disconnecting = ref(false)
   const pending = ref(false)
   const error = ref('')
   const verificationUrl = ref('')
+  const assistantDownload = ref('')
+  const assistantDownloadUrl = computed(() => pending.value ? assistantDownload.value : '')
   const phoneOpen = ref(false)
   const phoneNumber = ref('')
   const phoneCode = ref('')
@@ -73,11 +88,32 @@ export function useVideoCliAccount(provider: Ref<VideoCliProvider | undefined>, 
   const maskedPhone = computed(() => phoneChallenge.value
     ? phoneNumber.value.slice(0, 3) + '****' + phoneNumber.value.slice(-4) : '')
   const canDisconnect = computed(() => !!(account.value?.authenticated || pending.value && !account.value?.canvas_preparing))
-  let pollTimer: ReturnType<typeof setTimeout> | undefined
   let phoneTimer: ReturnType<typeof setTimeout> | undefined
   let version = 0
   let phoneVersion = 0
   let openingTab: Window | null = null
+
+  function accountPath(name: VideoCliProvider, path: string, id = selectedAccountId.value) {
+    return `/${name}/${path}${id ? `?accountId=${encodeURIComponent(id)}` : ''}`
+  }
+
+  async function readAccounts(name: VideoCliProvider, current: number) {
+    const result = await api.get<{ accounts: VideoCliSavedAccount[]; activeAccountId: string }>(`/${name}/accounts`)
+    if (current !== version) return
+    // Older servers can continue serving the single account during an application update.
+    if (!Array.isArray(result.accounts)) return
+    accounts.value = result.accounts
+    const selected = result.accounts.some(entry => entry.id === result.activeAccountId) ? result.activeAccountId : result.accounts[0]?.id || ''
+    activeAccountId.value = selected
+    if (selected !== selectedAccountId.value) {
+      pending.value = false
+      verificationUrl.value = ''
+      assistantDownload.value = ''
+      closePhone()
+      selectedAccountId.value = selected
+    }
+    return true
+  }
 
   function message(name: VideoCliProvider, key: string) {
     return translate(`settings.${name}.${key}`)
@@ -86,6 +122,14 @@ export function useVideoCliAccount(provider: Ref<VideoCliProvider | undefined>, 
   function closeOpeningTab() {
     openingTab?.close()
     openingTab = null
+  }
+
+  function openAuthorizationTab() {
+    try {
+      const tab = window.open('about:blank', '_blank')
+      if (tab) tab.opener = null
+      return tab
+    } catch { return null }
   }
 
   function remember(state: AccountState) {
@@ -99,7 +143,18 @@ export function useVideoCliAccount(provider: Ref<VideoCliProvider | undefined>, 
     busy.value = true
     error.value = ''
     try {
-      const state = await api.get<AccountState>(`/${name}/account`)
+      let listed = false
+      try { listed = await readAccounts(name, current) === true } catch (caught) {
+        if ((caught as { status?: number })?.status !== 404) throw caught
+      }
+      if (current !== version) return
+      if (listed && !accounts.value.length) {
+        account.value = null
+        pending.value = false
+        verificationUrl.value = ''
+        return
+      }
+      const state = await api.get<AccountState>(accountPath(name, 'account'))
       if (current !== version) return
       account.value = state
       if (name === 'jimeng') {
@@ -120,14 +175,23 @@ export function useVideoCliAccount(provider: Ref<VideoCliProvider | undefined>, 
         return
       }
       if (phoneOpen.value && (state.authenticated || !state.can_authorize_phone)) closePhone()
-      if (isPending(state) && !pending.value) {
+      const wasPending = pending.value
+      if (isPending(state) && !authorizationFailed(state)) {
         pending.value = true
-        verificationUrl.value = verifiedUrl(name, state.verification_url) || ''
-        waitForAuthorization(name, current, expiresAt(state))
-      } else if (state.authenticated && !isPending(state)) {
-        clearTimeout(pollTimer)
+        if (state.authenticated || state.canvas_preparing) {
+          verificationUrl.value = ''
+          assistantDownload.value = ''
+        } else {
+          verificationUrl.value = verifiedUrl(name, state.verification_url) || verificationUrl.value
+          assistantDownload.value = verifiedAssistantUrl(state.assistant_download_url) || assistantDownload.value
+        }
+      } else {
         pending.value = false
         verificationUrl.value = ''
+        assistantDownload.value = ''
+        if (authorizationFailed(state) || wasPending && !state.authenticated) {
+          error.value = state.message || message(name, state.status === 'expired' || wasPending ? 'expired' : 'unavailable')
+        }
       }
     } catch (caught) {
       if (current === version) error.value = caught instanceof Error ? caught.message : message(name, 'unavailable')
@@ -136,99 +200,62 @@ export function useVideoCliAccount(provider: Ref<VideoCliProvider | undefined>, 
     }
   }
 
-  function waitForAuthorization(name: 'libtv', current: number, expiresAt: number) {
-    clearTimeout(pollTimer)
-    pollTimer = setTimeout(async () => {
-      if (current !== version || !pending.value) return
-      if (busy.value) {
-        if (Date.now() < expiresAt) waitForAuthorization(name, current, expiresAt)
-        else {
-          pending.value = false
-          verificationUrl.value = ''
-          error.value = message(name, 'expired')
-        }
-        return
-      }
-      busy.value = true
-      try {
-        const state = await api.get<AccountState>(`/${name}/auth/status`)
-        if (current !== version || !pending.value) return
-        remember(state)
-        if (isPending(state) && Date.now() < expiresAt) {
-          if (state.authenticated || state.canvas_preparing) verificationUrl.value = ''
-          waitForAuthorization(name, current, expiresAt)
-        } else if (!isPending(state) && !authorizationFailed(state) && isAuthenticated(name, state)) {
-          account.value!.authenticated = true
-          pending.value = false
-          verificationUrl.value = ''
-          busy.value = false
-          await refresh()
-        } else {
-          pending.value = false
-          verificationUrl.value = ''
-          error.value = state.message || message(name, 'expired')
-        }
-      } catch (caught) {
-        if (current !== version || !pending.value) return
-        pending.value = false
-        verificationUrl.value = ''
-        error.value = caught instanceof Error ? caught.message : message(name, 'unavailable')
-      } finally {
-        if (current === version) busy.value = false
-      }
-    }, pollInterval)
-  }
-
-  async function start(prepareCanvas: boolean) {
+  async function start(prepareCanvas: boolean, reservedTab?: Window | null): Promise<boolean> {
     const name = provider.value
-    if (!name || busy.value || (pending.value && (name !== 'jimeng' || !!verificationUrl.value))) return
+    if (!name || busy.value) {
+      reservedTab?.close()
+      return false
+    }
     const allowed = prepareCanvas && name === 'libtv'
       ? account.value?.can_prepare_canvas ?? account.value?.can_authorize
       : account.value?.can_authorize
-    if (allowed === false) return
+    if (prepareCanvas && allowed === false) {
+      reservedTab?.close()
+      error.value = account.value?.message || message(name, 'authorizationUnavailable')
+      return false
+    }
     const current = version
-    clearTimeout(pollTimer)
     busy.value = true
     error.value = ''
-    if (name === 'libtv' && !prepareCanvas) {
-      // Open from the click gesture so a slow response still works with popup blocking enabled.
-      try {
-        openingTab = window.open('about:blank', '_blank')
-        if (openingTab) openingTab.opener = null
-      } catch { closeOpeningTab() }
+    assistantDownload.value = ''
+    if (!prepareCanvas) {
+      // 新增账号在第一次请求前已预开窗口，直接复用，避免异步请求后被拦截。
+      openingTab = reservedTab === undefined ? openAuthorizationTab() : reservedTab
     }
     try {
-      const state = await api.post<AccountState>(`/${name}/auth/start`, {})
-      if (current !== version) return
+      const state = await api.post<AccountState>(accountPath(name, 'auth/start'), {})
+      if (current !== version) return false
       remember(state)
       if (authorizationFailed(state)) throw new Error(state.message || message(name, state.status === 'expired' ? 'expired' : 'unavailable'))
       if (!isPending(state) && isAuthenticated(name, state)) {
         closeOpeningTab()
         pending.value = false
         verificationUrl.value = ''
-        if (name === 'libtv') {
-          busy.value = false
-          await refresh()
-        } else account.value!.authenticated = true
-        return
+        busy.value = false
+        await refresh()
+        return !error.value
       }
       const link = verifiedUrl(name, state.verification_url)
-      if (!link && !(name === 'libtv' && (state.authenticated || state.canvas_preparing) && isPending(state))) {
+      const helper = name === 'libtv' && state.login_method === 'local_helper'
+        ? verifiedAssistantUrl(state.assistant_download_url) : undefined
+      if (!link && !helper && !(name === 'libtv' && (state.authenticated || state.canvas_preparing) && isPending(state))) {
         throw new Error(state.message || message(name, 'invalidAuthorizationUrl'))
       }
       verificationUrl.value = link || ''
+      assistantDownload.value = helper || ''
       pending.value = true
       if (openingTab && link) {
         try { openingTab.location.replace(link) } catch { closeOpeningTab() }
         openingTab = null
       } else closeOpeningTab()
-      if (name === 'libtv') waitForAuthorization(name, current, expiresAt(state))
+      return true
     } catch (caught) {
-      if (current !== version) return
+      if (current !== version) return false
       closeOpeningTab()
       pending.value = false
       verificationUrl.value = ''
       error.value = caught instanceof Error ? caught.message : message(name, 'unavailable')
+      return false
     } finally {
       if (current === version) busy.value = false
     }
@@ -238,12 +265,11 @@ export function useVideoCliAccount(provider: Ref<VideoCliProvider | undefined>, 
     const name = provider.value
     if (!name || busy.value || phoneBusy.value || !canDisconnect.value) return false
     const current = version
-    clearTimeout(pollTimer)
     busy.value = true
     disconnecting.value = true
     error.value = ''
     try {
-      const state = await api.post<AccountState>(`/${name}/auth/disconnect`, {})
+      const state = await api.post<AccountState>(accountPath(name, 'auth/disconnect'), {})
       if (current !== version || provider.value !== name) return false
       if (isAuthenticated(name, state) || isPending(state)) throw new Error(message(name, 'disconnectFailed'))
       account.value = state
@@ -255,9 +281,6 @@ export function useVideoCliAccount(provider: Ref<VideoCliProvider | undefined>, 
     } catch (caught) {
       if (current === version && provider.value === name) {
         error.value = caught instanceof Error ? caught.message : message(name, 'disconnectFailed')
-        if (name === 'libtv' && pending.value && account.value) {
-          waitForAuthorization(name, current, expiresAt(account.value))
-        }
       }
       return false
     } finally {
@@ -311,7 +334,7 @@ export function useVideoCliAccount(provider: Ref<VideoCliProvider | undefined>, 
     phoneBusy.value = true
     phoneError.value = ''
     try {
-      const challenge = await libtvPhoneAPI.send(phone)
+      const challenge = await libtvPhoneAPI.send(phone, selectedAccountId.value)
       if (current !== phoneVersion) return
       if (typeof challenge?.challenge_id !== 'string' || !challenge.challenge_id ||
           !Number.isFinite(challenge.expires_at) || challenge.expires_at <= Date.now()) {
@@ -346,7 +369,7 @@ export function useVideoCliAccount(provider: Ref<VideoCliProvider | undefined>, 
     phoneBusy.value = true
     phoneError.value = ''
     try {
-      const state = await libtvPhoneAPI.verify<AccountState>(challenge.challenge_id, code)
+      const state = await libtvPhoneAPI.verify<AccountState>(challenge.challenge_id, code, selectedAccountId.value)
       if (current !== phoneVersion) return
       if (!isPending(state) && !isAuthenticated('libtv', state)) {
         throw new Error(state.message || message('libtv', 'phoneVerifyFailed'))
@@ -355,7 +378,6 @@ export function useVideoCliAccount(provider: Ref<VideoCliProvider | undefined>, 
       closePhone()
       if (isPending(state)) {
         pending.value = true
-        waitForAuthorization('libtv', version, expiresAt(state))
       } else await refresh()
     } catch (caught) {
       if (current !== phoneVersion) return
@@ -367,14 +389,113 @@ export function useVideoCliAccount(provider: Ref<VideoCliProvider | undefined>, 
     }
   }
 
+  function resetCurrent() {
+    version++
+    closeOpeningTab()
+    account.value = null
+    pending.value = false
+    verificationUrl.value = ''
+    assistantDownload.value = ''
+    error.value = ''
+    closePhone()
+  }
+
+  async function changeSavedAccount(action: (name: VideoCliProvider) => Promise<string | undefined>) {
+    const name = provider.value
+    if (!name || busy.value || phoneBusy.value) return false
+    resetCurrent()
+    const current = version
+    busy.value = true
+    try {
+      const selected = await action(name)
+      if (current !== version) return false
+      if (selected !== undefined) selectedAccountId.value = selected
+      busy.value = false
+      await refresh()
+      // 账号操作已在服务端完成，下一账号的登录状态读取失败不代表操作失败。
+      return true
+    } catch (caught) {
+      if (current === version) {
+        error.value = caught instanceof Error ? caught.message : '账号操作失败，请重试。'
+        // Keep the current slot available even if activation/deletion was rejected.
+        try {
+          const state = await api.get<AccountState>(accountPath(name, 'account'))
+          if (current === version) account.value = state
+        } catch { /* Preserve the operation error. */ }
+      }
+      return false
+    } finally {
+      if (current === version) busy.value = false
+    }
+  }
+
+  function selectAccount(id: string) {
+    if (!accounts.value.some(entry => entry.id === id)) return Promise.resolve(false)
+    return changeSavedAccount(async name => {
+      await api.post(`/${name}/accounts/${encodeURIComponent(id)}/activate`, {})
+      return id
+    })
+  }
+
+  async function addAccount(): Promise<boolean> {
+    const providerName = provider.value
+    if (!providerName || busy.value || phoneBusy.value) return false
+    resetCurrent()
+    const current = version
+    busy.value = true
+    // 保留点击手势，平台授权地址返回后无需用户再次点击。
+    openingTab = openAuthorizationTab()
+    try {
+      const created = await api.post<VideoCliSavedAccount>(`/${providerName}/accounts`, {})
+      if (current !== version) return false
+      if (!created.id) throw new Error('未能创建账号，请重试。')
+      accounts.value = [...accounts.value, created]
+      selectedAccountId.value = created.id
+      await api.post(`/${providerName}/accounts/${encodeURIComponent(created.id)}/activate`, {})
+      if (current !== version) return false
+      activeAccountId.value = created.id
+      busy.value = false
+      return await start(false, openingTab)
+    } catch (caught) {
+      if (current !== version) return false
+      closeOpeningTab()
+      error.value = caught instanceof Error ? caught.message : '账号授权未能开始，请重试。'
+      return false
+    } finally {
+      if (current === version) busy.value = false
+    }
+  }
+
+  function renameAccount(name: string) {
+    const label = name.trim()
+    const id = selectedAccountId.value
+    if (!label || !id) return Promise.resolve(false)
+    return changeSavedAccount(async providerName => {
+      await api.put(`/${providerName}/accounts/${encodeURIComponent(id)}`, { name: label })
+      return id
+    })
+  }
+
+  function removeAccount() {
+    const id = selectedAccountId.value
+    if (!id) return Promise.resolve(false)
+    return changeSavedAccount(async name => {
+      await api.del(`/${name}/accounts/${encodeURIComponent(id)}`)
+      accounts.value = accounts.value.filter(entry => entry.id !== id)
+      const next = accounts.value[0]?.id || ''
+      if (activeAccountId.value === id) activeAccountId.value = next
+      return next
+    })
+  }
+
   watch(provider, (name, _previous, onCleanup) => {
     if (!name) return
     void refresh()
     onCleanup(() => {
-      version++
-      clearTimeout(pollTimer)
-      closeOpeningTab()
-      account.value = null
+      resetCurrent()
+      accounts.value = []
+      selectedAccountId.value = ''
+      activeAccountId.value = ''
       busy.value = false
       disconnecting.value = false
       pending.value = false
@@ -387,6 +508,7 @@ export function useVideoCliAccount(provider: Ref<VideoCliProvider | undefined>, 
   const phone = { open: phoneOpen, number: phoneNumber, code: phoneCode, challenge: phoneChallenge, expired: phoneExpired,
     busy: phoneBusy, error: phoneError, masked: maskedPhone, start: openPhone, close: closePhone, change: changePhone,
     send: sendPhone, verify: verifyPhone }
-  return { account, busy, pending, error, verificationUrl, phone, refresh, canDisconnect, disconnecting, disconnect,
+  return { account, accounts, selectedAccountId, activeAccountId, selectAccount, addAccount, renameAccount, removeAccount,
+    busy, pending, error, verificationUrl, assistantDownloadUrl, phone, refresh, canDisconnect, disconnecting, disconnect,
     authorize: () => start(false), prepare: () => start(true) }
 }

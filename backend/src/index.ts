@@ -27,7 +27,7 @@ import apiCallLogs from './routes/apiCallLogs.js'
 import localRuntime from './routes/localRuntime.js'
 import scriptVideo from './routes/script-video.js'
 import jimeng from './routes/jimeng.js'
-import libtv from './routes/libtv.js'
+import libtv, { libtvCallbackRoutes } from './routes/libtv.js'
 import siteSession, { requireLocalSiteSession } from './routes/site-session.js'
 import { requestLogger, errorHandler } from './middleware/logger.js'
 import { resumeInterruptedTasks } from './services/generation.js'
@@ -64,6 +64,7 @@ app.get('/api/v1/health', (c) => c.json({
 const api = new Hono()
 api.route('/site-session', siteSession)
 api.route(SIGNED_REFERENCE_MEDIA_PATH, signedReferenceMediaRoutes)
+api.route('/libtv', libtvCallbackRoutes)
 api.use('*', requireLocalSiteSession)
 api.route('/dramas', dramas)
 api.route('/episodes', episodes)

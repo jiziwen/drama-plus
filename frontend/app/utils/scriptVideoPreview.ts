@@ -8,11 +8,13 @@ import type { ScriptVideoReferenceSettings } from '../../../backend/src/services
 import type { ScriptVideoVersion } from '../../../backend/src/services/script-video-versions'
 export { listScriptVideoVersions, selectScriptVideoPlayback as scriptVideoCardPlayback } from '../../../backend/src/services/script-video-versions'
 export type { ScriptVideoVersion } from '../../../backend/src/services/script-video-versions'
+export { hasScriptVideoStoryboard, scriptVideoEpisodeProgress } from '../../../backend/src/services/script-video-episode-progress'
+export type { ScriptVideoEpisodeProgress } from '../../../backend/src/services/script-video-episode-progress'
 
 export type PreviewAsset = {
   id: string
   name: string
-  kind: 'character' | 'scene' | 'prop' | 'creature'
+  kind: 'character' | 'scene' | 'prop' | 'creature' | 'audio'
   image: string
   sourcePath?: string
   originalName?: string
@@ -102,26 +104,6 @@ export function scriptVideoClipFilename(episodeNumber = 1, segmentNumber = 1) {
   return `第${chineseEpisode}集-${String(segmentNumber).padStart(2, '0')}.mp4`
 }
 
-type EpisodeStoryboard = {
-  cards: readonly Pick<PreviewCard, 'shots' | 'prompt' | 'status' | 'videoUrl' | 'manuallyAdded'>[]
-  production?: PreviewProduction
-}
-
-export function hasScriptVideoStoryboard({ cards, production }: EpisodeStoryboard) {
-  return Boolean(cards.length && (production || cards.every(card => card.manuallyAdded || card.shots?.length && card.prompt?.trim())))
-}
-
-export type ScriptVideoEpisodeProgress = '制作中-大纲' | '制作中-视频制作' | '已完成'
-
-export function scriptVideoEpisodeProgress(
-  episode: EpisodeStoryboard & { confirmed: boolean; outlineConfirmed: boolean },
-): ScriptVideoEpisodeProgress | undefined {
-  const { cards } = episode
-  if (!episode.confirmed || !cards.length) return
-  if (!episode.outlineConfirmed || !hasScriptVideoStoryboard(episode)) return '制作中-大纲'
-  return cards.every(card => card.status === 'ready' && card.videoUrl?.trim()) ? '已完成' : '制作中-视频制作'
-}
-
 export function scriptVideoTimecode(seconds: number) {
   const ticks = Math.round(seconds * 100)
   const minutes = Math.floor(ticks / 6000)
@@ -166,7 +148,7 @@ export function splitScriptVideoOutlineSummary(summary: string) {
 function cardAssets(card: PreviewCard, assets: PreviewAsset[]) {
   return card.assetIds
     .map((id) => assets.find((asset) => asset.id === id))
-    .filter((asset): asset is PreviewAsset => Boolean(asset?.name))
+    .filter((asset): asset is PreviewAsset => Boolean(asset?.name && asset.kind !== 'audio'))
 }
 
 export function buildCardPrompt(
@@ -276,7 +258,7 @@ export function rebindCardAssets(
   })
   let last = 0, prompt = ''
   for (const hit of previous.mentions) {
-    if (!hit.explicit || hit.usage === 'context' || !excluded.has(hit.id)) continue
+    if (!hit.explicit || hit.usage === 'context' && hit.literal || !excluded.has(hit.id)) continue
     prompt += body.slice(last, hit.start) + body.slice(hit.start + 1, hit.end)
     last = hit.end
   }

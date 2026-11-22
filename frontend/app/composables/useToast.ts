@@ -41,6 +41,9 @@ export function mapError(err: unknown, opts?: { fallback?: string }): string {
   const msg = messageOf(err).trim()
   if (!msg) return opts?.fallback ? t(opts.fallback) : t('errors.unknown')
 
+  // These providers already sanitize their failure details on the server. Keep the actionable reason.
+  if (/^(?:LibTV|即梦)(?:\s|[：:])/.test(msg)) return msg
+
   if (/ComfyUI SaveImage.*(?:WinError 267|目录名称无效)/s.test(msg)) return 'ComfyUI 保存图片失败：输出目录名称无效，请检查工作流保存路径'
   if (NETWORK_RE.test(msg)) return t('errors.network')
   if (err instanceof SyntaxError || NONJSON_RE.test(msg)) return t('errors.server')

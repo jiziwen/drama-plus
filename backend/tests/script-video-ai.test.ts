@@ -390,10 +390,10 @@ test('single episode request marks camera, action, costume and OS speaker withou
     assert.match(request.instructions, /原文确有换场时，写清切点或入场动作/)
     assert.match(request.instructions, /资产全名紧接“（唯一空间）”/)
     assert.match(request.instructions, /提交前逐镜对照剧本/)
-    assert.match(request.instructions, /标为“角色（内心 OS）”，原句逐字保留/u)
-    assert.match(request.instructions, /仅在这句心声期间闭口、嘴唇不动、不对口型/u)
+    assert.match(request.instructions, /统一写为“@角色素材全名【原有简短表演提示】\(OS\) ：“原句””/u)
+    assert.match(request.instructions, /不追加闭口、嘴唇不动、不对口型等解释/u)
     assert.match(request.instructions, /相似人物在场时.*留在原位静立/u)
-    assert.match(request.instructions, /现场对白接心声.*从现场开口切到心声画面的剪点/u)
+    assert.match(request.instructions, /不因OS另改机位或动作/u)
     return { production, cards: [{
       ...card, ...approved, characters: '顾凌天_龙袍', opening: '顾凌天站在院中。',
       scene: '旧院 门-清晨', independentGeneration: '顾凌天看着毒酒碗。',
@@ -405,7 +405,7 @@ test('single episode request marks camera, action, costume and OS speaker withou
   assert.deepEqual(new Set(draft.assetIds), new Set(['robe', 'yuan', 'bowl']))
   assert.match(draft.prompt, /近景／@顾凌天_龙袍面部/u)
   assert.match(draft.prompt, /@顾凌天_龙袍抬手托住@毒酒碗。/u)
-  assert.match(draft.prompt, /@顾凌天_龙袍【低沉】（内心 OS，角色闭口，嘴唇不动，不对口型）：当心毒酒碗。/u)
+  assert.match(draft.prompt, /@顾凌天_龙袍【低沉】\(OS\) ：当心毒酒碗。/u)
   assert.equal(draft.shots[0].dialogue, dialogue)
 })
 
@@ -1876,8 +1876,8 @@ test('episode appearance notes preserve live action and the miniature in one sho
   assert.equal(result.attempts, 1)
   assert.deepEqual(result.cards[0].assetIds, ids)
   assert.match(result.cards[0].prompt, /@咖妃_3DQ版跳到@咖妃右肩上。/)
-  assert.match(result.cards[0].prompt, /@咖妃（内心 OS，角色闭口[^：]+：“本宫得先下手。/)
-  assert.match(result.cards[0].prompt, /@咖妃_3DQ版（内心 OS，角色闭口/)
+  assert.match(result.cards[0].prompt, /@咖妃\(OS\) ：“本宫得先下手。/)
+  assert.match(result.cards[0].prompt, /@咖妃_3DQ版\(OS\)/)
 })
 
 test('a failed episode uses at most three automatic repairs, including across checkpoint resume', async () => {

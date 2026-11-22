@@ -19,7 +19,7 @@ const component: any = {}
 const menu = { name: 'MentionTextarea' }
 const modules: Record<string, unknown> = {
   vue: { ...vue, useId: () => 'editor-validation', resolveComponent: (name: string) => name, withDirectives: (node: unknown) => node },
-  'lucide-vue-next': { Eye: 'Eye', Sparkles: 'Sparkles', Upload: 'Upload', X: 'X' },
+  'lucide-vue-next': { Eye: 'Eye', Headphones: 'Headphones', Sparkles: 'Sparkles', Upload: 'Upload', X: 'X' },
   './MentionTextarea.vue': { default: menu },
   '~/utils/scriptVideoPreview': preview,
   '~/utils/scriptVideoPromptVoiceView': promptVoiceView,
@@ -40,7 +40,7 @@ function setup(ids: string[], { tab, openPrompt = true, completedTaskVideoUrl, a
   tab?: EditorTab; openPrompt?: boolean; completedTaskVideoUrl?: string; assetList?: preview.PreviewAsset[]
 } = {}) {
   const card: preview.PreviewCard = {id:'c', title:'片段', summary:'', duration:3, assetIds:ids, shots:[], prompt:'@侍卫_夜行 入场。', status:'draft', version:1, combat:false}
-  const props = vue.reactive({card, assets: assetList, outputMode:'internal', tab, completedTaskVideoUrl})
+  const props = vue.reactive({card, assets: assetList, tab, completedTaskVideoUrl})
   const tabChanges: EditorTab[] = []
   const draw = component.default.setup(props, {expose() {}, emit(event: string, next: preview.PreviewCard | EditorTab) {
     if (event === 'update' && typeof next !== 'string') props.card = next
@@ -88,7 +88,7 @@ test('编辑正式镜头后配图随画面更新，保留候选和未修改的�
     shots: [{ id: 'shot', duration: 3, camera: '中景', action: '@侍卫 入场。', dialogue: '@侍卫：“走吧。”', visualAssetIds: ['guard'], speakerAssetIds: ['guard'] }],
   })
   const status = (name: string) => flatten(editor.nodes().find(node => node.props?.['aria-label'] === `查看参考图 ${name}`)).find(node => node.type === 'small')?.children
-  assert.match(status('侍卫_夜行'), /仅文本提及/)
+  assert.match(status('侍卫_夜行'), /配图/)
   assert.match(status('侍卫'), /配图/)
 
   editor.tabButtons().find(n => n.children === '正式分镜').props.onClick()
@@ -103,8 +103,8 @@ test('编辑正式镜头后配图随画面更新，保留候选和未修改的�
   assert.equal(editor.props.card.shots[0]!.visualAssetIds, undefined)
   assert.deepEqual(Array.from(editor.props.card.shots[0]!.speakerAssetIds ?? []), ['guard'])
   assert.deepEqual(Array.from(editor.props.card.assetIds), ['night', 'guard', 'other'])
-  assert.match(status('侍卫_夜行'), /仅文本提及/)
-  assert.doesNotMatch(status('侍卫'), /配图/)
+  assert.match(status('侍卫_夜行'), /配图/)
+  assert.match(status('侍卫'), /配图/)
   assert.match(status('第三人'), /配图/)
 })
 
@@ -124,7 +124,7 @@ test('直接修改视频提示词时让引用按新提示词重新判定', async
   assert.deepEqual(Array.from(editor.props.card.assetIds), ['night', 'guard', 'other'])
 })
 
-test('添加复述和等待对象时保留逐镜绑定，手工改选只更新本镜配图', async () => {
+test('添加复述和等待对象时保留逐镜绑定，正文人物仍作为模型参考', async () => {
   const editor = setup(['guard', 'night'])
   const prompt = [
     '人物：侍卫_夜行在话中被提及。',
@@ -152,16 +152,16 @@ test('添加复述和等待对象时保留逐镜绑定，手工改选只更新�
   await editPrompt(textarea(), actionEdit)
   textarea().props.onCommit(actionEdit)
   assert.deepEqual(Array.from(editor.props.card.shots[0]!.visualAssetIds ?? []), ['guard'])
-  assert.deepEqual(new Set(validation.getPreviewMaterialUse(editor.props.card, assets, {}).imageIds), new Set(['guard', 'night']))
-  assert.match(editor.props.card.prompt, /继续等待第三人。/u)
-  assert.doesNotMatch(editor.props.card.prompt, /@第三人/u)
+  assert.deepEqual(new Set(validation.getPreviewMaterialUse(editor.props.card, assets, {}).imageIds), new Set(['guard', 'night', 'other']))
+  assert.match(editor.props.card.prompt, /继续等待@第三人。/u)
+  assert.match(editor.props.card.prompt, /“侍卫_夜行已经离开了。”/u)
 
   const manualEdit = actionEdit.replace('@侍卫在门边', '@第三人在门边')
   await editPrompt(textarea(), manualEdit)
   assert.deepEqual(Array.from(editor.props.card.shots[0]!.speakerAssetIds ?? []), ['guard'])
   assert.deepEqual(Array.from(editor.props.card.shots[1]!.visualAssetIds ?? []), ['night'])
   const used = validation.getPreviewMaterialUse(editor.props.card, assets, {})
-  assert.deepEqual(new Set(used.imageIds), new Set(['other', 'night']))
+  assert.deepEqual(new Set(used.imageIds), new Set(['other', 'night', 'guard']))
   assert.deepEqual(used.speakerIds, ['guard'])
 })
 
@@ -312,7 +312,7 @@ test('视频提示词在对白和心声处显示音频引用，保存时保留�
   const textarea = editor.nodes().find(n => n.type === menu)
   const displayed = textarea.props['model-value'] as string
   assert.match(displayed, /^画面与动作：@侍卫 和 @第三人 站在门边。$/mu)
-  assert.match(displayed, /@侍卫（音色参考@音频1）：“还没走。”；@侍卫_夜行（音色参考@音频2）（OS）：“我听见了。”/u)
+  assert.match(displayed, /@侍卫 @音频1：“还没走。”；@侍卫_夜行 @音频2（OS）：“我听见了。”/u)
   const ranges = textarea.props['resolve-preview-ranges'](displayed) as { id: string; start: number; end: number }[]
   assert.deepEqual(Array.from(ranges)
     .filter(hit => hit.id.startsWith('voice-'))
@@ -323,6 +323,128 @@ test('视频提示词在对白和心声处显示音频引用，保存时保留�
   textarea.props.onCommit(edited)
   assert.equal(editor.props.card.prompt, original.replace('还没走。', '快走吧。'))
   assert.match(editor.nodes().find(n => n.type === menu).props['model-value'], /@音频1.*快走吧。/u)
+})
+
+test('服务端规范的短 OS 首次显示音频与正确高亮，中文编辑保存保留原话和表演标记', async () => {
+  const assetList = [assets[1]!, assets[2]!].map(asset => ({
+    ...asset, voiceAudio: { url: '/static/uploads/' + asset.id + '.wav', name: asset.name + '.wav' },
+  }))
+  const editor = setup(['night', 'other'], { assetList })
+  const original = [
+    '镜头 01（0–3秒）',
+    '画面与动作：@侍卫_夜行 和 @第三人 站在门边。',
+    '对白／音效：@侍卫_夜行【克制】(OS) ：“第三人，先别走。”；@第三人【低声】：“我等你。”',
+  ].join('\n')
+  editor.props.card.prompt = original
+  const field = () => editor.nodes().find(n => n.type === menu)
+  const displayed = field().props['model-value'] as string
+  assert.match(displayed, /@侍卫_夜行 @音频1【克制】\(OS\) ：“第三人，先别走。”/u)
+  assert.match(displayed, /@第三人 @音频2【低声】：“我等你。”/u)
+  assert.doesNotMatch(displayed, /内心 OS|角色闭口|嘴唇不动|不对口型/u)
+  const ranges = field().props['resolve-preview-ranges'](displayed) as { start: number; end: number }[]
+  assert.deepEqual(Array.from(ranges).map(hit => displayed.slice(hit.start, hit.end)),
+    ['@侍卫_夜行', '@第三人', '@侍卫_夜行', '@音频1', '第三人', '@第三人', '@音频2'])
+
+  field().props.onFocus()
+  field().props.onCompositionstart()
+  const edited = displayed.replace('先别走。', '先等等。')
+  const composing = editPrompt(field(), edited)
+  field().props.onCompositionend()
+  await composing
+  field().props.onCommit(edited, true)
+  assert.equal(editor.props.card.prompt, original.replace('先别走。', '先等等。'))
+  assert.match(field().props['model-value'], /@音频1【克制】\(OS\) ：“第三人，先等等。”/u)
+  assert.match(field().props['model-value'], /@音频2【低声】：“我等你。”/u)
+  assert.doesNotMatch(editor.props.card.prompt, /@音频\d+/u)
+})
+
+test('旧提示词首次打开即显示正式人物引用，预览位置和对白原话保持准确', () => {
+  const editor = setup(['night', 'other'])
+  const original = [
+    '镜头 01（0–3秒）',
+    '画面与动作：侍卫_夜行带第三人进门。',
+    '对白／音效：侍卫_夜行：“第三人，跟上。”',
+  ].join('\n')
+  editor.props.card.prompt = original
+  const textarea = editor.nodes().find(n => n.type === menu)
+  const displayed = textarea.props['model-value'] as string
+  assert.match(displayed, /画面与动作：@侍卫_夜行带@第三人进门。/u)
+  assert.match(displayed, /对白／音效：@侍卫_夜行：“第三人，跟上。”/u)
+  const ranges = textarea.props['resolve-preview-ranges'](displayed) as { id: string; start: number; end: number }[]
+  assert.deepEqual(Array.from(ranges).map(hit => displayed.slice(hit.start, hit.end)),
+    ['@侍卫_夜行', '@第三人', '@侍卫_夜行', '第三人'])
+  textarea.props.onCommit(displayed, true)
+  assert.equal(editor.props.card.prompt, displayed)
+})
+
+test('输入人物名自动补正式引用并映射光标，下一次编辑不会覆盖邻接文字', async () => {
+  const editor = setup(['night'], { assetList: [{ ...assets[1]!, originalName: '侍卫' }] })
+  editor.props.card.prompt = '画面与动作：门开。'
+  const field = () => editor.nodes().find(n => n.type === menu)
+  field().props.onFocus()
+  const input = '画面与动作：侍卫推门。'
+  const caret = '画面与动作：侍卫'.length
+  const synced: unknown[][] = []
+  field().ref.r.value = { syncDisplay: (...args: unknown[]) => synced.push(args) }
+  await field().props['onUpdate:modelValue'](input, { value: input, selectionStart: caret, selectionEnd: caret })
+  const displayed = field().props['model-value'] as string
+  assert.equal(displayed, '画面与动作：@侍卫_夜行推门。')
+  assert.deepEqual(synced.at(-1)?.slice(0, 3), [displayed, caret + 4, caret + 4])
+  const edited = displayed.replace('推门', '轻轻推门')
+  await editPrompt(field(), edited)
+  field().props.onCommit(edited, true)
+  assert.equal(editor.props.card.prompt, edited)
+})
+
+test('回顾和独立生成中的人物写入正式引用与素材绑定，对白仅保留原话', async () => {
+  const editor = setup(['night'])
+  const original = [
+    '前镜回顾：侍卫_夜行在门前站定。',
+    '独立生成：第三人留在侍卫_夜行身侧。',
+    '镜头 01（0–3秒）',
+    '画面与动作：侍卫_夜行推门。',
+    '对白／音效：侍卫_夜行：“第三人，跟上。”',
+  ].join('\n')
+  editor.props.card.prompt = original
+  const field = () => editor.nodes().find(n => n.type === menu)
+  const displayed = field().props['model-value'] as string
+  assert.match(displayed, /前镜回顾：@侍卫_夜行在门前站定。/u)
+  assert.match(displayed, /独立生成：@第三人留在@侍卫_夜行身侧。/u)
+  assert.match(displayed, /对白／音效：@侍卫_夜行：“第三人，跟上。”/u)
+  const edited = displayed.replace('在门前站定', '仍在门前站定')
+  await editPrompt(field(), edited)
+  assert.deepEqual(new Set(editor.props.card.assetIds), new Set(['night', 'other']))
+  field().props.onCommit(edited, true)
+  assert.equal(editor.props.card.prompt, edited)
+  const ranges = field().props['resolve-preview-ranges'](edited) as { start: number; end: number }[]
+  assert.deepEqual(Array.from(ranges).map(hit => edited.slice(hit.start, hit.end)),
+    ['@侍卫_夜行', '@第三人', '@侍卫_夜行', '@侍卫_夜行', '@侍卫_夜行', '第三人'])
+  const delivery = buildScriptVideoDelivery(editor.props.card, assets)
+  assert.deepEqual(new Set(delivery.images.map(asset => asset.id)), new Set(['night', 'other']))
+})
+
+test('上传的项目音频是可选择的 @ 素材，填写后可预览并成为最终附件', async () => {
+  const rain: preview.PreviewAsset = { id: 'rain', name: '素材-音频1', kind: 'audio', image: '',
+    voiceAudio: { name: '音频1.wav', url: '/static/uploads/rain.wav' } }
+  const editor = setup([], { assetList: [rain] })
+  const field = () => editor.nodes().find(n => n.type === menu)
+  const option = field().props.options.find((item: { id: string }) => item.id === rain.id)
+  assert.equal(option.kind, 'audio')
+  assert.equal(option.previewOnly, undefined)
+  assert.equal(option.audioUrl, rain.voiceAudio!.url)
+
+  const text = `对白／音效：〈远处渐响 @${option.value}〉`
+  await editPrompt(field(), text)
+  field().props.onCommit(text, true)
+  assert.equal(editor.props.card.prompt, text)
+  assert.deepEqual(Array.from(editor.props.card.assetIds), [rain.id])
+  const range = field().props['resolve-preview-ranges'](text).find((item: { id: string }) => item.id === rain.id)
+  assert.equal(text.slice(range.start, range.end), `@${rain.name}`)
+
+  const delivery = buildScriptVideoDelivery(editor.props.card, [rain])
+  assert.deepEqual(delivery.images, [])
+  assert.equal(delivery.voices[0]?.asset.voiceAudio?.url, rain.voiceAudio!.url)
+  assert.match(delivery.prompt, /远处渐响 @音频1/u)
 })
 
 test('视频提示词在同一行紧接的两段对白各引用一次音频', () => {
@@ -338,7 +460,7 @@ test('视频提示词在同一行紧接的两段对白各引用一次音频', ()
   editor.props.card.prompt = original
   const textarea = editor.nodes().find(n => n.type === menu)
   const displayed = textarea.props['model-value'] as string
-  assert.match(displayed, /@侍卫（音色参考@音频1）【吩咐】：“带第三人进来。”第三人（音色参考@音频2）【领命】：“是！”/u)
+  assert.match(displayed, /@侍卫 @音频1【吩咐】：“带第三人进来。”@第三人 @音频2【领命】：“是！”/u)
   const ranges = textarea.props['resolve-preview-ranges'](displayed) as { id: string; start: number; end: number }[]
   assert.deepEqual(Array.from(ranges)
     .filter(hit => hit.id.startsWith('voice-'))
@@ -362,6 +484,61 @@ test('自动保存整理的提示词只在结束编辑后回填，编辑中的�
   editorField().props.onCommit(typed, true)
   assert.equal(editorField().props['model-value'], stored)
   assert.equal(editor.props.card.prompt, stored)
+})
+
+test('没有待补引用的旧提示词失焦后保留原始换行', () => {
+  const editor = setup(['guard'])
+  const original = '镜头 01（0–3秒）\r\n画面与动作：@侍卫 推门。\r\n对白／音效：无对白。'
+  editor.props.card.prompt = original
+  const field = editor.nodes().find(n => n.type === menu)
+  field.props.onFocus()
+  field.props.onCommit(field.props['model-value'], true)
+  assert.equal(editor.props.card.prompt, original)
+})
+
+test('编辑中的提示词在角色声音替换后立即试听新音频，保留原稿', async () => {
+  const lead = { ...assets[0]!, voiceAudio: { url: '/static/uploads/old.wav', name: '原声.wav' } }
+  const editor = setup(['guard'], { assetList: [lead] })
+  const prompt = '镜头 01（0–3秒）\n画面与动作：@侍卫 站在门边。\n对白／音效：@侍卫：“走吧。”'
+  editor.props.card.prompt = prompt
+  const field = () => editor.nodes().find(n => n.type === menu)
+  const audioUrl = () => field().props.options.find((option: { kind: string }) => option.kind === 'audio')?.audioUrl
+  field().props.onFocus()
+  const displayed = field().props['model-value']
+  assert.equal(audioUrl(), '/static/uploads/old.wav')
+
+  editor.props.assets = [{ ...lead, voiceAudio: { url: '/static/uploads/new.wav', name: '新声.wav' } }]
+  await vue.nextTick()
+
+  assert.equal(audioUrl(), '/static/uploads/new.wav')
+  assert.equal(field().props['model-value'], displayed)
+  field().props.onCommit(displayed, true)
+  assert.equal(editor.props.card.prompt, prompt)
+})
+
+test('中文组合输入完成后才重算声音编号，且不把旧编号写入提示词', async () => {
+  const [lead, other] = [assets[0]!, assets[2]!].map(asset => ({
+    ...asset, voiceAudio: { url: `/static/uploads/${asset.id}.wav`, name: '参考.wav' },
+  }))
+  const editor = setup(['guard', 'other'], { assetList: [lead!, other!] })
+  const prompt = '画面与动作：@侍卫 和 @第三人 站在门边。\n对白／音效：@侍卫：“走吧。”；@第三人：“好。”'
+  editor.props.card.prompt = prompt
+  const field = () => editor.nodes().find(n => n.type === menu)
+  field().props.onFocus()
+  field().props.onCompositionstart()
+  const displayed = field().props['model-value'] as string
+  assert.match(displayed, /@音频2/u)
+
+  editor.props.assets = [{ ...lead!, voiceAudio: undefined }, other!]
+  await vue.nextTick()
+  assert.equal(field().props['model-value'], displayed)
+
+  const composing = editPrompt(field(), displayed.replace('好。', '明白了。'))
+  field().props.onCompositionend()
+  await composing
+  assert.equal(editor.props.card.prompt, prompt.replace('好。', '明白了。'))
+  assert.doesNotMatch(field().props['model-value'], /@音频2/u)
+  assert.match(field().props['model-value'], /第三人[^\n]*@音频1[^\n]*明白了。/u)
 })
 
 test('无外部状态时默认打开视频提示词，并保留本地切换', () => {

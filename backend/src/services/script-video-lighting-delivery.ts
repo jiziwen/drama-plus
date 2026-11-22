@@ -33,8 +33,9 @@ export function bindScriptVideoLighting(
   const reserved = new Set(manualScriptVideoLightingRanges(ranges, settings).map(range => range.imageUrl).filter(url => !referenceByUrl.has(url)))
   const lightingImages: string[] = [], lightingRanges: ScriptVideoLightingRange[] = [], instructions: string[] = []
   for (const range of ranges) {
+    const wholeClip = shotCount === 0 && range.startShot === 1 && range.endShot === 1 && settings?.lighting?.[1]?.mode === 'manual'
     if (!Number.isInteger(range.startShot) || !Number.isInteger(range.endShot) || range.startShot < 1 ||
-        range.endShot < range.startShot || range.endShot > shotCount || !range.sceneName.trim()) continue
+        range.endShot < range.startShot || (!wholeClip && range.endShot > shotCount) || !range.sceneName.trim()) continue
     const { imageUrl, ...description } = range
     let tag = imageUrl && referenceByUrl.get(imageUrl)
     const manual = imageUrl && reserved.delete(imageUrl)
@@ -45,7 +46,7 @@ export function bindScriptVideoLighting(
     }
     if (!tag && !range.lighting?.trim()) continue
     lightingRanges.push(tag ? range : description)
-    const span = range.startShot === range.endShot ? `镜头${range.startShot}` : `镜头${range.startShot}至${range.endShot}`
+    const span = wholeClip ? '全段' : range.startShot === range.endShot ? `镜头${range.startShot}` : `镜头${range.startShot}至${range.endShot}`
     const atCut = range.transitionIn ? `，从镜头${range.startShot}切入该场的画面起` : ''
     const source = tag ? `用${tag}参考同场人物受光、阴影、曝光与色调。机位、构图、人物和动作按本镜分镜。` : ''
     instructions.push(`${span}「${range.sceneName}」${atCut}：${[range.lighting?.trim(), source].filter(Boolean).join(' ')}`)

@@ -136,10 +136,8 @@ const promptParts = computed(() => {
   const prompt = promptBody.value
   const byTag = new Map(numberedReferences.value.map(reference => [reference.tag, reference]))
   if (!byTag.size) return [{ text: prompt, reference: undefined }]
-  const tags = [...byTag.values()].sort((a, b) => b.tag.length - a.tag.length).map(({ tag, kind }) => {
-    const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    return kind === 'audio' && !tag.startsWith('@') ? `(?<=音色参考)${escaped}` : escaped
-  })
+  const tags = [...byTag.keys()].sort((a, b) => b.length - a.length)
+    .map(tag => tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
   const tokens = new RegExp(`(${tags.join('|')})(?!\\d)`, 'g')
   return prompt.split(tokens).filter(Boolean).map(text => ({ text, reference: byTag.get(text) }))
 })

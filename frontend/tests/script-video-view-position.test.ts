@@ -30,9 +30,9 @@ function inTab<T>(storage: ReturnType<typeof memoryStorage>, callback: () => T) 
   }
 }
 
-test('刷新后从同一浏览器标签页恢复项目、分集、片段、输出模式和滚动位置', () => {
+test('刷新后从同一浏览器标签页恢复项目、分集、片段和滚动位置', () => {
   const position: ScriptVideoViewPosition = {
-    projectId: 'seven', episodeId: 'ep54', stage: 'production', cardId: 'card2', tab: 'prompt', outputMode: 'external',
+    projectId: 'seven', episodeId: 'ep54', stage: 'production', cardId: 'card2', tab: 'prompt',
     scroll: { prompt: { top: 215, left: 0 }, segments: { top: 0, left: 176 } },
   }
   const storage = memoryStorage()
@@ -51,7 +51,7 @@ test('无效和损坏的存储回到可用的选择', () => {
   storage.setItem('script-video-view-position', '{invalid')
   assert.equal(inTab(storage, readScriptVideoViewPosition), undefined)
   storage.setItem('script-video-view-position', JSON.stringify({
-    projectId: 'seven', episodeId: 'ep54', stage: 'video', tab: 'invalid', outputMode: 'pdf', cardId: 123,
+    projectId: 'seven', episodeId: 'ep54', stage: 'video', tab: 'invalid', outputMode: 'external', cardId: 123,
   }))
   assert.deepEqual(inTab(storage, readScriptVideoViewPosition), { projectId: 'seven', episodeId: 'ep54' })
   storage.setItem('script-video-view-position', JSON.stringify({ episodeId: 'ep54', stage: 'production' }))
@@ -122,7 +122,7 @@ test('进入分集后按服务端最新片段恢复，已移除的片段保留�
       episodeNavigationBusy: { value: false }, selectingEpisode: { value: false },
       episodeAccessNotice: { value: '' }, selectedEpisodeId: { value: '' }, selectedCardId: { value: '' },
       cards: { value: [{ id: 'removed' }] }, hasStoryboard: { value: true }, restoredStage: { value: undefined },
-      editorTab: { value: 'prompt' }, outputMode: { value: 'internal' }, dialog: { value: null },
+      editorTab: { value: 'prompt' }, dialog: { value: null },
       episodeLock: { owns: () => false, enter: () => {}, leave: () => {} }, persistBeforeNavigation: async () => {},
       localProject: () => undefined, sharedLoaded: new Set(), navigator: { onLine: true },
       refreshProject: async () => {
@@ -134,9 +134,9 @@ test('进入分集后按服务端最新片段恢复，已移除的片段保留�
       toast: { error: (error: string) => assert.fail(error) },
     }
     const selectEpisode = runInNewContext(`${controller}\nselectEpisode`, state)
-    await selectEpisode('ep54', { projectId: 'seven', episodeId: 'ep54', cardId, stage: 'production', tab: 'continuity', outputMode: 'external' })
-    return [state.selectedEpisodeId.value, state.restoredStage.value, state.selectedCardId.value, state.editorTab.value, state.outputMode.value]
+    await selectEpisode('ep54', { projectId: 'seven', episodeId: 'ep54', cardId, stage: 'production', tab: 'continuity' })
+    return [state.selectedEpisodeId.value, state.restoredStage.value, state.selectedCardId.value, state.editorTab.value]
   }
-  assert.deepEqual(await open('second'), ['ep54', 'production', 'second', 'continuity', 'external'])
-  assert.deepEqual(await open('removed'), ['ep54', 'production', 'first', 'prompt', 'external'])
+  assert.deepEqual(await open('second'), ['ep54', 'production', 'second', 'continuity'])
+  assert.deepEqual(await open('removed'), ['ep54', 'production', 'first', 'prompt'])
 })

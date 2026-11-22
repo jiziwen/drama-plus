@@ -24,7 +24,7 @@ test('音效后紧接表演提示时，把同一条吴良音频用于附件和�
       const delivery = buildScriptVideoDelivery(clip, characters, model)
       assert.deepEqual(getScriptVideoMaterialUse(clip, characters, model).speakerIds, ['wu'], foley)
       assert.deepEqual(delivery.voices.map(voice => voice.asset.voiceAudio.url), ['/static/uploads/wu.wav'], foley)
-      assert.match(delivery.prompt, /吴良（音色参考@音频1）【傲慢嗤笑／笑着起声，反问短促上挑】/u, foley)
+      assert.match(delivery.prompt, /吴良 @音频1【傲慢嗤笑／笑着起声，反问短促上挑】/u, foley)
     }
   }
 })
@@ -34,7 +34,7 @@ test('忽略音效及台词内部的假署名，保留音效之后实际台词�
   const delivery = buildScriptVideoDelivery(clip, characters, model)
   assert.deepEqual(delivery.voices.map(voice => voice.asset.voiceAudio.url), ['/static/uploads/wu.wav'])
   assert.deepEqual(delivery.missingVoices, [])
-  assert.ok(delivery.prompt.includes('〈远处的录音；小七：“请安静。”〉'))
+  assert.ok(delivery.prompt.includes('〈远处的录音；@图片2小七：“请安静。”〉'))
   assert.ok(delivery.prompt.includes('我念的是〈掌声〉小七：好。'))
   assert.deepEqual(getScriptVideoMaterialUse(card('〈扇响。〉来客【低声】：“谁？”'), characters, model).missingVoices, ['来客'])
   const description = card('音效：收录了几段采样，吴良：衣袍的摩擦声。')
@@ -61,4 +61,28 @@ test('完整引号包住的音效不会吞掉下一轮发言，引号内的分�
     assert.deepEqual(use.speakerIds, ['wu', 'qi'], middle)
     assert.deepEqual(use.missingVoices, [], middle)
   }
+})
+
+test('角色后手选音频仅替换该句声音，其他对白沿用自动音色', () => {
+  const picked = { id: 'sample', name: '新录音', kind: 'audio', image: '',
+    voiceAudio: { name: '新录音.wav', url: '/static/uploads/sample.wav' } }
+  const assets = [...characters, picked]
+  const clip = card('〈折扇响。〉吴良@新录音【紧张】（OS）：“不能说。”吴良：“我知道了。”')
+  clip.assetIds.push(picked.id)
+  const seedance25 = { provider: 'aicost', model: 'seedance2.5-ae-480p' }
+  const delivery = buildScriptVideoDelivery(clip, assets, seedance25)
+  assert.deepEqual(getScriptVideoMaterialUse(clip, assets, seedance25).speakerIds, ['wu'])
+  assert.deepEqual(delivery.voices.map(voice => voice.asset.id), ['wu', 'sample'])
+  assert.match(delivery.prompt, /@图片1吴良 @音频2【紧张】\(OS\) ：“不能说。”/u)
+  assert.match(delivery.prompt, /吴良 @音频1：\{我知道了。\}/u)
+  assert.doesNotMatch(delivery.prompt, /吴良 @音频1[ \t]*@音频2/u)
+
+  const overrideOnly = card('吴良 @新录音【紧张】：“不能说。”')
+  overrideOnly.assetIds.push(picked.id)
+  assert.deepEqual(buildScriptVideoDelivery(overrideOnly, assets, model).voices.map(voice => voice.asset.id), ['sample'])
+
+  const freeform = { ...overrideOnly, shots: [], assetIds: ['wu', 'sample'],
+    prompt: '@吴良 在门边。\n吴良 @新录音：“不能说。”' }
+  const seedance20 = { provider: 'volcengine', model: 'doubao-seedance-2-0-260128' }
+  assert.deepEqual(buildScriptVideoDelivery(freeform, assets, seedance20).voices.map(voice => voice.asset.id), ['sample'])
 })

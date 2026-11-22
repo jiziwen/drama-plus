@@ -14,11 +14,22 @@ test('参考帧后台预处理、按时间替换、移除和恢复在预览、�
   process.env.HUOBAO_DATA_DIR = root
   process.env.STORAGE_PATH = path.join(root, 'static')
   process.env.MYSQL_AUTO_IMPORT = 'false'
-  const { createScriptVideoRoutes } = await import('../src/routes/script-video.js')
   const { ScriptVideoStore } = await import('../src/services/script-video-store.js')
+  const stores = new Set<InstanceType<typeof ScriptVideoStore>>()
+  const getQueue = Object.getOwnPropertyDescriptor(ScriptVideoStore.prototype, 'queue')!.get!
+  t.mock.getter(ScriptVideoStore.prototype, 'queue', function (this: InstanceType<typeof ScriptVideoStore>) {
+    stores.add(this)
+    return getQueue.call(this)
+  })
+  const { createScriptVideoRoutes } = await import('../src/routes/script-video.js')
   const { db } = await import('../src/db/index.js')
   const store = new ScriptVideoStore(path.join(root, 'projects'))
-  t.after(async () => { await store.close(); db.$client.close(); await fs.rm(root, { recursive: true, force: true }) })
+  stores.add(store)
+  t.after(async () => {
+    await Promise.all([...stores].map(item => item.close()))
+    db.$client.close()
+    await fs.rm(root, { recursive: true, force: true })
+  })
   const videos = path.join(root, 'static/videos')
   await fs.mkdir(videos, { recursive: true })
   const ffmpeg = process.env.FFMPEG_BIN || createRequire(import.meta.url)('ffmpeg-static')
@@ -38,6 +49,7 @@ test('参考帧后台预处理、按时间替换、移除和恢复在预览、�
       { ...card('prior'), status: 'ready', videoUrl, videoVersions: [{ url: videoUrl, duration: 2 }],
         ending: '小旗半抬右手扶住门闩。下一段从本段尾帧继续。' },
       { ...card('target'), opening: '同一镜头续接上一段尾帧，小旗半抬右手扶住门闩。' },
+      card('after-gap'),
     ]
     return { documentChanged: true, result: episode.id }
   })
@@ -75,11 +87,40 @@ test('参考帧后台预处理、按时间替换、移除和恢复在预览、�
     return { documentChanged: true, result: null }
   })
   const [auto, first] = await Promise.all([read(framesRoute, {}), read('/cards/prior/reference-frames', {})])
-  assert.deepEqual(first, { lighting: [] })
+  assert.equal(first.tail.state, 'missing')
+  assert.equal(first.tail.videoUrl, undefined)
+  assert.equal(first.lighting[0].state, 'missing')
+  assert.equal(first.lighting[0].videoUrl, undefined)
   assert.equal(auto.tail.state, 'ready')
   assert.equal(auto.lighting[0].state, 'ready')
   assert.equal(auto.tail.videoUrl, videoUrl)
   assert.equal(auto.tail.sourceLabel, '第 1 段')
+  const gapRoute = '/cards/after-gap/reference-frames'
+  async function assertEmptyGap() {
+    const rows = await read(gapRoute, {})
+    for (const row of [rows.tail, ...rows.lighting]) {
+      assert.equal(row.state, 'missing')
+      assert.equal(row.videoUrl, undefined, '第 2 段没有成片，第 3 段无可选来源')
+      assert.equal(row.imageUrl, undefined)
+      assert.equal(row.sourceLabel, undefined)
+    }
+    const final = await read('/final-prompt', { cardId: 'after-gap', cardVersion: 2 })
+    assert.deepEqual(final.images, [])
+    const delivery = await read('/continuations', { cardIds: ['after-gap'] })
+    assert.deepEqual(delivery.continuations, {})
+    assert.ok(delivery.lightingRanges['after-gap'].every((range: { imageUrl?: string }) => !range.imageUrl))
+  }
+  await assertEmptyGap()
+  for (const kind of ['tail', 'lighting']) {
+    const response = await post(gapRoute, { kind, ...(kind === 'lighting' && { startShot: 1 }), seconds: 0.25, expectedVideoUrl: videoUrl })
+    assert.equal(response.status, 409)
+  }
+  await store.mutate(id, record => {
+    const archivedChoice = { mode: 'manual', videoUrl, seconds: 0.25 }
+    record.project.episodes[0].cards[2].referenceFrameSettings = { tail: archivedChoice, lighting: { '1': archivedChoice } }
+    return { documentChanged: true, result: null }
+  })
+  await assertEmptyGap()
   const seek = { kind: 'tail', seconds: 0.25, expectedVideoUrl: videoUrl }
   const tail = (await read(framesRoute, seek)).candidate
   const light = (await read(framesRoute, { ...seek, kind: 'lighting', startShot: 1, seconds: 0.5 })).candidate
@@ -150,4 +191,36 @@ test('参考帧后台预处理、按时间替换、移除和恢复在预览、�
   assert.equal(task?.continuation?.imageUrl, tail.imageUrl)
   assert.equal(task?.lightingRanges?.[0].imageUrl, light.imageUrl)
   assert.equal(finished.cards[1].status, 'ready')
+
+  await store.mutate(id, record => {
+    const target = record.project.episodes[0].cards[1]
+    target.scene = ''
+    target.opening = ''
+    target.manuallyAdded = true
+    delete target.referenceFrameSettings
+    return { documentChanged: true, result: null }
+  })
+  const empty = await read(framesRoute, {})
+  assert.deepEqual([empty.tail.state, empty.lighting[0].state], ['missing', 'missing'])
+  assert.deepEqual([empty.tail.imageUrl, empty.lighting[0].imageUrl], [undefined, undefined])
+  assert.deepEqual([empty.tail.videoUrl, empty.lighting[0].videoUrl], [newerUrl, newerUrl])
+  const unselected = await read('/final-prompt', { cardId: 'target', cardVersion: 2 })
+  assert.deepEqual(unselected.images, [])
+
+  const manualTail = (await read(framesRoute, { ...seek, expectedVideoUrl: newerUrl })).candidate
+  const manualStyle = (await read(framesRoute, { ...seek, expectedVideoUrl: newerUrl, kind: 'lighting', startShot: 1, seconds: 0.5 })).candidate
+  await settings({ tail: { mode: 'manual', videoUrl: newerUrl, seconds: manualTail.seconds },
+    lighting: { '1': { mode: 'manual', videoUrl: newerUrl, seconds: manualStyle.seconds } } })
+  const selected = await read(framesRoute, {})
+  assert.deepEqual([selected.tail.state, selected.lighting[0].state], ['ready', 'ready'])
+  const manualPreview = await read('/final-prompt', { cardId: 'target', cardVersion: 2 })
+  assert.deepEqual(new Set(manualPreview.images.map((item: { url: string }) => item.url)), new Set([manualTail.imageUrl, manualStyle.imageUrl]))
+
+  await store.mutate(id, record => {
+    record.project.episodes[0].cards[1].shots = []
+    return { documentChanged: true, result: null }
+  })
+  const freeformPreview = await read('/final-prompt', { cardId: 'target', cardVersion: 2 })
+  assert.match(freeformPreview.prompt, /全段「本片段」/u)
+  assert.ok(freeformPreview.images.some((item: { url: string }) => item.url === manualStyle.imageUrl))
 })

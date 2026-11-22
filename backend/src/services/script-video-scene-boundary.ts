@@ -113,6 +113,11 @@ function sharesState(a: string, b: string): boolean {
   })
 }
 
+function handoffText(value: string) {
+  return value.replace(/上一集|前一集|上集/gu, '上一段')
+    .replace(/下一集|下集/gu, '下一段').replace(/本集/gu, '本段')
+}
+
 /** A scene match only supplies a tail when the opening continues the same shot. */
 export function getScriptVideoContinuationScene(
   previous: BoundaryCard, next: BoundaryCard, assets: readonly ScriptVideoAsset[],
@@ -121,8 +126,8 @@ export function getScriptVideoContinuationScene(
   const before = effectiveShots(previous), after = effectiveShots(next)
   const last = before.at(-1), first = after[0]
   if (!last?.camera || !last.action || !first?.camera || !first.action) return
-  const opening = readPromptField(next.prompt, /^\s*(?:←承上|开场画面)\s*[：:]\s*([^\r\n]+)/mu) ?? next.opening ?? ''
-  const ending = readPromptField(previous.prompt, /^\s*(?:→衔接|末镜停在)\s*[：:]\s*([^\r\n]+)/mu) ?? previous.ending ?? ''
+  const opening = handoffText(readPromptField(next.prompt, /^\s*(?:←承上|开场画面)\s*[：:]\s*([^\r\n]+)/mu) ?? next.opening ?? '')
+  const ending = handoffText(readPromptField(previous.prompt, /^\s*(?:→衔接|末镜停在)\s*[：:]\s*([^\r\n]+)/mu) ?? previous.ending ?? '')
   if (!opening.trim() || !ending.trim() || noTail.test(opening) || hasNewShot(opening) || hasNewShot(shotText(first)) ||
     /(?:下一段|下段|下一镜)[^。；\n]*(?:切(?:换)?(?:到|至|入)|硬切|另起|新镜头)/u.test(ending) ||
     (/(?:下一段|下段|下一镜)/u.test(ending) && noTail.test(ending)) ||

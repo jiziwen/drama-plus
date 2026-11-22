@@ -23,6 +23,15 @@ function videoUrl(value: unknown) {
   return typeof value === 'string' ? value.trim() : undefined
 }
 
+export function latestScriptVideoTaskUrls(tasks: readonly VersionTask[] = []) {
+  const urls = new Map<string, string>()
+  for (const task of tasks) {
+    const url = videoUrl(task.videoUrl)
+    if (task.status === 'completed' && url) urls.set(task.cardId, url)
+  }
+  return urls
+}
+
 /** Finished task rows describe past renders. The card can also contain an
  * older file without a matching task, so preserve both sources. */
 export function listScriptVideoVersions(card: CardMedia, tasks: readonly VersionTask[] = []) {

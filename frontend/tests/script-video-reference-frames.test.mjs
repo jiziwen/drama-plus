@@ -13,7 +13,7 @@ const rows = () => ({
   lighting: [{ kind: 'lighting', startShot: 2, endShot: 3, sceneName: '院落', mode: 'auto', state: 'ready', videoUrl: clip, imageUrl: '/static/light.jpg' }],
 })
 
-async function setup(t, candidate) {
+async function setup(t, candidate, read = rows) {
   const scope = effectScope(), selected = ref({ projectId: 'p', episodeId: 'e', card: { id: 'b' } })
   const revision = ref('1'), calls = [], saved = []
   t.after(() => scope.stop())
@@ -21,7 +21,7 @@ async function setup(t, candidate) {
     async () => { saved.push(JSON.stringify(selected.value.card.referenceFrameSettings)) },
     async (path, body, signal) => {
       calls.push({ path, body, signal })
-      return body.kind ? candidate(body) : rows()
+      return body.kind ? candidate(body) : read()
     }))
   await next()
   return { app, selected, revision, calls, saved }
@@ -40,6 +40,29 @@ test('定位时准备一次，重复相同上游状态不额外请求；切卡�
   revision.value = '3'
   await new Promise(resolve => setTimeout(resolve, 560))
   assert.equal(calls.length, 3)
+})
+
+test('同一片段的上一段成片消失时，立即清掉参考行并忽略迟到的旧读取', async t => {
+  const previous = Promise.withResolvers()
+  const empty = { tail: { kind: 'tail', mode: 'auto', state: 'missing' }, lighting: [] }
+  let reads = 0
+  const { app, calls, revision } = await setup(t, undefined, () => {
+    reads++
+    return reads === 1 ? rows() : reads === 2 ? previous.promise : empty
+  })
+  const refreshing = app.refresh()
+  await next()
+  const interrupted = calls.at(-1)
+  assert.equal(app.frames.value.tail.videoUrl, clip)
+  revision.value = '2'
+  assert.equal(app.frames.value, undefined)
+  assert.equal(interrupted.signal.aborted, true)
+
+  previous.resolve(rows())
+  await refreshing
+  assert.equal(app.frames.value, undefined)
+  await app.refresh()
+  assert.deepEqual(app.frames.value, empty)
 })
 
 test('仅保存服务端截取成功的正确视频时间，保留并发更新的其它行，恢复最后一项时清理设置', async t => {
@@ -72,6 +95,25 @@ test('截帧出错或返回另一条视频时不改参考设置，错误可见',
     assert.ok(app.error.value)
     assert.equal(selected.value.card.referenceFrameSettings, undefined)
   }
+})
+
+test('截帧期间上一段视频失效，保留错误并刷新成空槽', async t => {
+  const pending = Promise.withResolvers()
+  const empty = { tail: { kind: 'tail', mode: 'auto', state: 'missing' }, lighting: [] }
+  let reads = 0
+  const { app, selected, revision, saved } = await setup(t, () => pending.promise, () => reads++ ? empty : rows())
+  const initialSaves = [...saved]
+  const applying = app.choose(app.frames.value.tail, 'manual', 1)
+  revision.value = '2'
+  await nextTick()
+  assert.equal(app.frames.value, undefined)
+
+  pending.reject(new Error('来源成片已更新'))
+  assert.equal(await applying, false)
+  assert.equal(selected.value.card.referenceFrameSettings, undefined)
+  assert.deepEqual(saved, initialSaves)
+  assert.match(app.error.value, /来源成片已更新/u)
+  assert.deepEqual(app.frames.value, empty)
 })
 
 test('截帧中切换片段，迟到的结果与原片段按钮无法修改新片段', async t => {

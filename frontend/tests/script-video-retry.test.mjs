@@ -7,6 +7,7 @@ import ts from 'typescript'
 import { officialScriptVideoUrl } from '../../backend/src/services/script-video-versions.ts'
 import { buildScriptVideoDelivery, scriptVideoDeliveryTags } from '../../backend/src/services/script-video-delivery.ts'
 import { hasScriptVideoPromptBody, splitScriptVideoPromptStyle } from '../../backend/src/services/script-video-style.ts'
+import { previousScriptVideoCard } from '../../backend/src/services/script-video-predecessor.ts'
 
 const source = readFileSync(new URL('../app/pages/preview/script-to-video.vue', import.meta.url), 'utf8')
 const start = source.indexOf('const taskActions =')
@@ -27,8 +28,9 @@ const failed = (id, cardId, code, taskId) => ({ id, cardId, code, taskId, status
 
 function controller(initialTasks = [], {
   onLookup, onSubmit, onFinalPrompt, onContinuations, clipboardWrite, onSave, onRefresh, missingVoices = () => [],
+  pendingAudioEdits = () => undefined,
   connections = [], lightingScenes = {}, cardIds = ['a', 'b'],
-  remoteActiveIds = [], queueTimer = setInterval,
+  remoteActiveIds = [], queueTimer = setInterval, previousEpisodes = [],
 } = {}) {
   const calls = []
   const episode = {
@@ -37,7 +39,7 @@ function controller(initialTasks = [], {
     aspectRatio: '16:9', resolution: '720p', tasks: initialTasks,
     cards: cardIds.map(id => ({ id, version: 1, duration: 30, shots: lightingScenes[id] ? [{}] : [] })),
   }
-  const project = { id: 'project', assets: [], episodes: [episode] }
+  const project = { id: 'project', assets: [], episodes: [...previousEpisodes, episode] }
   const leaseActive = ref(true)
   const dialog = ref(null)
   const toasts = []
@@ -63,19 +65,20 @@ function controller(initialTasks = [], {
     selectedProjectId.value = project.id
     selectedEpisodeId.value = episode.id
   }
-  const value = runInNewContext(controllerSource + '\n;({ requestVideoGeneration, cancelVideoGeneration, confirmVideoRetry, pendingVideoRetry, videoTaskError, showFinalPrompt, copyPromptPreview, promptPreview, batchVideoVoiceWarning, videoVoiceWarningForCard, activeVideoRun, activeVideoRequests, deliveryContinuations })', {
+  const value = runInNewContext(controllerSource + '\n;({ requestVideoGeneration, cancelVideoGeneration, confirmVideoRetry, pendingVideoRetry, videoTaskError, showFinalPrompt, copyPromptPreview, promptPreview, batchVideoVoiceWarning, videoVoiceWarningForCard, activeVideoRun, activeVideoRequests, videoTailWaiting, deliveryContinuations })', {
     ref, computed, reactive, dialog, activeCardIds: ref(remoteActiveIds), requestActivityRefresh: () => {}, setInterval: queueTimer, clearInterval, ScriptVideoRequestError, alive: true, AbortController, AbortSignal, requestController: new AbortController(),
-    officialScriptVideoUrl,
-    outputMode: ref('internal'), promptReturnFocus: null,
+    officialScriptVideoUrl, previousScriptVideoCard,
+    promptReturnFocus: null,
     episodeKey, previewId: () => 'video-request-fixture',
     setTimeout: done => queueMicrotask(done), clearTimeout,
     episodeLock: { owns: (projectId, episodeId) => leaseActive.value && projectId === selectedProjectId.value && episodeId === selectedEpisodeId.value },
     getScriptVideoContinuationScene: (previous, next) => connections.includes(`${previous.id}/${next.id}`),
-    buildScriptVideoLightingPlan: () => Object.fromEntries(Object.entries(lightingScenes).map(([id, scenes]) =>
+    buildScriptVideoEpisodeLightingPlan: () => Object.fromEntries(Object.entries(lightingScenes).map(([id, scenes]) =>
       [id, (Array.isArray(scenes) ? scenes : [scenes]).map((sceneKey, i) => ({ sceneKey, firstShot: i + 1 }))])),
     currentProject, currentEpisode, projects, tasks: computed(() => currentEpisode.value.tasks),
     cards: computed(() => currentEpisode.value.cards), assets: computed(() => currentProject.value.assets),
-    saveProjectNow: async id => { await onSave?.(id) }, refreshProject: async (projectId, episodeId) => { refreshes.push({ projectId, episodeId }); await onRefresh?.(projectId, episodeId) },
+    saveProjectNow: async id => { await onSave?.(id) }, pendingAudioEdits,
+    refreshProject: async (projectId, episodeId) => { refreshes.push({ projectId, episodeId }); await onRefresh?.(projectId, episodeId) },
     selectedProjectId, selectedEpisodeId,
     navigator: { onLine: true, clipboard: { writeText: async text => {
       await clipboardWrite?.(text)
@@ -99,7 +102,7 @@ function controller(initialTasks = [], {
       return onSubmit?.(path, body, episode) || { taskId: 21 }
     },
   })
-  return { ...value, dialog, calls, episode, project, toasts, copied, leaseActive, navigate, navigateBack, refreshes,
+  return { ...value, dialog, calls, episode, project, toasts, copied, leaseActive, navigate, navigateBack, refreshes, selectedEpisodeId,
     get submissions() { return calls.filter(call => call.method === 'POST' && /\/cards\/[^/]+\/video$/.test(call.path)) },
   }
 }
@@ -466,6 +469,27 @@ test('当前预览和任务记录都在弹框内按显示文字原样复制', as
   assert.equal(app.submissions.length, 0)
 })
 
+test('更换角色音频进行中，当前预览和视频提交等待新声音保存', async () => {
+  let finishReplacement
+  const replacement = new Promise(resolve => { finishReplacement = resolve })
+  let currentAudio = '/static/uploads/old.wav'
+  const pending = replacement.then(() => { currentAudio = '/static/uploads/new.wav' })
+  const heard = []
+  const app = controller([], {
+    pendingAudioEdits: id => id === 'project' ? pending : undefined,
+    onFinalPrompt: () => finalDelivery({ audios: [{ index: 1, name: '侍卫', url: currentAudio }] }),
+    onSubmit() { heard.push(currentAudio) },
+  })
+  const preview = app.showFinalPrompt({ cardId: 'a', title: '当前分镜' })
+  const generation = app.requestVideoGeneration(['a'])
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(app.calls.length, 0)
+  finishReplacement()
+  await Promise.all([preview, generation])
+  assert.equal(app.promptPreview.value.delivery.audios[0].url, '/static/uploads/new.wav')
+  assert.deepEqual(heard, ['/static/uploads/new.wav'])
+})
+
 test('素材引用警告与最终提示词一起返回，仍可原样复制正文且不提交生成', async () => {
   const warnings = ['请确认本段引用的角色「吴良」。', '折扇缺少参考图。']
   const prompt = '画面与动作：吴良展开折扇。\n对白／音效：〈折扇轻响〉'
@@ -666,7 +690,25 @@ test('关闭光线范围仍等待自动尾帧，单独关闭尾帧能直接提�
   }
 })
 
-test('外部交付没有选择模型、没有自动续接时仍取回手选帧', async () => {
+test('紧邻上一段没有成片时，批量生成不等待更早的同场光线', async () => {
+  const earlier = Promise.withResolvers()
+  const app = controller([{ id: 'prior', cardId: 'a', cardVersion: 1, status: 'processing', taskId: 21 }], {
+    cardIds: ['a', 'b', 'c'],
+    lightingScenes: { a: '松林', b: '院落', c: '松林' },
+    onLookup: () => earlier.promise,
+    onSubmit: () => ({ taskId: 23 }),
+  })
+  const batch = app.requestVideoGeneration(['c'])
+  await new Promise(resolve => setImmediate(resolve))
+  const submittedBeforeEarlier = app.submissions.map(call => call.path.split('/').at(-2))
+  earlier.resolve({ status: 'completed', videoUrl: '/static/videos/earlier.mp4' })
+  await batch
+
+  assert.deepEqual(submittedBeforeEarlier, ['c'])
+  assert.ok(!app.calls.some(call => call.method === 'GET' && call.path.endsWith('/video/21')))
+})
+
+test('分镜资料导出没有选择模型、没有自动续接时仍取回手选帧', async () => {
   const app = controller([], { onContinuations: () => ({ continuations: {}, lightingRanges: {} }) })
   const card = app.episode.cards[1]
   app.episode.modelConfigId = undefined
@@ -718,4 +760,124 @@ test('其他页面占用按稳定分镜ID判断，本页版本变化后仍阻止
   assert.equal(app.calls.length, 0)
   await app.requestVideoGeneration(['b'])
   assert.equal(app.submissions.length, 1)
+})
+
+const precedingEpisode = (overrides = {}) => ({
+  id: 'previous-episode', number: 1, _loaded: true, tasks: [],
+  cards: [{ id: 'previous-last', version: 1, duration: 30, shots: [] }], ...overrides,
+})
+
+test('下一集第一段等待上一集末段尾帧，等待状态属于当前集且完成后刷新来源集', async () => {
+  const ready = Promise.withResolvers(), lookup = Promise.withResolvers()
+  const previous = precedingEpisode({ tasks: [
+    { id: 'previous-task', cardId: 'previous-last', cardVersion: 1, status: 'processing', taskId: 61 },
+  ] })
+  const app = controller([], {
+    cardIds: ['a'], previousEpisodes: [previous], connections: ['previous-last/a'],
+    onLookup: () => { lookup.resolve(); return ready.promise },
+  })
+  const generation = app.requestVideoGeneration(['a'])
+  await lookup.promise
+  assert.equal(app.submissions.length, 0)
+  assert.equal(app.videoTailWaiting.value, true)
+  assert.equal(app.selectedEpisodeId.value, 'episode')
+  ready.resolve({ status: 'completed', videoUrl: '/static/videos/previous-last.mp4' })
+  await generation
+  assert.equal(app.submissions.length, 1)
+  assert.match(app.submissions[0].path, /episodes\/episode\/cards\/a\/video$/u)
+  assert.deepEqual(app.refreshes[0], { projectId: 'project', episodeId: previous.id })
+  assert.equal(app.videoTailWaiting.value, false)
+  assert.equal(app.selectedEpisodeId.value, 'episode')
+})
+
+test('跨集同场换机位单独等待光线，手选或关闭后不等待上集任务', async () => {
+  for (const mode of [undefined, 'manual', 'off']) {
+    const ready = Promise.withResolvers()
+    const previous = precedingEpisode({ tasks: [
+      { id: 'previous-task', cardId: 'previous-last', cardVersion: 1, status: 'processing', taskId: 61 },
+    ] })
+    const app = controller([], {
+      cardIds: ['a'], previousEpisodes: [previous], lightingScenes: { 'previous-last': '院落', a: '院落' },
+      onLookup: () => ready.promise,
+    })
+    if (mode) app.episode.cards[0].referenceFrameSettings = { lighting: { 1: mode === 'off'
+      ? { mode } : { mode, videoUrl: '/static/videos/manual.mp4', seconds: 1 } } }
+    const generation = app.requestVideoGeneration(['a'])
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(app.submissions.length, mode ? 1 : 0)
+    ready.resolve({ status: 'completed', videoUrl: '/static/videos/previous-last.mp4' })
+    await generation
+    assert.equal(app.submissions.length, 1)
+  }
+})
+
+test('生成和导出第一段只读加载上一集，保留当前分集选择并带入跨集参考帧', async () => {
+  for (const action of ['generate', 'export']) {
+    const previous = precedingEpisode({ _loaded: false, cards: [] })
+    const app = controller([], {
+      cardIds: ['a'], previousEpisodes: [previous], connections: ['previous-last/a'],
+      onRefresh(_projectId, episodeId) {
+        if (episodeId !== previous.id) return
+        Object.assign(previous, precedingEpisode())
+        Object.assign(previous.cards[0], { status: 'ready', videoUrl: '/static/videos/previous-last.mp4' })
+      },
+      onContinuations: () => ({ continuations: { a: { imageUrl: '/static/videos/previous-tail.jpg' } }, lightingRanges: {} }),
+    })
+    if (action === 'generate') {
+      await app.requestVideoGeneration(['a'])
+      assert.equal(app.submissions.length, 1)
+    } else {
+      const result = await app.deliveryContinuations(app.project, app.episode, app.episode.cards)
+      assert.equal(result.continuations.a.imageUrl, '/static/videos/previous-tail.jpg')
+      assert.deepEqual([...app.calls.find(call => call.path.endsWith('/continuations')).body.cardIds], ['a'])
+    }
+    assert.deepEqual(app.refreshes[0], { projectId: 'project', episodeId: previous.id })
+    assert.equal(app.selectedEpisodeId.value, 'episode')
+  }
+})
+
+test('上一集末段缺少成片时首段提示明确集号，空上一集不会回溯更早一集', async () => {
+  const previous = precedingEpisode()
+  const app = controller([], { cardIds: ['a'], previousEpisodes: [previous], connections: ['previous-last/a'] })
+  await app.requestVideoGeneration(['a'])
+  assert.equal(app.submissions.length, 0)
+  assert.match(app.toasts[0], /第 1 段需要第 1 集第 1 段的尾帧/u)
+
+  previous.cards[0].status = 'ready'
+  previous.cards[0].videoUrl = '/static/videos/previous-last.mp4'
+  const empty = precedingEpisode({ id: 'empty-episode', number: 2, cards: [] })
+  const separated = controller([], { cardIds: ['a'], previousEpisodes: [previous, empty], connections: ['previous-last/a'] })
+  await separated.requestVideoGeneration(['a'])
+  assert.equal(separated.submissions.length, 1)
+  assert.ok(!separated.calls.some(call => call.method === 'GET'))
+})
+
+test('首段参考帧监听上一集末段成片、任务和排队变化', () => {
+  const start = source.indexOf('const frameEditor = useScriptVideoReferenceFrames(')
+  const end = source.indexOf('const pageVisible =', start)
+  const previous = precedingEpisode({ tasks: [
+    { id: 'source-task', cardId: 'previous-last', status: 'processing' },
+  ] })
+  const episode = { id: 'episode', cards: [{ id: 'a' }], tasks: [] }
+  const project = { id: 'project', episodes: [previous, episode] }
+  const sourceActivity = ref({ scope: 'project/episode', episodeId: previous.id, queuedCardIds: [] })
+  let revision
+  runInNewContext(ts.transpileModule(source.slice(start, end), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+  }).outputText, {
+    useScriptVideoReferenceFrames: (_current, sourceRevision) => { revision = sourceRevision },
+    episodeOpen: ref(true), stage: ref('production'), selectedCard: ref(episode.cards[0]),
+    currentEpisode: ref(episode), currentProject: ref(project), episodeKey: ref('project/episode'),
+    previousScriptVideoCard, officialScriptVideoUrl, queuedCardIds: ref([]), referenceSourceActivity: sourceActivity,
+    saveProjectNow: () => {},
+  })
+  const before = revision()
+  Object.assign(previous.cards[0], { status: 'ready', videoUrl: '/static/videos/previous-last.mp4' })
+  assert.notEqual(revision(), before)
+  const rendered = revision()
+  previous.tasks[0].status = 'completed'
+  assert.notEqual(revision(), rendered)
+  const completed = revision()
+  sourceActivity.value.queuedCardIds = ['previous-last']
+  assert.notEqual(revision(), completed)
 })

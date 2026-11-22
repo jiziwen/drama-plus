@@ -19,9 +19,11 @@ test('LibTV keeps the original canvas node through referenced generation and rec
   }
   const old = Object.entries(variables).map(([key]) => [key, process.env[key]] as const)
   const originalFetch = globalThis.fetch
+  let closeDatabase: (() => void) | undefined
   const url = 'https://libtv-res.liblib.art/test/clip.mp4'
   const video = Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(32)])
   t.after(async () => {
+    closeDatabase?.()
     for (const [key, value] of old) {
       if (value === undefined) delete process.env[key]
       else process.env[key] = value
@@ -51,13 +53,18 @@ else if (args[0] === 'upload') payload = {nodeKey: args.includes('audio') ? 'voi
 else if (args[1] === 'create') payload = {newNodeKey: 'video-node'};
 else if (args.includes('--run')) {
   if (state === 'success') payload = {status: 2, taskId: 'upstream-task', url: [url]};
+  else if (state === 'rejected') payload = {status: 3, failedReason: '参考音频超过时长限制', code: 422};
+  else if (state === 'network-denied') { console.error(JSON.stringify({error:{message:'账号并发额度已满', code:429}})); process.exitCode = 1; }
   else process.exitCode = 1;
 }
-else if (args[0] === 'node') payload = {nodeKey: args[1], data: {type: 'video', url: state === 'recoverable' ? [url] : []}};
+else if (args[0] === 'node') payload = state === 'query-rejected'
+  ? {status: 3, failedReason: '参考视频未通过平台审核'}
+  : {nodeKey: args[1], data: {type: 'video', url: state === 'recoverable' ? [url] : []}};
 if (payload) console.log(JSON.stringify(payload));
 `, { mode: 0o700 })
 
   const { db, schema } = await import('../src/db/index.js')
+  closeDatabase = () => db.$client.close()
   const { checkLibTVConnection, validateLibTVVideo } = await import('../src/services/libtv-cli.js')
   const { generateVideo, recoverVideoTask, isGenerationTaskActive } = await import('../src/services/generation.js')
   const timestamp = new Date().toISOString()
@@ -112,4 +119,21 @@ if (payload) console.log(JSON.stringify(payload));
   const recoveredCalls = await commands()
   assert.equal(recoveredCalls.filter(args => args.includes('--run')).length, 2)
   assert.deepEqual(recoveredCalls.at(-1), ['node', 'video-node', '--project', project])
+
+  await fs.writeFile(state, 'rejected')
+  const rejected = await waitForDone(await generateVideo({ ...params, allowLibTV: true }))
+  assert.equal(rejected.errorCode, 'generation_failed')
+  assert.match(rejected.errorMsg!, /参考音频超过时长限制/u)
+  assert.match(rejected.errorMsg!, /422/u)
+
+  await fs.writeFile(state, 'query-rejected')
+  const queryRejected = await waitForDone(await generateVideo({ ...params, allowLibTV: true }))
+  assert.equal(queryRejected.errorCode, 'generation_failed', '恢复查询发现平台终态失败，应正确归类')
+  assert.match(queryRejected.errorMsg!, /参考视频未通过平台审核/u)
+
+  await fs.writeFile(state, 'network-denied')
+  const rateLimited = await waitForDone(await generateVideo({ ...params, allowLibTV: true }))
+  assert.equal(rateLimited.errorCode, 'submission_unknown')
+  assert.match(rateLimited.errorMsg!, /账号并发额度已满/u)
+  assert.match(rateLimited.errorMsg!, /429/u)
 })

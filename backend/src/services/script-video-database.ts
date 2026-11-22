@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3'
 import path from 'node:path'
 import type { ScriptVideoJob, ScriptVideoProject } from './script-video-store.js'
+import { scriptVideoEpisodeProgress } from './script-video-episode-progress.js'
 
 export type ScriptVideoRecord = {
   project: ScriptVideoProject
@@ -23,15 +24,7 @@ type EpisodeRow = { id: string; document: string; revision: number }
 type JobRow = { document: string }
 
 function episodeSummary(episode: ScriptVideoProject['episodes'][number]) {
-  const cards: any[] = episode.cards || []
-  const hasStoryboard = !!episode.production || cards.every(card =>
-    card.manuallyAdded || (card.shots?.length && card.prompt?.trim()),
-  )
-  let progress: string | undefined
-  if (episode.confirmed && cards.length) {
-    if (!episode.outlineConfirmed || !hasStoryboard) progress = '制作中-大纲'
-    else progress = cards.every(card => card.status === 'ready' && card.videoUrl?.trim()) ? '已完成' : '制作中-视频制作'
-  }
+  const cards = episode.cards || []
   return {
     id: episode.id,
     title: episode.title,
@@ -39,7 +32,8 @@ function episodeSummary(episode: ScriptVideoProject['episodes'][number]) {
     stage: episode.stage,
     confirmed: !!episode.confirmed,
     outlineConfirmed: !!episode.outlineConfirmed,
-    progress,
+    progress: scriptVideoEpisodeProgress({ ...episode, cards }),
+    progressOverride: episode.progressOverride ?? null,
     cardCount: cards.length,
   }
 }

@@ -12,9 +12,11 @@ test('Jimeng submits the original personal draft once and still honors a legacy 
   const script = path.join(folder, 'fake-dreamina-canvas')
   const log = path.join(folder, 'commands.jsonl')
   const stateFile = path.join(folder, 'state.json')
-  const vars = { JIMENG_CLI_BIN: process.env.JIMENG_CLI_BIN, DREAMINA_CANVAS_STATE_DIR: process.env.DREAMINA_CANVAS_STATE_DIR }
+  const vars = { JIMENG_CLI_BIN: process.env.JIMENG_CLI_BIN, DREAMINA_CANVAS_STATE_DIR: process.env.DREAMINA_CANVAS_STATE_DIR,
+    VIDEO_CLI_ACCOUNTS_DIR: process.env.VIDEO_CLI_ACCOUNTS_DIR }
   process.env.JIMENG_CLI_BIN = script
   process.env.DREAMINA_CANVAS_STATE_DIR = folder
+  process.env.VIDEO_CLI_ACCOUNTS_DIR = path.join(folder, 'profiles')
   t.after(async () => {
     for (const [key, value] of Object.entries(vars)) {
       if (value === undefined) delete process.env[key]
@@ -141,6 +143,7 @@ test('disconnect clears the Jimeng profile and prevents old authorization from r
   const binary = path.join(folder, 'mock-dreamina-canvas')
   const vars = {
     JIMENG_CLI_BIN: binary, JIMENG_CLI_PROFILE: 'disconnect-fixture', DREAMINA_CANVAS_STATE_DIR: folder,
+    VIDEO_CLI_ACCOUNTS_DIR: path.join(folder, 'profiles'),
     SQLITE_PATH: path.join(folder, 'tasks.sqlite3'), MYSQL_AUTO_IMPORT: 'false',
   }
   const previous = Object.fromEntries(Object.keys(vars).map(key => [key, process.env[key]]))

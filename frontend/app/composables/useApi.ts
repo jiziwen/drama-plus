@@ -1,5 +1,13 @@
 const BASE = '/api/v1'
 
+export function apiErrorMessage(payload: unknown, status: number): string {
+  if (!payload || typeof payload !== 'object') return `请求失败（HTTP ${status}）`
+  const data = payload as Record<string, any>
+  const candidates = [data.message, data.error?.message, data.error?.error_msg, data.error_msg,
+    typeof data.error === 'string' ? data.error : undefined, data.detail?.message, typeof data.detail === 'string' ? data.detail : undefined]
+  return candidates.find(value => typeof value === 'string' && value.trim())?.trim() || `请求失败（HTTP ${status}）`
+}
+
 async function req<T = any>(method: string, path: string, body?: any, logBody = true): Promise<T> {
   const opts: RequestInit = body instanceof FormData
     ? { method, body }
@@ -15,7 +23,7 @@ async function req<T = any>(method: string, path: string, body?: any, logBody = 
 
     if (!resp.ok || (json.code && json.code >= 400)) {
       console.log(`%c[API] %c${method} ${path} %c${resp.status} %c${ms}ms`, 'color:#888', 'color:#ef5350', 'color:#ef5350;font-weight:bold', 'color:#888', logBody ? json.message || '' : '')
-      throw Object.assign(new Error(json.message || `${resp.status}`), { status: resp.status })
+      throw Object.assign(new Error(apiErrorMessage(json, resp.status)), { status: resp.status, reason: json.reason })
     }
 
     console.log(`%c[API] %c${method} ${path} %c${resp.status} %c${ms}ms`, 'color:#888', 'color:#66bb6a', 'color:#66bb6a;font-weight:bold', 'color:#888')
@@ -37,11 +45,11 @@ export const api = {
 }
 
 export const libtvPhoneAPI = {
-  send: (phone: string) => req<{ challenge_id: string; expires_at: number }>(
-    'POST', '/libtv/auth/phone/send', { phone }, false,
+  send: (phone: string, accountId?: string) => req<{ challenge_id: string; expires_at: number }>(
+    'POST', `/libtv/auth/phone/send${accountId ? `?accountId=${encodeURIComponent(accountId)}` : ''}`, { phone }, false,
   ),
-  verify: <T>(challengeId: string, code: string) => req<T>(
-    'POST', '/libtv/auth/phone/verify', { challenge_id: challengeId, code }, false,
+  verify: <T>(challengeId: string, code: string, accountId?: string) => req<T>(
+    'POST', `/libtv/auth/phone/verify${accountId ? `?accountId=${encodeURIComponent(accountId)}` : ''}`, { challenge_id: challengeId, code }, false,
   ),
 }
 

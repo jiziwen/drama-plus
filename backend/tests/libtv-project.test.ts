@@ -54,7 +54,7 @@ test('LibTV creates and reuses a personal canvas per authorized account', async 
   assert.equal(wrapped.id, secondId)
   assert.deepEqual(wrappedCalls, ['list', 'create', 'list'])
   for (const file of await readdir(path.join(root, 'libtv'))) {
-    assert.equal((await stat(path.join(root, 'libtv', file))).mode & 0o777, 0o600)
+    if (process.platform !== 'win32') assert.equal((await stat(path.join(root, 'libtv', file))).mode & 0o777, 0o600)
   }
 
   process.env.LIBTV_PROJECT_ID = firstId

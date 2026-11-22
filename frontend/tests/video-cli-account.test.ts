@@ -4,7 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { effectScope, nextTick, ref } from 'vue'
 import { useVideoCliAccount, type VideoCliProvider } from '../app/composables/useVideoCliAccount'
 
-test('Jimeng reads the account once on entry and only refreshes by request after authorization starts', async t => {
+test('即梦进入页面加载一次，授权后仅点击刷新读取账号状态', async t => {
   const originalFetch = globalThis.fetch
   const scope = effectScope()
   t.after(() => {
@@ -21,6 +21,7 @@ test('Jimeng reads the account once on entry and only refreshes by request after
   let start: Record<string, unknown> = { ...account, status: 'pending', verification_url: verification }
   globalThis.fetch = async (input, init) => {
     const path = String(input)
+    if (path.endsWith('/accounts')) return Response.json({ message: 'Not found' }, { status: 404 })
     calls.push(path)
     if (path === disconnectPath) {
       assert.equal(init?.method, 'POST')
@@ -28,7 +29,7 @@ test('Jimeng reads the account once on entry and only refreshes by request after
       return Response.json({ code: 200, data: account })
     }
     assert.ok(path === accountPath || path === startPath, path)
-    return Response.json({ code: 200, data: path === accountPath ? account : start })
+    return Response.json({ code: 200, data: path === startPath ? start : account })
   }
   const provider = ref<VideoCliProvider | undefined>('jimeng')
   const state = scope.run(() => useVideoCliAccount(provider, key => key))!
@@ -41,9 +42,11 @@ test('Jimeng reads the account once on entry and only refreshes by request after
   await state.authorize()
   assert.equal(state.pending.value, true)
   assert.equal(state.verificationUrl.value, verification)
-  t.mock.timers.tick(10_000)
-  await nextTick()
-  assert.deepEqual(calls, [accountPath, startPath])
+  account = { available: true, authenticated: false, status: 'pending' }
+  t.mock.timers.tick(2500)
+  await waitForRead()
+  assert.deepEqual(calls, [accountPath, startPath], '等待授权不能定时请求账号状态')
+  assert.equal(state.pending.value, true)
 
   account = { available: true, authenticated: false, status: 'pending' }
   await state.refresh()
@@ -60,16 +63,17 @@ test('Jimeng reads the account once on entry and only refreshes by request after
   await state.authorize()
   assert.equal(state.error.value, '')
   account = { available: true, authenticated: true, credits: 52, models: ['jimeng-seedance-2.5'] }
+  const beforeCompletedRefresh = calls.length
   t.mock.timers.tick(10_000)
-  await nextTick()
-  assert.equal(state.pending.value, true)
-  assert.equal(state.account.value?.credits, undefined)
+  await waitForRead()
+  assert.equal(calls.length, beforeCompletedRefresh)
+  assert.equal(state.pending.value, true, '授权完成后等待用户手动刷新')
   await state.refresh()
   assert.equal(state.pending.value, false)
   assert.equal(state.verificationUrl.value, '')
   assert.equal(state.account.value?.credits, 52)
   assert.equal(state.error.value, '')
-  assert.deepEqual(calls, [accountPath, startPath, accountPath, accountPath, startPath, accountPath])
+  assert.deepEqual(calls.slice(-2), [startPath, accountPath])
 
   // Reopening the panel restores a pending state. The explicit button can recover its live link.
   provider.value = undefined
@@ -102,10 +106,12 @@ test('Jimeng reads the account once on entry and only refreshes by request after
   provider.value = 'jimeng'
   await nextTick()
   await waitForRead()
+  account = { available: true, authenticated: true, username: '新授权的即梦账号' }
   const before = calls.length
   await state.authorize()
   assert.equal(state.account.value?.authenticated, true)
-  assert.deepEqual(calls.slice(before), [startPath])
+  assert.equal(state.account.value?.username, '新授权的即梦账号')
+  assert.deepEqual(calls.slice(before), [startPath, accountPath])
 
   account = { available: true, authenticated: true, username: 'Old account', credits: 52, models: ['jimeng-seedance-2.5'] }
   await state.refresh()
@@ -158,7 +164,6 @@ test('LibTV opens verified authorization, counts a verified login, and preserves
     const data = path.endsWith('/libtv/account') ? { available: true, authenticated: authorized, can_authorize: canAuthorize, canvas_ready: canvasReady, canvas_name: '剧本转视频' }
       : path.endsWith('/libtv/auth/start') ? { available: true, authenticated: false, status: 'pending',
         ...(preparing ? { canvas_preparing: true } : { verification_url: verificationUrl }) }
-      : path.endsWith('/libtv/auth/status') ? (authorized = true, canvasReady = true, { available: true, authenticated: true, status: 'authenticated' })
       : { available: true, authenticated: true, username: 'Jimeng test', credits: 10, models: ['jimeng-seedance-2.5'] }
     return Response.json({ code: 200, data })
   }
@@ -169,13 +174,14 @@ test('LibTV opens verified authorization, counts a verified login, and preserves
   assert.equal(state.account.value?.available, true)
 
   await state.authorize()
-  assert.ok(!calls.includes('/api/v1/libtv/auth/start'))
+  assert.ok(calls.includes('/api/v1/libtv/auth/start'), '即使旧状态禁止授权，也应允许重试并由服务端判断')
+  assert.equal(state.error.value, 'settings.libtv.invalidAuthorizationUrl')
   canAuthorize = true
   await state.refresh()
   await state.authorize()
   assert.equal(state.error.value, 'settings.libtv.invalidAuthorizationUrl')
   assert.deepEqual(opened, [])
-  assert.equal(popup.closes, 1)
+  assert.equal(popup.closes, 2)
 
   verificationUrl = 'https://www.liblib.tv/?callback_url=local-test'
   await state.authorize()
@@ -183,11 +189,13 @@ test('LibTV opens verified authorization, counts a verified login, and preserves
   assert.equal(popup.opener, null)
   assert.equal(state.pending.value, true)
   assert.equal(state.verificationUrl.value, verificationUrl)
-  for (let i = 0; i < 80 && !state.account.value?.canvas_ready; i++) await delay(50)
+  authorized = true
+  canvasReady = true
+  await state.refresh()
   assert.equal(state.pending.value, false)
   assert.equal(state.verificationUrl.value, '')
   assert.equal(state.account.value?.canvas_name, '剧本转视频')
-  assert.ok(calls.includes('/api/v1/libtv/auth/status'))
+  assert.ok(!calls.includes('/api/v1/libtv/auth/status'), '网页授权状态由手动刷新账号接口读取')
 
   canvasReady = false
   preparing = true
@@ -199,7 +207,8 @@ test('LibTV opens verified authorization, counts a verified login, and preserves
   assert.equal(state.error.value, '')
   assert.equal(state.account.value?.canvas_preparing, true)
   assert.deepEqual(opened, [verificationUrl])
-  for (let i = 0; i < 80 && !state.account.value?.canvas_ready; i++) await delay(50)
+  canvasReady = true
+  await state.refresh()
   assert.equal(state.account.value?.canvas_ready, true)
 
   assert.equal(await state.disconnect(), false)
@@ -243,6 +252,7 @@ test('hosted LibTV SMS follows connection capabilities, keeps entered values pri
   const code = '123456'
   globalThis.fetch = async (input, init) => {
     const path = String(input)
+    if (path.endsWith('/accounts')) return Response.json({ message: 'Not found' }, { status: 404 })
     const body = init?.body ? JSON.parse(String(init.body)) : undefined
     requests.push({ path, body })
     if (path.endsWith('/auth/phone/send')) {
@@ -256,14 +266,10 @@ test('hosted LibTV SMS follows connection capabilities, keeps entered values pri
       if (sends === 1) return Response.json({ code: 410, message: '验证码已过期' }, { status: 410 })
       return Response.json({ code: 200, data: { available: true, authenticated: false, status: 'pending', canvas_preparing: true } })
     }
-    if (path.endsWith('/auth/status')) {
-      authorized = true
-      canvasReady = true
-    }
     if (path.endsWith('/auth/start')) {
       return Response.json({ code: 200, data: { available: true, authenticated: true, status: 'pending', canvas_preparing: true } })
     }
-    assert.ok(path.endsWith('/account') || path.endsWith('/auth/status'), path)
+    assert.ok(path.endsWith('/account'), path)
     return Response.json({ code: 200, data: {
       available: true, authenticated: authorized, can_authorize: false, can_authorize_phone: canAuthorizePhone && !authorized,
       can_prepare_canvas: canAuthorizePhone, canvas_ready: canvasReady,
@@ -326,7 +332,9 @@ test('hosted LibTV SMS follows connection capabilities, keeps entered values pri
   assert.equal(state.phone.code.value, '')
   assert.equal(state.pending.value, true)
   assert.equal(state.account.value?.canvas_preparing, true)
-  for (let i = 0; i < 80 && !state.account.value?.canvas_ready; i++) await delay(50)
+  authorized = true
+  canvasReady = true
+  await state.refresh()
   assert.equal(state.pending.value, false)
   assert.equal(state.account.value?.canvas_ready, true)
   assert.equal(state.account.value?.authenticated, true)

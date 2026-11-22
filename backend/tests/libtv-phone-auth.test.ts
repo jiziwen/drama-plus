@@ -10,6 +10,7 @@ import { Hono } from 'hono'
 import { requestLogger } from '../src/middleware/logger.js'
 
 test('a site member can authorize LibTV without sharing the SMS challenge across browsers', async t => {
+  let closeDatabase: (() => void) | undefined
   const dir = await mkdtemp(join(tmpdir(), 'drama-libtv-phone-'))
   const binary = join(dir, 'mock-libtv')
   const origin = 'https://private.example.test'
@@ -31,6 +32,7 @@ test('a site member can authorize LibTV without sharing the SMS challenge across
       if (value === undefined) delete process.env[key]
       else process.env[key] = value
     }
+    closeDatabase?.()
     await rm(dir, { recursive: true, force: true })
   })
 
@@ -69,6 +71,8 @@ if (command === 'login' && mode === 'phone') {
   const [{ default: libtv }, { default: siteSession }] = await Promise.all([
     import('../src/routes/libtv.js'), import('../src/routes/site-session.js'),
   ])
+  const { db } = await import('../src/db/index.js')
+  closeDatabase = () => db.$client.close()
   const app = new Hono()
   app.use('*', requestLogger)
   app.route('/api/v1/libtv', libtv)
@@ -112,7 +116,7 @@ if (command === 'login' && mode === 'phone') {
   assert.equal((await call('/account', gateway)).result.data.can_authorize_phone, true)
   assert.equal((await call('/account', secondMember)).result.data.can_authorize_phone, true)
   assert.equal((await call('/account', gatewayHeaders)).status, 403)
-  assert.equal((await call('/auth/start', gateway, {})).status, 409, 'remote start never launches a loopback login')
+  assert.equal((await call('/account', gateway)).result.data.can_authorize, true, 'hosted members may also use the official website login')
   for (const headers of [gatewayHeaders, {}, { ...gateway, Origin: 'https://other.example.test' },
     { ...gateway, 'X-Drama-Authenticated-User': 'different-username' },
     { ...gateway, Cookie: '__Host-drama-plus-session=invalid' },

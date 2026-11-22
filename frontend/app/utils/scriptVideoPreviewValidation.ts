@@ -53,7 +53,8 @@ export function inspectPreviewCardAssets(
   const visual = new Set([
     ...(card.openingAssetIds || []),
     ...shots.flatMap(shot => shot.visualAssetIds || []),
-    ...references.mentions.filter(hit => hit.explicit && hit.usage === "visual").map(hit => hit.id),
+    ...references.mentions.filter(hit => hit.explicit && (hit.usage === "visual" ||
+      hit.usage === "context" && !hit.literal)).map(hit => hit.id),
   ]);
   const missing = [...visual]
     .filter(id => byId.has(id))
@@ -61,8 +62,9 @@ export function inspectPreviewCardAssets(
     .map(id => byId.get(id)?.name || id);
   const unbound = [...new Set(references.mentions
     .filter(hit => hit.explicit && !bound.has(hit.id) &&
-      (hit.usage === "visual" && materialUse.imageIds.includes(hit.id) ||
-       hit.usage === "speaker" && materialUse.speakerIds.includes(hit.id)))
+      ((hit.usage === "visual" || hit.usage === "context" && !hit.literal) && materialUse.imageIds.includes(hit.id) ||
+       hit.usage === "speaker" && materialUse.speakerIds.includes(hit.id) ||
+       hit.usage === "audio" && materialUse.audioIds.includes(hit.id)))
     .map(hit => `@${hit.name}`))];
   const warnings: { code: string; message: string }[] = [];
   if (bound.size !== card.assetIds.length)
@@ -101,7 +103,7 @@ export function inspectPreviewCardAssets(
     warnings.push({ code: "ASSET_GAP", message: `文案可能使用了「${inferredMissing.join("、")}」，请核对是否需要补充配图。` });
   const inferredUnbound = [...new Set(references.mentions
     .filter(hit => !hit.explicit && !bound.has(hit.id) &&
-      (hit.usage === "visual" && materialUse.imageIds.includes(hit.id) ||
+      ((hit.usage === "visual" || hit.usage === "context" && !hit.literal) && materialUse.imageIds.includes(hit.id) ||
        hit.usage === "speaker" && materialUse.speakerIds.includes(hit.id)))
     .map(hit => hit.name))];
   if (inferredUnbound.length)

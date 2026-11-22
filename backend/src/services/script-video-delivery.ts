@@ -1,9 +1,8 @@
 import { omitScriptVideoRecapQuotes, replaceScriptVideoPromptStyle } from './script-video-format.js'
 import type { ScriptVideoReferenceSettings } from './script-video-reference-settings.js'
 import { annotateScriptVideoInnerOs, hasScriptVideoInnerOs, SCRIPT_VIDEO_INNER_OS_DIRECTION } from './script-video-inner-os.js'
-import { mapScriptVideoSoundLine, speechClosers, unquotedSpeaker } from './script-video-foley.js'
+import { mapScriptVideoSoundLine, speechClosers, unquotedSpeaker, withoutScriptVideoVoiceCues } from './script-video-foley.js'
 import { annotateScriptVideoAssets, describeScriptVideoReferenceProblem, scriptVideoMaterialEvidenceText, scriptVideoMaterialIds, type AssetMention } from './script-video-mentions.js'
-import { scriptVideoOsFraming } from './script-video-os-framing.js'
 import { scriptVideoShotHeadings, splitScriptVideoHandoff } from './script-video-asset-scope.js'
 import { declaredScriptVideoSceneName } from './script-video-scene-continuity.js'
 import { bindScriptVideoLighting, sceneGradedStyle, type ScriptVideoLightingRange, type ScriptVideoReferenceLimits } from './script-video-lighting-delivery.js'
@@ -111,7 +110,6 @@ function seedanceVisualOrder(body: string, visual: readonly AssetMention[]) {
 
 type SeedanceSoundContext = {
   audioOnlySpeakers: readonly string[]
-  voiceTags: ReadonlyMap<string, string>
   hasMultipleCharacters: boolean
   vocalizationShots: ReadonlySet<number>
 }
@@ -160,32 +158,11 @@ function renderSeedanceShot(block: string, context: SeedanceSoundContext) {
     if (!line.trim() || /^(?:镜头\s*\d|开场画面|末镜停在|景别|画面与动作|场景|人物|本段事件)/u.test(line)) inDialogue = false
     const attribution = /^[^：:]+[：:]/u.exec(line)?.[0] || ''
     const handwritten = /^@图片\d+[^：:]+[：:][ \t]*[“「『"{]/u.test(line) ||
-      attribution.includes(SCRIPT_VIDEO_INNER_OS_DIRECTION) || isAudioOnlySpeaker(attribution, context.audioOnlySpeakers)
+      hasScriptVideoInnerOs(attribution) || isAudioOnlySpeaker(attribution, context.audioOnlySpeakers)
     return inDialogue || handwritten ? soundText(line, context, sound) : line
   })
-  const onlyInnerSpeech = sound.innerSpeakers.length > 0 && !sound.hasOnScreenSpeech && !hasVocalization
-  if (onlyInnerSpeech) {
-    const soundIndex = lines.findIndex(line => soundField.test(line))
-    if (soundIndex >= 0) lines[soundIndex] = lines[soundIndex].replace(soundField, '声音：')
-  }
   const actionIndex = lines.findIndex(line => actionField.test(line))
   if (isShot) {
-    const cameraIndex = lines.findIndex(line => cameraField.test(line))
-    if (onlyInnerSpeech && cameraIndex >= 0 && actionIndex >= 0) {
-      const camera = lines[cameraIndex].replace(cameraField, '')
-      const action = lines[actionIndex].replace(actionField, '')
-      const cameraRefs = camera.match(/@图片\d+/gu) || []
-      const innerRefs = new Set(sound.innerSpeakers.flatMap(speaker => speaker.match(/^@图片\d+/u) || []))
-      // If the camera is already on another character's reaction, keep it there.
-      if (cameraRefs.length ? cameraRefs.every(ref => innerRefs.has(ref)) :
-        sound.innerSpeakers.some(speaker => camera.includes(speaker) || action.includes(speaker))) {
-        const framing = scriptVideoOsFraming(camera, action)
-        if (framing) {
-          lines[cameraIndex] = `景别／机位／运动：${framing.camera}；主体为${[...new Set(sound.innerSpeakers)].join('、')}`
-          lines[actionIndex] = `画面与动作：${framing.action}`
-        }
-      }
-    }
     if (context.hasMultipleCharacters && sound.onCameraSpeakers.size === 1 && actionIndex >= 0) {
       const [speaker] = sound.onCameraSpeakers
       lines[actionIndex] += hasVocalization
@@ -232,15 +209,13 @@ function renderSpeech(line: string, context: SeedanceSoundContext, sound: ShotSo
       }
       if (soundEffect.test(speaker.trim())) return sep + '<' + speech.replace(/^<(.*)>$/u, '$1') + '>'
       if (speaker.includes(SCRIPT_VIDEO_INNER_OS_DIRECTION)) {
-        const label = speaker.replace(SCRIPT_VIDEO_INNER_OS_DIRECTION, '').replace(/（音色参考@音频\d+）/gu, '').trim()
-        const speakerName = label.split(/[【（(\[]/u, 1)[0].trimEnd()
-        const actor = label.replace(/^@图片\d+[ \t]*/u, '')
-        const audio = context.voiceTags.get(speakerName)
+        const label = annotateScriptVideoInnerOs(speaker + '：').slice(0, -1).replace(SCRIPT_VIDEO_INNER_OS_DIRECTION, '').trim()
+        const speakerName = withoutScriptVideoVoiceCues(label).split(/[【（(\[]/u, 1)[0].trimEnd()
         sound.innerSpeakers.push(speakerName)
-        return `${sep}${actor}${audio ? `（音色参考${audio}）` : ''}${SCRIPT_VIDEO_INNER_OS_DIRECTION}：{${speech}}`
+        return `${sep}${label}(OS) ：“${speech}”`
       }
       const offscreen = /(?:V\.?O\.?|O\.?V\.?)[）)】\]]|画外|旁白|只闻其声/iu.test(speaker)
-      const labels = speaker.replace(/（音色参考@音频\d+）/gu, '').split(/[【（(\[]/u, 1)[0].split('、')
+      const labels = withoutScriptVideoVoiceCues(speaker).split(/[【（(\[]/u, 1)[0].split('、')
       for (const label of labels) {
         if (offscreen || isAudioOnlySpeaker(label.trimEnd(), context.audioOnlySpeakers)) continue
         sound.hasOnScreenSpeech = true
@@ -265,12 +240,31 @@ function screenTextNotes(body: string): string {
 
 function voiceReferenceUrl(asset: ScriptVideoDeliveryAsset | undefined) {
   const url = asset?.voiceAudio?.url
-  return asset?.kind === 'character' && typeof url === 'string' && url.trim() ? url : undefined
+  return (asset?.kind === 'character' || asset?.kind === 'audio') && typeof url === 'string' && url.trim() ? url : undefined
 }
 
 export function scriptVideoVoiceSource(asset: ScriptVideoDeliveryAsset | undefined) {
+  if (asset?.kind === 'audio') return voiceReferenceUrl(asset)
   if (asset?.kind !== 'character') return undefined
-  return voiceReferenceUrl(asset) ?? (asset.voiceMode === 'reference' ? 'reference' : 'model')
+  return voiceReferenceUrl(asset) ?? (asset.voiceMode === 'model' ? 'model' : 'reference')
+}
+
+function usesPickedAudio(mention: AssetMention, audioIds: ReadonlySet<string>, byId: ReadonlyMap<string, ScriptVideoDeliveryAsset>) {
+  return !!mention.manualAudioId && audioIds.has(mention.manualAudioId) && !!voiceReferenceUrl(byId.get(mention.manualAudioId))
+}
+
+function automaticSpeakers(
+  talking: ReadonlySet<string>, mentions: readonly AssetMention[],
+  audioIds: ReadonlySet<string>, byId: ReadonlyMap<string, ScriptVideoDeliveryAsset>,
+) {
+  const picked = new Set<string>()
+  const automatic = new Set<string>()
+  for (const mention of mentions) {
+    if (mention.usage !== 'speaker') continue
+    const group = usesPickedAudio(mention, audioIds, byId) ? picked : automatic
+    group.add(mention.id)
+  }
+  return new Set([...talking].filter(id => !picked.has(id) || automatic.has(id)))
 }
 
 function inspectScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(
@@ -285,6 +279,7 @@ function inspectScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(
   const legend = assetIds.map((id, i) => `图${i + 1} = @${byId.get(id)?.name ?? ''}`).join('，')
   if (legend && body.split(/\r?\n/u, 1)[0] === legend) body = body.slice(legend.length).replace(/^\r?\n/u, '')
   body = annotateScriptVideoInnerOs(omitScriptVideoRecapQuotes(body, card.shots || []), {
+    referenceAudioNames: assets.filter(asset => asset.kind === 'audio').map(asset => asset.name),
     speakers: [...assets.filter(asset => asset.kind === 'character').map(asset => asset.name),
       ...(options.cast?.map(role => role.name) ?? [])],
   })
@@ -295,34 +290,46 @@ function inspectScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(
   const scan = annotateScriptVideoAssets(body, assets, assetIds, scanOptions)
   const materialText = scriptVideoMaterialEvidenceText(body, card.shots)
   const evidence = materialText === body ? scan : annotateScriptVideoAssets(materialText, assets, assetIds, scanOptions)
-  const { imageIds, speakerIds } = scriptVideoMaterialIds(card, materialText, evidence)
+  const materials = scriptVideoMaterialIds(card, materialText, evidence)
+  // A character named outside verbatim speech needs an actual reference image
+  // even in a recap or an offscreen attribution. Keep its narrative usage so
+  // attaching the image does not turn a contextual name into an on-camera role.
+  const excluded = new Set(card.excludedAssetIds)
+  const characterReferences = evidence.mentions.filter(hit => !hit.literal &&
+    byId.get(hit.id)?.kind === 'character' && !excluded.has(hit.id))
+  const imageIds = [...new Set([...materials.imageIds, ...characterReferences.map(hit => hit.id)])]
+    .filter(id => byId.get(id)?.kind !== 'audio')
+  const referenceOnlyImages = new Set(imageIds.filter(id => !materials.imageIds.includes(id)))
+  const speakerIds = materials.speakerIds.filter(id => byId.get(id)?.kind !== 'audio')
+  const audioIds = new Set(scan.mentions.filter(hit => hit.usage === 'audio').map(hit => hit.id))
   if (card.manuallyAdded) {
     const bound = new Set(assetIds)
     return {
-      byId, body, style, scan,
+      byId, body, style, scan, referenceOnlyImages,
       imageIds: imageIds.filter(id => bound.has(id) && byId.get(id)?.image),
       talking: new Set(speakerIds.filter(id => bound.has(id))),
+      audioIds: new Set([...audioIds].filter(id => bound.has(id))),
       missingVoices: [],
     }
   }
   const talking = new Set(speakerIds)
   const missingVoices = new Set(scan.unboundSpeakers)
-  for (const id of talking) {
+  for (const id of automaticSpeakers(talking, scan.mentions, audioIds, byId)) {
     const asset = byId.get(id)
     const source = scriptVideoVoiceSource(asset)
     if (asset && (!source || source === 'reference')) missingVoices.add(asset.name)
   }
-  return { byId, body, style, scan, talking, imageIds, missingVoices: [...missingVoices] }
+  return { byId, body, style, scan, talking, imageIds, referenceOnlyImages, audioIds, missingVoices: [...missingVoices] }
 }
 
 export function getScriptVideoMaterialUse(
   card: ScriptVideoDeliveryCard, assets: readonly ScriptVideoDeliveryAsset[], options: ScriptVideoDeliveryOptions = {},
 ) {
-  const { imageIds, talking, scan, missingVoices } = inspectScriptVideoDelivery(card, assets, options)
+  const { imageIds, talking, audioIds, scan, missingVoices } = inspectScriptVideoDelivery(card, assets, options)
   const speakers = [...talking]
   const mentionedIds = new Set([...scan.contextAssetIds, ...scan.mentions.map(hit => hit.id)])
-  const contextIds = [...mentionedIds].filter(id => !imageIds.includes(id) && !talking.has(id))
-  return { imageIds, speakerIds: speakers, contextIds, missingVoices }
+  const contextIds = [...mentionedIds].filter(id => !imageIds.includes(id) && !talking.has(id) && !audioIds.has(id))
+  return { imageIds, speakerIds: speakers, audioIds: [...audioIds], contextIds, missingVoices }
 }
 
 export function getScriptVideoMissingVoices(
@@ -331,10 +338,14 @@ export function getScriptVideoMissingVoices(
   return inspectScriptVideoDelivery(card, assets, options).missingVoices
 }
 
-function voiceAssetIds(card: ScriptVideoDeliveryCard, body: string, talking: ReadonlySet<string>, visual: readonly string[], seedance25: boolean) {
+function voiceAssetIds(
+  card: ScriptVideoDeliveryCard, body: string, automatic: ReadonlySet<string>, talking: ReadonlySet<string>,
+  visual: readonly string[], seedance25: boolean, referenceOnlyImages: ReadonlySet<string>,
+) {
   const knownDialogue = card.shots.some(shot => typeof shot.dialogue === 'string') || /^对白[／/]音效[：:]/mu.test(body)
   const includeVisualVoices = !seedance25 && !knownDialogue
-  return [...new Set([...visual, ...talking])].filter(id => includeVisualVoices || talking.has(id))
+  return [...new Set([...visual, ...automatic])].filter(id => automatic.has(id) ||
+    includeVisualVoices && !talking.has(id) && !referenceOnlyImages.has(id))
 }
 
 /** Compare the audio sent to the provider and the mode of speakers without a reference. */
@@ -349,12 +360,13 @@ export function getScriptVideoVoiceInputs(
       ? card.shots.filter(shot => shot && (shot.dialogue == null || typeof shot.dialogue === 'string'))
       : [],
   }
-  const { byId, body, imageIds, talking } = inspectScriptVideoDelivery(source, assets, options)
+  const { byId, body, imageIds, referenceOnlyImages, talking, audioIds, scan } = inspectScriptVideoDelivery(source, assets, options)
   const model = options.model || ''
   const seedance25 = options.provider ? scriptVideoDeliveryTags(options).seedance25
     : isSeedance25Model(model) || isAicostSeedance25Model(model)
   const inputByAsset = new Map<string, string>()
-  for (const id of voiceAssetIds(source, body, talking, imageIds, seedance25)) {
+  const automatic = automaticSpeakers(talking, scan.mentions, audioIds, byId)
+  for (const id of [...voiceAssetIds(source, body, automatic, talking, imageIds, seedance25, referenceOnlyImages), ...audioIds]) {
     const asset = byId.get(id)
     const input = talking.has(id) ? scriptVideoVoiceSource(asset) : voiceReferenceUrl(asset)
     if (input) inputByAsset.set(id, input)
@@ -384,11 +396,12 @@ function orderedVisualIds(card: ScriptVideoDeliveryCard, body: string, visual: r
 }
 
 function groupReferenceVoices<A extends ScriptVideoDeliveryAsset>(
-  card: ScriptVideoDeliveryCard, body: string, talking: ReadonlySet<string>,
-  orderedIds: readonly string[], byId: ReadonlyMap<string, A>, seedance25: boolean,
+  card: ScriptVideoDeliveryCard, body: string, automatic: ReadonlySet<string>, talking: ReadonlySet<string>,
+  orderedIds: readonly string[], byId: ReadonlyMap<string, A>, seedance25: boolean, audioIds: ReadonlySet<string>,
+  referenceOnlyImages: ReadonlySet<string>,
 ) {
   const groups = new Map<string, { asset: A; roles: A[] }>()
-  for (const id of voiceAssetIds(card, body, talking, orderedIds, seedance25)) {
+  for (const id of [...voiceAssetIds(card, body, automatic, talking, orderedIds, seedance25, referenceOnlyImages), ...audioIds]) {
     const asset = byId.get(id)
     const url = voiceReferenceUrl(asset)
     if (!asset || !url) continue
@@ -403,12 +416,13 @@ function groupReferenceVoices<A extends ScriptVideoDeliveryAsset>(
 export function getScriptVideoPromptVoices<A extends ScriptVideoDeliveryAsset>(
   card: ScriptVideoDeliveryCard, assets: readonly A[], options: ScriptVideoDeliveryOptions = {},
 ) {
-  const { byId, body, scan, talking, imageIds } = inspectScriptVideoDelivery(card, assets, options)
+  const { byId, body, scan, talking, imageIds, referenceOnlyImages, audioIds } = inspectScriptVideoDelivery(card, assets, options)
   const { seedance25 } = scriptVideoDeliveryTags(options)
   const activeImages = new Set(imageIds)
   const visual = scan.mentions.filter(mention => mention.usage === 'visual' && activeImages.has(mention.id))
   const ordered = orderedVisualIds(card, body, visual, activeImages, seedance25)
-  return groupReferenceVoices(card, body, talking, ordered, byId, seedance25)
+  const automatic = automaticSpeakers(talking, scan.mentions, audioIds, byId)
+  return groupReferenceVoices(card, body, automatic, talking, ordered, byId, seedance25, audioIds, referenceOnlyImages)
 }
 
 export function buildScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(
@@ -416,7 +430,7 @@ export function buildScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(
 ) {
   const model = options.model || ''
   const { aicostSeedance20, seedance25, minimax, imageTag, audioTag } = scriptVideoDeliveryTags(options)
-  const { byId, body, style, scan, talking, imageIds, missingVoices } = inspectScriptVideoDelivery(card, assets, options)
+  const { byId, body, style, scan, talking, imageIds, referenceOnlyImages, audioIds, missingVoices } = inspectScriptVideoDelivery(card, assets, options)
   const warnings = new Set<string>()
   const unavailable = new Set<string>()
   const activeImages = new Set(imageIds)
@@ -431,11 +445,12 @@ export function buildScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(
     for (const problem of scan.problems) referenceIssue(describeScriptVideoReferenceProblem(body, problem))
     const boundIds = new Set(card.assetIds)
     for (const m of scan.mentions) {
-      if (m.explicit && (m.usage === 'visual' && activeImages.has(m.id) || m.usage === 'speaker' && talking.has(m.id)) && !boundIds.has(m.id)) {
+      if (m.explicit && ((m.usage === 'visual' || m.usage === 'context' && !m.literal) && activeImages.has(m.id) || m.usage === 'speaker' && talking.has(m.id) || m.usage === 'audio' && audioIds.has(m.id)) && !boundIds.has(m.id)) {
         referenceIssue('@' + m.name + ' 尚未绑定该卡素材')
         unavailable.add(m.id)
         activeImages.delete(m.id)
         talking.delete(m.id)
+        audioIds.delete(m.id)
       }
     }
   }
@@ -448,12 +463,15 @@ export function buildScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(
   }
   const visual = scan.mentions.filter(mention => mention.usage === 'visual' && activeImages.has(mention.id))
   const orderedIds = orderedVisualIds(card, body, visual, activeImages, seedance25)
-  const voices = groupReferenceVoices(card, body, talking, orderedIds, byId, seedance25)
+  const automatic = automaticSpeakers(talking, scan.mentions, audioIds, byId)
+  const voices = groupReferenceVoices(card, body, automatic, talking, orderedIds, byId, seedance25, audioIds, referenceOnlyImages)
   const audioByAssetId = new Map(voices.flatMap(({ roles }, i) => roles.map(asset => [asset.id, audioTag(i + 1)] as const)))
   // Providers which require a visual reference alongside audio can anchor an
   // audio-only clip to one speaker image without staging that speaker on camera.
   if (!orderedIds.length && voices.length && (minimax || options.provider === 'volcengine' && seedanceModelLimits(model)?.version === '2.0')) {
-    orderedIds.push(voices[0].asset.id)
+    const speaker = [...talking, ...voices.flatMap(voice => voice.roles.map(asset => asset.id))]
+      .map(id => byId.get(id)).find(asset => asset?.kind === 'character' && asset.image)
+    if (speaker) orderedIds.push(speaker.id)
   }
   const ordered = orderedIds.flatMap(id => {
     const asset = byId.get(id)
@@ -473,7 +491,6 @@ export function buildScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(
 
   let cursor = 0, output = ''
   const audioOnlySpeakers = new Set<string>()
-  const voiceTags = new Map<string, string>()
   const vocalizations = scan.mentions.filter(mention => mention.vocalization)
   const vocalizingRoles = new Set(vocalizations.map(mention => mention.id))
   const vocalizationShots = new Set<number>()
@@ -484,25 +501,35 @@ export function buildScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(
       if (shot) vocalizationShots.add(shot.index + 1)
     }
   }
+  let previousMention: AssetMention | undefined
   for (const mention of scan.mentions) {
     const { start, end, id, spoken, usage, vocalization } = mention
     const asset = byId.get(id)!
     const surface = body.slice(start, end).replace(/^@/u, '')
     const imageIndex = includedImageIds.has(id) ? indexByImage.get(asset.image) : undefined
-    if (usage === 'speaker' && !vocalization && !imageIndex) audioOnlySpeakers.add(surface)
-    const rendered = spoken || unavailable.has(id) ? body.slice(start, end) : usage !== 'context' && imageIndex ? imageTag(imageIndex) + surface : surface
+    if (usage === 'speaker' && !vocalization && (!imageIndex || referenceOnlyImages.has(id))) {
+      audioOnlySpeakers.add(surface)
+      if (imageIndex) audioOnlySpeakers.add(imageTag(imageIndex) + surface)
+    }
     const voiceTag = audioByAssetId.get(id)
-    const inlineVoice = usage === 'speaker' && voiceTag && (!spoken || vocalization) ? `（音色参考${voiceTag}）` : ''
-    if (inlineVoice && voiceTag && !vocalization) voiceTags.set(rendered, voiceTag)
-    output += body.slice(cursor, start) + rendered + inlineVoice
+    const rendered = mention.literal && (spoken || usage !== 'context') || unavailable.has(id) ? body.slice(start, end) : usage === 'audio' ? voiceTag ?? body.slice(start, end)
+      : (usage !== 'context' || !mention.literal) && imageIndex ? imageTag(imageIndex) + surface : surface
+    const inlineVoice = usage === 'speaker' && voiceTag && (!spoken || vocalization)
+      && !usesPickedAudio(mention, audioIds, byId) ? ' ' + voiceTag : ''
+    const separator = usage === 'audio' && cursor === start && previousMention?.manualAudioId === id ? ' ' : ''
+    output += body.slice(cursor, start) + separator + rendered + inlineVoice
     cursor = end
+    previousMention = mention
   }
   output = splitScriptVideoHandoff(output + body.slice(cursor)).body
 
   const header = ordered.flatMap(asset => {
-    const voiceOnly = !activeImages.has(asset.id)
-    if (!seedance25 && !voiceOnly) return []
-    return [`${imageTag(indexByImage.get(asset.image)!)} ${asset.name}（${voiceOnly ? '画外声音来源，不安排出镜' : pictureDuties[asset.kind || ''] || '外观'}）`]
+    const referenceOnly = referenceOnlyImages.has(asset.id)
+    const voiceOnly = referenceOnly && talking.has(asset.id) || !activeImages.has(asset.id)
+    if (!seedance25 && !voiceOnly && !referenceOnly) return []
+    const duty = voiceOnly ? '画外声音来源，不安排出镜' : referenceOnly
+      ? '人物外观参考，是否出镜以当前分镜为准' : pictureDuties[asset.kind || ''] || '外观'
+    return [`${imageTag(indexByImage.get(asset.image)!)} ${asset.name}（${duty}）`]
   }).join('，')
   const hasInnerVoice = seedance25 && output.includes(SCRIPT_VIDEO_INNER_OS_DIRECTION)
   const hasMultipleCharacters = images.filter(asset => asset.kind === 'character').length > 1
@@ -513,11 +540,11 @@ export function buildScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(
     const index = indexByImage.get(asset.image)
     return index ? imageTag(index) + asset.name : asset.name
   }
-  const referenceVoiceText = voices.flatMap(({ roles }, i) => roles.map(asset =>
+  const referenceVoiceText = voices.flatMap(({ roles }, i) => roles.filter(asset => asset.kind === 'character').map(asset =>
     `${voiceLabel(asset)}的${hasInnerVoice || vocalizingRoles.has(asset.id) ? '角色' : '对白'}音色参考${audioTag(i + 1)}，只参考音色，不照搬音频中的内容。`,
   ))
   const modelVoiceText: string[] = []
-  for (const id of talking) {
+  for (const id of automatic) {
     const asset = byId.get(id)
     if (asset && scriptVideoVoiceSource(asset) === 'model') {
       modelVoiceText.push(`${voiceLabel(asset)}由模型生成音色，遵循本段的角色和表演设定，各镜保持同一音色。`)
@@ -526,7 +553,7 @@ export function buildScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(
   const voiceText = [...referenceVoiceText, ...modelVoiceText].join('\n')
   const duration = options.duration ?? card.duration
   if (!card.manuallyAdded && duration !== card.duration) output = retimeShotText(output, card, duration)
-  if (seedance25) output = seedanceShotText(output, duration, { audioOnlySpeakers: [...audioOnlySpeakers], voiceTags, hasMultipleCharacters, vocalizationShots })
+  if (seedance25) output = seedanceShotText(output, duration, { audioOnlySpeakers: [...audioOnlySpeakers], hasMultipleCharacters, vocalizationShots })
   else if (aicostSeedance20 || seedanceModelLimits(model)?.version === '2.0') output = output.replace(shotHeading, '镜头$1')
   if (voiceText) {
     const firstShot = output.search(shotBoundary)

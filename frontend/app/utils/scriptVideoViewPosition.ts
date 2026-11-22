@@ -8,7 +8,6 @@ export type ScriptVideoViewPosition = {
   stage?: ScriptVideoStage
   cardId?: string
   tab?: ScriptVideoEditorTab
-  outputMode?: 'internal' | 'external'
   scroll?: Record<string, ScrollOffset>
 }
 
@@ -26,7 +25,6 @@ export function readScriptVideoViewPosition(): ScriptVideoViewPosition | undefin
       if (stages.includes(value.stage)) position.stage = value.stage
       if (tabs.includes(value.tab)) position.tab = value.tab
       if (typeof value.cardId === 'string') position.cardId = value.cardId
-      if (value.outputMode === 'internal' || value.outputMode === 'external') position.outputMode = value.outputMode
       if (value.scroll && typeof value.scroll === 'object') position.scroll = value.scroll
     }
     return position

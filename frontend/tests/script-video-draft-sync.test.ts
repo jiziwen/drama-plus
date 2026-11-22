@@ -31,6 +31,7 @@ function editor() {
     selectedProjectId: { value: 'p' }, selectedEpisodeId: { value: 'e1' }, previewId: () => 'test-client',
     canSend: true, alive: true, navigator: online, draftAccount: 'admin', tabId: 'tab-A',
     placeholderEpisode: { script: '', cards: [], tasks: [] },
+    loadStylePresets: async () => {},
     scriptVideoRequest: (...args: any[]) => handle(...args),
     writeScriptVideoDraft: async (_account: string, _tab: string, _id: string, row?: unknown) => { disk.push(row) },
   })

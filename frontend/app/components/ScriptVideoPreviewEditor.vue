@@ -14,9 +14,7 @@
           ><span v-if="overLimit" class="sv-error">超过 30 秒上限</span>
         </div>
       </div>
-      <span class="sv-badge">{{
-        outputMode === 'external' ? '外部交付' : '视频制作'
-      }}</span>
+      <span class="sv-badge">视频制作</span>
     </header>
 
     <nav class="sv-tabs" aria-label="片段编辑">
@@ -44,10 +42,18 @@
             ><button
               class="sv-button sv-quiet"
               type="button"
-              :disabled="uploadingPromptImage || !canUploadPromptImage"
+              :disabled="!!uploadingPromptMedia || !canUploadPromptMedia"
               @click="promptImageInput?.click()"
             >
-              <Upload :size="13" />{{ uploadingPromptImage ? '上传中…' : '上传图片' }}
+              <Upload :size="13" />{{ uploadingPromptMedia === 'image' ? '上传中…' : '上传图片' }}
+            </button>
+            ><button
+              class="sv-button sv-quiet"
+              type="button"
+              :disabled="!!uploadingPromptMedia || !canUploadPromptMedia"
+              @click="promptAudioInput?.click()"
+            >
+              <Headphones :size="13" />{{ uploadingPromptMedia === 'audio' ? '上传中…' : '上传音频' }}
             </button
             ><button
               class="sv-button sv-quiet"
@@ -63,7 +69,14 @@
           type="file"
           accept="image/png,image/jpeg,image/webp"
           hidden
-          @change="pickPromptImage"
+          @change="pickPromptMedia($event, 'image')"
+        />
+        <input
+          ref="promptAudioInput"
+          type="file"
+          accept=".mp3,.wav,audio/mpeg,audio/wav,audio/x-wav"
+          hidden
+          @change="pickPromptMedia($event, 'audio')"
         />
         <ScriptVideoPromptStyle
           v-if="promptProjection.style"
@@ -81,15 +94,17 @@
           input-class="sv-prompt-input"
           placeholder="描述画面、动作和声音，输入 @ 引用素材…"
           @focus="beginPromptEdit"
+          @compositionstart="compositionProjection = promptProjection"
+          @compositionend="compositionProjection = undefined"
           @update:model-value="editPrompt"
           @commit="finishPromptEdit"
         />
         <div class="sv-reference-head">
           <div>
             <h3>本片段参考素材</h3>
-            <p>上传图片，或在提示词里输入 @ 引用项目资产。</p>
+            <p>上传图片或音频，在提示词里输入 @ 引用素材。</p>
           </div>
-          <span class="sv-caption">{{ materialUse.imageIds.length }} 配图 · {{ materialUse.speakerIds.length }} 发声角色</span>
+          <span class="sv-caption">{{ materialUse.imageIds.length }} 配图 · {{ materialUse.speakerIds.length }} 发声角色<span v-if="materialUse.audioIds.length"> · {{ materialUse.audioIds.length }} 音频</span></span>
         </div>
         <!-- <input
           v-if="selectedAssets.length"
@@ -108,10 +123,10 @@
             <button
               type="button"
               class="sv-reference-view"
-              :aria-label="`查看参考图 ${asset.name}`"
-              :aria-haspopup="asset.image ? 'dialog' : undefined"
-              :disabled="!asset.image"
-              @click="openMediaPreview('image', asset.name, asset.image)"
+              :aria-label="asset.kind === 'audio' ? `试听音频 ${asset.name}` : `查看参考图 ${asset.name}`"
+              :aria-haspopup="asset.image || asset.kind === 'audio' && asset.voiceAudio?.url ? 'dialog' : undefined"
+              :disabled="asset.kind === 'audio' ? !asset.voiceAudio?.url : !asset.image"
+              @click="openAssetPreview(asset)"
             >
               <span class="sv-thumb"><ScriptVideoPreviewAssetImage :asset="asset" /></span>
               <span class="sv-asset-copy">
@@ -295,7 +310,7 @@
             <Eye :size="14" aria-hidden="true" />最终提示词
           </button>
           <button
-            v-if="outputMode === 'internal' && canCancelVideo"
+            v-if="canCancelVideo"
             type="button"
             class="sv-button sv-quiet"
             :disabled="cancelingVideo"
@@ -307,15 +322,9 @@
             class="sv-button sv-primary"
             :disabled="isGenerating || !!actionWarnings.length"
             :aria-describedby="actionWarnings.length ? actionWarningId : undefined"
-            @click="outputMode === 'external' ? $emit('export') : $emit('generate')"
+            @click="$emit('generate')"
           >
-            {{
-              outputMode === 'external'
-                ? '导出交付包'
-                : isGenerating
-                  ? '正在生成视频…'
-                  : '生成视频'
-            }}
+            {{ isGenerating ? '正在生成视频…' : '生成视频' }}
             <span>↗</span>
           </button>
         </div>
@@ -335,7 +344,7 @@
           <button
             type="button"
             class="sv-button sv-quiet"
-            :aria-label="previewedMedia.kind === 'video' ? '关闭视频' : '关闭参考图'"
+            :aria-label="`关闭${mediaLabel[previewedMedia.kind]}`"
             autofocus
             @click="mediaDialog?.close()"
           >
@@ -343,7 +352,7 @@
           </button>
         </header>
         <p v-if="mediaPreviewFailed" class="sv-empty" role="status">
-          {{ previewedMedia.kind === 'video' ? '视频加载失败' : '参考图加载失败' }}
+          {{ mediaLabel[previewedMedia.kind] }}加载失败
         </p>
         <video
           v-else-if="previewedMedia.kind === 'video'"
@@ -351,6 +360,14 @@
           :src="previewedMedia.url"
           controls
           playsinline
+          preload="metadata"
+          @error="mediaPreviewFailed = true"
+        />
+        <audio
+          v-else-if="previewedMedia.kind === 'audio'"
+          ref="modalAudio"
+          :src="previewedMedia.url"
+          controls
           preload="metadata"
           @error="mediaPreviewFailed = true"
         />
@@ -367,7 +384,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, ref, shallowRef, useId, watch } from 'vue'
-import { Eye, Sparkles, Upload, X } from 'lucide-vue-next'
+import { Eye, Headphones, Sparkles, Upload, X } from 'lucide-vue-next'
 import MentionTextarea from './MentionTextarea.vue'
 import type { useScriptVideoReferenceFrames } from '~/composables/useScriptVideoReferenceFrames'
 import { getPreviewMaterialUse, inspectPreviewCardAssets, validatePreviewCards } from '~/utils/scriptVideoPreviewValidation'
@@ -393,7 +410,6 @@ const props = withDefaults(
     card: PreviewCard
     frameEditor?: ReturnType<typeof useScriptVideoReferenceFrames>
     assets: PreviewAsset[]
-    outputMode: 'internal' | 'external'
     production?: PreviewProduction
     stylePreset?: PreviewProduction['stylePreset']
     videoProvider?: string
@@ -402,8 +418,8 @@ const props = withDefaults(
     segmentNumber?: number
     segmentCount?: number
     segmentStart?: number
-    canUploadPromptImage?: boolean
-    uploadingPromptImage?: boolean
+    canUploadPromptMedia?: boolean
+    uploadingPromptMedia?: 'image' | 'audio'
     running?: boolean
     canCancelVideo?: boolean
     cancelingVideo?: boolean
@@ -432,7 +448,7 @@ const emit = defineEmits<{
   export: []
   'preview-final-prompt': [event: MouseEvent]
   'promote-video-version': [url: string]
-  'upload-prompt-image': [file: File]
+  'upload-prompt-media': [file: File, kind: 'image' | 'audio']
 }>()
 function timecode(seconds: number) {
   const rest = Number((seconds % 60).toFixed(2))
@@ -500,7 +516,7 @@ const isGenerating = computed(
     props.card.status === 'generating',
 )
 const kindLabel = (kind: string) =>
-  ({ character: '角色', scene: '背景', prop: '道具', creature: '生物' })[
+  ({ character: '角色', scene: '背景', prop: '道具', creature: '生物', audio: '音频' })[
     kind
   ] || '资产'
 const assetContext = computed(() => ({
@@ -509,16 +525,20 @@ const assetContext = computed(() => ({
 }))
 const selectedAssets = computed(() => {
   const byId = new Map(props.assets.map(asset => [asset.id, asset]))
-  const { imageIds, speakerIds } = materialUse.value
-  const ids = new Set([...props.card.assetIds, ...imageIds, ...speakerIds])
+  const { imageIds, speakerIds, audioIds } = materialUse.value
+  const ids = new Set([...props.card.assetIds, ...imageIds, ...speakerIds, ...audioIds])
   return [...ids].map(id => byId.get(id)).filter((asset): asset is PreviewAsset => !!asset)
 })
 function materialStatus(asset: PreviewAsset) {
-  const { imageIds, speakerIds, contextIds, missingVoices } = materialUse.value
+  const { imageIds, speakerIds, audioIds, contextIds, missingVoices } = materialUse.value
   const labels = []
   if (imageIds.includes(asset.id)) labels.push('配图')
-  if (speakerIds.includes(asset.id))
-    labels.push(missingVoices.includes(asset.name) ? '缺少参考音频' : asset.voiceAudio?.url ? '参考音频' : '模型配音')
+  if (audioIds.includes(asset.id)) labels.push('已引用')
+  if (speakerIds.includes(asset.id)) {
+    if (missingVoices.includes(asset.name)) labels.push('缺少参考音频')
+    else if (asset.voiceAudio?.url) labels.push('参考音频')
+    else labels.push(asset.voiceMode === 'model' ? '模型配音' : '发声角色')
+  }
   if (!labels.length) labels.push(contextIds.includes(asset.id) ? '仅文本提及' : '候选素材')
   return labels.join(' · ')
 }
@@ -530,9 +550,11 @@ const filteredAssets = computed(() =>
 )
 const inlineVideo = ref<HTMLVideoElement>()
 const modalVideo = ref<HTMLVideoElement>()
+const modalAudio = ref<HTMLAudioElement>()
 const mediaDialog = ref<HTMLDialogElement>()
 const mediaTitleId = useId()
-type MediaPreview = { kind: 'image' | 'video'; name: string; url: string }
+const mediaLabel = { image: '参考图', video: '视频', audio: '音频' }
+type MediaPreview = { kind: keyof typeof mediaLabel; name: string; url: string }
 const previewedMedia = shallowRef<MediaPreview | null>(null)
 const mediaPreviewFailed = ref(false)
 async function openMediaPreview(kind: MediaPreview['kind'], name: string, url?: string) {
@@ -543,23 +565,29 @@ async function openMediaPreview(kind: MediaPreview['kind'], name: string, url?: 
   await nextTick()
   mediaDialog.value?.showModal()
 }
+function openAssetPreview(asset: PreviewAsset) {
+  if (asset.kind === 'audio') return openMediaPreview('audio', asset.name, asset.voiceAudio?.url)
+  return openMediaPreview('image', asset.name, asset.image)
+}
 function clearMediaPreview() {
   modalVideo.value?.pause()
+  modalAudio.value?.pause()
   previewedMedia.value = null
 }
 const mentionOptions = computed(() => {
   const selectedIds = new Set(selectedAssets.value.map(asset => asset.id))
-  const visuals = [...selectedAssets.value, ...props.assets.filter(asset => !selectedIds.has(asset.id))].map((asset) => ({
+  const options = [...selectedAssets.value, ...props.assets.filter(asset => !selectedIds.has(asset.id))].map((asset) => ({
     id: asset.id,
     label: asset.name,
     value: asset.name,
     kind: asset.kind,
     group: kindLabel(asset.kind),
+    audioUrl: asset.kind === 'audio' ? asset.voiceAudio?.url : undefined,
     image: asset.image.startsWith('/script-video-preview/')
       ? undefined
       : asset.image || undefined,
   }))
-  return [...visuals, ...promptVoices.value.map(({ asset, roles }, i) => ({
+  return [...options, ...promptVoices.value.map(({ asset, roles }, i) => ({
     id: `voice-${i + 1}`, label: `音频${i + 1}`, value: `音频${i + 1}`,
     kind: 'audio', group: roles.map(role => role.name).join('、'), previewOnly: true, audioUrl: asset.voiceAudio?.url,
   }))]
@@ -572,40 +600,72 @@ function joinPrompt(prefix: string, body: string) {
   return prefix && body && !prefix.endsWith('\n') ? prefix + '\n\n' + body : prefix + body
 }
 const promptImageInput = ref<HTMLInputElement>()
-function pickPromptImage(event: Event) {
+const promptAudioInput = ref<HTMLInputElement>()
+function pickPromptMedia(event: Event, kind: 'image' | 'audio') {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   input.value = ''
-  if (file) emit('upload-prompt-image', file)
+  if (file) emit('upload-prompt-media', file, kind)
 }
 function projectPrompt(card: PreviewCard) {
-  // The textarea normalizes legacy CRLF text. Analyze the same text that its
-  // selection offsets refer to, including the generated voice cues.
-  const source = textareaText(card.prompt)
-  const { body, prefix, style } = editablePrompt(source)
+  const authored = textareaText(card.prompt)
   const context = assetContext.value
+  const references = inspectPreviewCardAssets({ ...card, prompt: authored }, props.assets, context)
+  const source = references.text
+  const { body, prefix, style } = editablePrompt(source)
   const editable = { ...card, prompt: source }
-  const analyzed = inspectPreviewCardAssets(editable, props.assets, context)
+  // Normalize real references before building the display and its hover bounds.
+  // Spoken names remain literal, and need no display-only @ marker.
+  const analyzed = source === authored ? references : inspectPreviewCardAssets(editable, props.assets, context)
   const voices = getScriptVideoPromptVoices(editable, props.assets, {
     ...context, provider: props.videoProvider, model: props.videoModel,
   })
   const indices = new Map(voices.flatMap(({ roles }, i) => roles.map(role => [role.id, i + 1] as const)))
   const mentions = offsetMentions(analyzed.mentions, prefix.length)
-  return { view: scriptVideoPromptVoiceView(body, mentions, indices), prefix, style, mentions, analyzed, voices }
+  const authoredPrefix = editablePrompt(authored).prefix.length
+  function normalizedOffset(position: number) {
+    const absolute = authoredPrefix + position
+    let delta = 0
+    for (const hit of references.mentions) {
+      if (hit.literal) continue
+      if (absolute <= hit.start) break
+      const length = hit.name.length + 1
+      if (absolute < hit.end) {
+        return hit.start + delta + Math.min(length, absolute - hit.start + (hit.explicit ? 0 : 1)) - prefix.length
+      }
+      delta += length - (hit.end - hit.start)
+    }
+    return absolute + delta - prefix.length
+  }
+  return {
+    view: scriptVideoPromptVoiceView(body, mentions, indices), prefix, style, mentions, analyzed, voices,
+    authoredMentions: references.mentions,
+    normalizedText: source === authored ? card.prompt : source,
+    normalizedOffset,
+  }
 }
 function offsetMentions<T extends { start: number; end: number }>(mentions: readonly T[], offset: number) {
   return mentions.filter(hit => hit.start >= offset).map(hit => ({ ...hit, start: hit.start - offset, end: hit.end - offset }))
 }
 const savedPrompt = computed(() => projectPrompt(props.card))
 const hasPromptBody = computed(() => Boolean(savedPrompt.value.view.source.trim()))
-const promptDraft = shallowRef<{ cardId: string; projection: ReturnType<typeof projectPrompt> }>()
-const promptProjection = computed(() => promptDraft.value?.cardId === props.card.id
-  ? promptDraft.value.projection : savedPrompt.value)
+const promptDraft = shallowRef<PreviewCard>()
+// The textarea still contains the previous display while an IME composes.
+const compositionProjection = shallowRef<ReturnType<typeof projectPrompt>>()
+const promptProjection = computed(() => compositionProjection.value ?? (promptDraft.value?.id === props.card.id
+  ? projectPrompt(promptDraft.value) : savedPrompt.value))
 const analyzedPrompt = computed(() => promptProjection.value.analyzed)
 const materialUse = computed(() => analyzedPrompt.value.materialUse)
 const promptVoices = computed(() => promptProjection.value.voices)
 const promptVoiceView = computed(() => promptProjection.value.view)
 const promptInput = ref<InstanceType<typeof MentionTextarea>>()
+watch(promptVoiceView, (view, previous) => {
+  if (view.source !== previous.source || view.text === previous.text) return
+  // Reference numbers can change when two characters no longer share a recording.
+  const remap = (offset: number) => view.displayOffset(previous.sourceOffset(offset),
+    previous.cues.some(cue => cue.start === offset))
+  promptInput.value?.remapDisplay(previous.text, view.text, remap)
+})
 function previewRanges(text: string) {
   const view = promptVoiceView.value
   const { prefix, mentions } = promptProjection.value
@@ -623,12 +683,13 @@ function previewRanges(text: string) {
 let lastEdit: { display: string; source: string } | undefined
 let editSequence = 0
 function beginPromptEdit() {
-  if (promptDraft.value?.cardId === props.card.id) return
-  promptDraft.value = { cardId: props.card.id, projection: savedPrompt.value }
+  if (promptDraft.value?.id === props.card.id) return
+  promptDraft.value = { ...props.card }
 }
 function clearPromptEdit() {
   editSequence++
   promptDraft.value = undefined
+  compositionProjection.value = undefined
   lastEdit = undefined
 }
 watch([() => props.card.id, tab], clearPromptEdit)
@@ -642,20 +703,20 @@ async function editPrompt(display: string, input: HTMLTextAreaElement) {
   lastEdit = { display, source: edit.text }
   // Save authored edits as usual. A save acknowledgement may normalize the
   // stored prompt, but should not replace the active textarea under its caret.
-  const projection = edit.text === view.source ? promptProjection.value
-    : projectPrompt(updatePrompt(joinPrompt(promptProjection.value.prefix, edit.text)))
-  promptDraft.value = { cardId, projection }
+  if (edit.text !== view.source) promptDraft.value = updatePrompt(joinPrompt(promptProjection.value.prefix, edit.text))
+  else if (promptDraft.value?.id !== cardId) promptDraft.value = { ...props.card }
   await nextTick()
   const updated = promptVoiceView.value
   if (sequence !== editSequence || cardId !== props.card.id || input.value !== display && input.value !== updated.text) return
   if (display !== updated.text) {
-    promptInput.value?.syncDisplay(updated.text, updated.displayOffset(edit.selectionStart, edit.beforeCue),
-      updated.displayOffset(edit.selectionEnd, edit.beforeCue), direction)
+    const normalize = promptProjection.value.normalizedOffset
+    promptInput.value?.syncDisplay(updated.text, updated.displayOffset(normalize(edit.selectionStart), edit.beforeCue),
+      updated.displayOffset(normalize(edit.selectionEnd), edit.beforeCue), direction)
   }
 }
 const actionWarningId = useId()
 const actionWarnings = computed(() => {
-  if (props.card.manuallyAdded && props.outputMode === 'internal')
+  if (props.card.manuallyAdded)
     return hasPromptBody.value ? [] : ['请输入视频提示词。']
   const warnings: string[] = []
   if (!props.card.shots.length) warnings.push('请先添加镜头。')
@@ -663,18 +724,19 @@ const actionWarnings = computed(() => {
   else if (totalDuration.value <= 0) warnings.push('镜头总时长必须大于 0 秒。')
   if (props.card.promptNeedsSync)
     warnings.push('镜头已修改，视频提示词待同步。可让 AI 按当前分镜更新，也可到「视频提示词」手动修改。')
-  if (props.outputMode === 'internal' && props.videoVoiceWarning)
+  if (props.videoVoiceWarning)
     warnings.push(props.videoVoiceWarning)
   return warnings
 })
 const advisoryWarnings = computed(() => analyzedPrompt.value.warnings.map(issue => issue.message))
 function updatePrompt(prompt: string): PreviewCard {
   const { mentions } = analyzePrompt(prompt)
+  const characters = new Set(props.assets.filter(asset => asset.kind === 'character').map(asset => asset.id))
   const assetIds = new Set(mentions
-    .filter(hit => hit.explicit && hit.usage !== 'context')
+    .filter(hit => !hit.literal && characters.has(hit.id) || hit.explicit && hit.usage !== 'context')
     .map(hit => hit.id))
   const next = {
-    ...replacePreviewPrompt(props.card, prompt, { before: savedPrompt.value.analyzed.mentions, after: mentions }),
+    ...replacePreviewPrompt(props.card, prompt, { before: savedPrompt.value.authoredMentions, after: mentions }),
     assetIds: [...new Set([...props.card.assetIds, ...assetIds])],
   }
   if (next.excludedAssetIds) {
@@ -697,11 +759,12 @@ function finishPromptEdit(text: string, blurred = false) {
   // Changes already accepted by autosave can now appear in the editor. Do not
   // overwrite those changes with the focused copy if commit had nothing to add.
   const currentText = textareaText(props.card.prompt)
-  const prompt = (blurred && result.text === prefix + view.source) || result.text === currentText ? props.card.prompt : result.text
+  const prompt = blurred && result.text === prefix + view.source ? savedPrompt.value.normalizedText
+    : result.text === currentText ? props.card.prompt : result.text
   if (prompt === props.card.prompt && ids.length === props.card.assetIds.length) return
   const after = prompt === authoredPrompt ? result.mentions : analyzePrompt(textareaText(prompt)).mentions
   emit('update', checkedPromptUpdate({
-    ...replacePreviewPrompt(props.card, prompt, { before: savedPrompt.value.analyzed.mentions, after }),
+    ...replacePreviewPrompt(props.card, prompt, { before: savedPrompt.value.authoredMentions, after }),
     assetIds: ids,
   }))
 }
@@ -779,8 +842,9 @@ function removeShot(index: number) {
 .sv-prompt-actions {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 10px;
-  flex-shrink: 0;
+  flex-wrap: wrap;
 }
 .sv-prompt-actions button {
   display: flex;

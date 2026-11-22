@@ -20,7 +20,7 @@ test('audio cue projection follows each speaker reference while preserving actio
     mention(source, name, 2, 'speaker'),
   ]
   const view = scriptVideoPromptVoiceView(source, mentions, new Map([['lead', 2]]))
-  assert.equal(view.text, '🎬 画面：@阿梨抬手。\n对白：@阿梨（音色参考@音频2）（低声）：“阿梨回来了。”\n心声：@阿梨（音色参考@音频2）：“终于。”')
+  assert.equal(view.text, '🎬 画面：@阿梨抬手。\n对白：@阿梨 @音频2（低声）：“阿梨回来了。”\n心声：@阿梨 @音频2：“终于。”')
   for (const cue of view.cues) {
     assert.equal(view.text.slice(cue.tokenStart, cue.tokenEnd), '@音频2')
     assert.equal(view.displayOffset(cue.sourceOffset, true), cue.start)
@@ -68,7 +68,7 @@ test('音效叙述仅为确实发声的角色投射音频，编辑保存仍保�
   const later = mention(source, '吴良', 1, 'context', true)
   const quoted = mention(source, '吴良', 2, 'context', true)
   const view = scriptVideoPromptVoiceView(source, [first, later, quoted], new Map([['lead', 3]]))
-  assert.equal(view.text, '对白／音效：〈吴良（音色参考@音频3）短促仰头发笑；笑声随吴良低头收住。〉顾凌天：“吴良走了。”')
+  assert.equal(view.text, '对白／音效：〈吴良 @音频3短促仰头发笑；笑声随吴良低头收住。〉顾凌天：“吴良走了。”')
   assert.equal(view.cues.length, 1)
   assert.equal(editScriptVideoPromptVoiceView(view, view.text + '。', view.text.length + 1, view.text.length + 1).text, source + '。')
 })

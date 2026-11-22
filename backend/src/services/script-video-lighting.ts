@@ -1,5 +1,6 @@
 import type { ScriptVideoLightingRange } from './script-video-delivery.js'
-import { buildScriptVideoLightingPlan, type ScriptVideoLightingSceneRange } from './script-video-lighting-plan.js'
+import { buildScriptVideoEpisodeLightingPlan, type ScriptVideoLightingSceneRange } from './script-video-lighting-plan.js'
+import { previousScriptVideoCard } from './script-video-predecessor.js'
 import type { ScriptVideoJob, ScriptVideoProject } from './script-video-store.js'
 import { listScriptVideoVersions, officialScriptVideoUrl, type ScriptVideoVersion } from './script-video-versions.js'
 import { scriptVideoReferenceSourceUrl, type ScriptVideoFrameChoice } from './script-video-reference-settings.js'
@@ -63,19 +64,29 @@ export function selectedScriptVideoRenders(episode: ScriptVideoProject['episodes
   return ready
 }
 
-/** A manual selection may keep using an archived take after a newer render
- * is selected. Resolve ownership before exposing the URL or seeking a file. */
-export function earlierScriptVideoRender(episode: ScriptVideoProject['episodes'][number], cardId: string, videoUrl: string) {
+/** A manual selection can keep an archived take from the immediately preceding segment. */
+export function previousScriptVideoRender(project: ScriptVideoProject, episodeId: string, cardId: string, videoUrl: string) {
   const url = scriptVideoReferenceSourceUrl(videoUrl)
   if (!url) return
-  const index = episode.cards.findIndex((card: VideoCard) => card.id === cardId)
-  for (let i = index - 1; i >= 0; i--) {
-    const card = episode.cards[i]
-    if (!listScriptVideoVersions(card, episode.tasks).some(version => scriptVideoReferenceSourceUrl(version.url) === url)) continue
-    const task = episode.tasks?.find((item: { cardId: string; videoUrl?: string; status: string }) =>
-      item.cardId === card.id && item.status === 'completed' && scriptVideoReferenceSourceUrl(item.videoUrl) === url)
-    return { cardId: card.id as string, taskId: task?.taskId as number | undefined, videoUrl: url }
-  }
+  const predecessor = previousScriptVideoCard(project, episodeId, cardId)
+  if (!predecessor) return
+  const { card: previous, episode } = predecessor
+  if (!previous || !listScriptVideoVersions(previous, episode.tasks).some(version => scriptVideoReferenceSourceUrl(version.url) === url)) return
+  const task = episode.tasks?.find((item: { cardId: string; videoUrl?: string; status: string }) =>
+    item.cardId === previous.id && item.status === 'completed' && scriptVideoReferenceSourceUrl(item.videoUrl) === url)
+  return { cardId: previous.id as string, taskId: task?.taskId as number | undefined, videoUrl: url }
+}
+
+export function fallbackScriptVideoLightingRange(shotCount: number): ScriptVideoLightingRange {
+  return { startShot: 1, endShot: Math.max(1, shotCount), sceneName: '本片段' }
+}
+
+function manualLightingSource(
+  project: ScriptVideoProject, episodeId: string, cardId: string, choice: ScriptVideoFrameChoice | undefined,
+): LightingSource | undefined {
+  if (choice?.mode !== 'manual') return
+  const owner = previousScriptVideoRender(project, episodeId, cardId, choice.videoUrl)
+  if (owner) return { ...owner, start: choice.seconds, end: choice.seconds, stableStart: choice.seconds, manualSeconds: choice.seconds }
 }
 
 function shotEnd(card: { shots: { duration: number }[] }, index: number) {
@@ -90,42 +101,51 @@ export function planScriptVideoLighting(
   const episode = project.episodes.find(item => item.id === episodeId)
   const result: Record<string, PlannedRange[]> = Object.create(null)
   if (!episode) return result
-  const ranges = buildScriptVideoLightingPlan(episode.cards, episode.confirmedScript || episode.script, project.assets)
-  const ready = selectedScriptVideoRenders(episode, jobs)
-  const cardsById = new Map<string, VideoCard>(episode.cards.map((card: VideoCard) => [card.id, card]))
+  const ranges = buildScriptVideoEpisodeLightingPlan(project, episodeId)
+  const predecessor = episode.cards[0] && previousScriptVideoCard(project, episodeId, episode.cards[0].id)
+  const previousEpisode = predecessor?.episode.id !== episodeId ? predecessor?.episode : undefined
+  const cards = [...(previousEpisode ? [predecessor!.card] : []), ...episode.cards]
+  const ready = new Map([
+    ...(previousEpisode ? selectedScriptVideoRenders(previousEpisode, jobs) : []),
+    ...selectedScriptVideoRenders(episode, jobs),
+  ])
+  const cardsById = new Map<string, VideoCard>(cards.map((card: VideoCard) => [card.id, card]))
   const pending = new Set(queuedCards)
   for (const job of jobs) {
-    if (job.episodeId !== episodeId || !job.cardId) continue
+    if (job.episodeId !== episodeId && job.episodeId !== previousEpisode?.id || !job.cardId) continue
     const card = cardsById.get(job.cardId)
     if (card && isActiveScriptVideoRender(job, card)) pending.add(card.id)
   }
-  const sources = new Map<string, { source?: LightingSource; pendingCardId?: string }>()
+  const previousSources = new Map<string, { source?: LightingSource; pendingCardId?: string }>()
   let boundary: { sceneKey: string; source: LightingSource } | undefined
-  for (const card of episode.cards) {
+  for (const card of cards) {
     const task = ready.get(card.id)
     const scenes = ranges[card.id] || []
     result[card.id] = scenes.map((scene: ScriptVideoLightingSceneRange) => {
       const sampleShot = scene.transitionIn ? scene.firstShot + 1 : scene.firstShot
       const choice: ScriptVideoFrameChoice | undefined = card.referenceFrameSettings?.lighting?.[String(scene.firstShot)]
-      const automatic = sources.get(scene.sceneKey)
-      const owner = choice?.mode === 'manual' && earlierScriptVideoRender(episode, card.id, choice.videoUrl)
-      const source = owner && choice?.mode === 'manual'
-        ? { ...owner, start: choice.seconds, end: choice.seconds, stableStart: choice.seconds, manualSeconds: choice.seconds }
-        : undefined
+      const automatic = previousSources.get(scene.sceneKey)
       return {
         range: { startShot: scene.firstShot, endShot: scene.lastShot, sceneName: scene.sceneName,
           lighting: scene.lighting, ...(scene.transitionIn && { transitionIn: true }) },
         sceneKey: scene.sceneKey,
-        ...(choice ? { choice, automaticSource: automatic?.source, automaticPendingCardId: automatic?.pendingCardId, source } : automatic),
+        ...(choice ? { choice, automaticSource: automatic?.source, automaticPendingCardId: automatic?.pendingCardId,
+          source: manualLightingSource(project, episodeId, card.id, choice) } : automatic),
         previous: !choice && scene.firstShot === 1 && boundary?.sceneKey === scene.sceneKey ? boundary.source : undefined,
         sampleStart: scene.stableStartSeconds,
         sampleEnd: Math.min(scene.stableEndSeconds, scene.stableStartSeconds + 2, shotEnd(card, sampleShot)),
       }
     })
+    const fallbackChoice: ScriptVideoFrameChoice | undefined = card.referenceFrameSettings?.lighting?.['1']
+    if (!scenes.length && fallbackChoice?.mode === 'manual') {
+      result[card.id].push({ range: fallbackScriptVideoLightingRange(card.shots?.length ?? 0), sceneKey: card.id,
+        choice: fallbackChoice, source: manualLightingSource(project, episodeId, card.id, fallbackChoice), sampleStart: 0, sampleEnd: 0 })
+    }
+    previousSources.clear()
     boundary = undefined
     if (pending.has(card.id)) {
       for (const scene of scenes) {
-        if (scene.stableEndSeconds > scene.stableStartSeconds) sources.set(scene.sceneKey, { pendingCardId: card.id })
+        if (scene.stableEndSeconds > scene.stableStartSeconds) previousSources.set(scene.sceneKey, { pendingCardId: card.id })
       }
       continue
     }
@@ -138,10 +158,11 @@ export function planScriptVideoLighting(
       const start = Math.max(scene.stableStartSeconds, end - 2.5 / durationScale, shotEnd(card, Math.max(0, last)))
       const source: LightingSource = { cardId: card.id, taskId: task.taskId, videoUrl: task.videoUrl,
         start: start * durationScale, end: end * durationScale, stableStart: scene.stableStartSeconds * durationScale }
-      sources.set(scene.sceneKey, { source })
+      previousSources.set(scene.sceneKey, { source })
       if (scene.lastShot === card.shots.length) boundary = { sceneKey: scene.sceneKey, source }
     }
   }
+  if (previousEpisode) delete result[predecessor!.card.id]
   return result
 }
 
@@ -169,7 +190,7 @@ export async function prepareScriptVideoLighting(
   }
   for (const { range, sceneKey, source, previous, sampleStart, sampleEnd, choice } of plans) {
     const imageUrl = source && await frame(source)
-    if (choice?.mode === 'manual' && !imageUrl) warnings.push('镜头' + range.startShot + '的手选光线参考帧不可用，请重新选帧或恢复自动。')
+    if (choice?.mode === 'manual' && source && !imageUrl) warnings.push('镜头' + range.startShot + '的手选光线参考帧不可用，请重新选帧或恢复自动。')
     ranges.push({ ...range, sceneKey, ...(imageUrl && { source, imageUrl }) })
     if (previous && sampleEnd > sampleStart) {
       const reference = await frame(previous)

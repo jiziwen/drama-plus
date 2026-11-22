@@ -6,8 +6,10 @@ import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import { tmpdir } from 'node:os'
 import { OUTLINE_DURATION_POLICY, ScriptVideoStore, ScriptVideoStoreError } from '../src/services/script-video-store'
-import { getScriptVideoStylePreset } from '../src/services/script-video-style'
+import { getScriptVideoStylePreset, scriptVideoPromptStylePrefix } from '../src/services/script-video-style'
+import { getCurrentScriptVideoStylePreset } from '../src/services/script-video-style-source'
 import { diffScriptVideoChanges } from '../src/services/script-video-sync'
+import { buildScriptVideoDelivery } from '../src/services/script-video-delivery'
 import type { ScriptVideoGenerationStatus } from '../src/services/script-video-generation'
 
 const STYLE = { id: 'custom' as const, name: '夜色写实', prefix: '  冷色原文\r\n\r\n声音规则  \r\n' }
@@ -33,16 +35,66 @@ test('new episodes default to 480P and preserve the resolution explicitly saved 
   assert.deepEqual((await store.get(project.id)).episodes.map(episode => episode.resolution), ['720P', '480P', '1080P'])
 }))
 
+test('逐集保存手动状态，未出片仍可标记完成并恢复自动判断', async () => fixture(async (store, directory) => {
+  const project = await store.create('手动分集状态')
+  const episodeId = project.episodeId
+  const clientId = randomUUID()
+  await store.applyChanges(project.id, {
+    clientId, sequence: 1,
+    changes: [
+      { target: 'episode', id: episodeId, fields: { confirmed: true, outlineConfirmed: true } },
+      { target: 'episode', id: 'second', value: { id: 'second', number: 2 } },
+      { target: 'card', episodeId, id: 'first-card', value: {
+        id: 'first-card', title: '第一段', duration: 5, assetIds: [], prompt: '镜头进入庭院。',
+        shots: [{ id: 'shot', duration: 5, camera: '近景', action: '转身', dialogue: '' }],
+      } },
+    ],
+  })
+  assert.equal((await store.summary(project.id)).episodes[0].progress, '制作中-视频制作')
+
+  const setProgress = (progressOverride: unknown, sequence: number) => store.applyChanges(project.id, {
+    clientId, sequence,
+    changes: [{ target: 'episode', id: episodeId, fields: { progressOverride } }],
+  })
+  const marked = await setProgress('已完成', 2)
+  assert.equal(marked.project.episodes[0].progress, '已完成')
+  assert.equal(marked.project.episodes[1].progress, undefined)
+  assert.equal(marked.episodes[0].progressOverride, '已完成')
+  assert.equal(marked.episodes[0].cards[0].status, 'draft')
+  assert.equal(marked.episodes[0].cards[0].version, 1)
+
+  const restarted = new ScriptVideoStore(directory)
+  try {
+    assert.equal((await restarted.summary(project.id)).episodes[0].progress, '已完成')
+    assert.equal((await restarted.episode(project.id, episodeId)).episode.progressOverride, '已完成')
+  } finally { await restarted.close() }
+
+  const legacy = await store.get(project.id)
+  delete legacy.episodes[0].progressOverride
+  await store.update(project.id, legacy, legacy.revision)
+  assert.equal((await store.summary(project.id)).episodes[0].progress, '已完成')
+
+  await assert.rejects(setProgress('其他文字', 3), /分集状态无效/)
+  assert.equal((await setProgress('制作中-大纲', 3)).project.episodes[0].progress, '制作中-大纲')
+  const automatic = await setProgress(null, 4)
+  assert.equal(automatic.episodes[0].progressOverride, null)
+  assert.equal(automatic.project.episodes[0].progress, '制作中-视频制作')
+}))
+
 test('persists isolated projects and episodes across store instances', async () => fixture(async (store, dir) => {
   const a = await store.create('甲'), b = await store.create('乙')
   a.assets.push({ id: 'asset-1', name: '角色_一', kind: 'character', image: '/static/uploads/a.png' })
   a.episodes[0].script = '原始剧本\n完整内容'
   const saved = await store.update(a.id, a, a.revision)
   const restarted = new ScriptVideoStore(dir)
-  assert.deepEqual(await restarted.get(a.id), saved)
-  assert.equal((await restarted.get(b.id)).episodes[0].script, '')
-  assert.equal((await restarted.list()).length, 2)
-  await assert.rejects(store.get('../escape'), (e: unknown) => e instanceof ScriptVideoStoreError && e.status === 400)
+  try {
+    assert.deepEqual(await restarted.get(a.id), saved)
+    assert.equal((await restarted.get(b.id)).episodes[0].script, '')
+    assert.equal((await restarted.list()).length, 2)
+    await assert.rejects(store.get('../escape'), (e: unknown) => e instanceof ScriptVideoStoreError && e.status === 400)
+  } finally {
+    await restarted.close()
+  }
 }))
 
 test('conflicting writes cannot overwrite and client cannot forge tasks, status or video URL', async () => fixture(async store => {
@@ -233,6 +285,31 @@ function voiceAsset(id: string, name: string) {
     voiceAudio: { url: `/static/uploads/${id}.wav`, name: `${name}.wav` } }
 }
 
+test('显式引用项目音频后持久化为声音素材，按最新文件生成，普通文字与引号内同名文本不引用', async () => fixture(async store => {
+  const project = await store.create('独立音频')
+  const media = { id: 'rain', name: '街角雨声', kind: 'audio', image: '', voiceAudio: { name: '雨声.wav', url: '/static/uploads/rain.wav' } }
+  project.assets = [media]
+  const episode = project.episodes[0]
+  const clip = { id: 'rain-card', title: '独立声音', duration: 5, status: 'draft', version: 1, assetIds: [], shots: [],
+    prompt: '镜头 01（0–5秒）\n画面与动作：牌上写有“@街角雨声”。\n对白／音效：〈背景持续 @街角雨声〉' }
+  episode.cards = [clip, { ...clip, id: 'noise-card', prompt: '街角雨声不断。', assetIds: ['rain'] }]
+  const saved = await store.update(project.id, project, project.revision)
+  assert.deepEqual(saved.episodes[0].cards[0].assetIds, ['rain'])
+  const draft = structuredClone(saved)
+  draft.assets[0].voiceAudio.url = '/static/uploads/fresh.wav'
+  const replaced = await store.update(project.id, draft, saved.revision)
+  const [used, unused] = replaced.episodes[0].cards
+  assert.ok(used.version > saved.episodes[0].cards[0].version)
+  assert.equal(unused.version, saved.episodes[0].cards[1].version)
+  const delivery = buildScriptVideoDelivery(used, replaced.assets)
+  assert.deepEqual(delivery.images, [])
+  assert.deepEqual(delivery.voices.map(voice => voice.asset.voiceAudio?.url), ['/static/uploads/fresh.wav'])
+  assert.deepEqual(delivery.missingVoices, [])
+  assert.match(delivery.prompt, /牌上写有“@街角雨声”/u)
+  assert.match(delivery.prompt, /背景持续 @音频1/u)
+  assert.deepEqual(buildScriptVideoDelivery(unused, replaced.assets).voices, [])
+}))
+
 function voiceCard(id: string, asset: { id: string; name: string }, dialogue: string) {
   const action = `@${asset.name}站在门边。`
   return { id, title: id, duration: 5, version: 1, status: 'draft', assetIds: [asset.id],
@@ -307,13 +384,11 @@ test('更新角色声音设置只让实际声音来源变动的未出片分镜�
   assert.equal(modeCards[5].videoUrl, '/static/videos/task-522.mp4')
   assert.deepEqual(savedMode.episodes[0].tasks, saved.episodes[0].tasks)
 
-  // Restoring the default via a small collaboration write updates only the
-  // affected unfinished speaker, keeping completed clips and silent cards.
+  // Unsetting a reference-only mode retains the default reference requirement.
   const savedImplicit = await store.applyChanges(project.id, { clientId: 'voice-editor', sequence: 1,
     changes: [{ target: 'asset', id: other.id, unset: ['voiceMode'] }], loadedEpisodeIds: [episode.id] })
   assert.equal(savedImplicit.project.assets[1].voiceMode, undefined)
-  assert.deepEqual(savedImplicit.episodes[0].cards, modeCards.map((card: any) =>
-    card.id === 'unrelated' ? { ...card, version: card.version + 1 } : card))
+  assert.deepEqual(savedImplicit.episodes[0].cards, modeCards)
 
   const savedWithAudio = await store.applyChanges(project.id, { clientId: 'voice-editor', sequence: 2,
     changes: [{ target: 'asset', id: lead.id, fields: { voiceMode: 'reference' } }], loadedEpisodeIds: [episode.id] })
@@ -356,13 +431,17 @@ test('读取旧存档时规范当前提示词而不改磁盘及历史', async ()
   writeFileSync(filename, JSON.stringify(record))
   const before = readFileSync(filename, 'utf8')
   const migrated = new ScriptVideoStore(legacy)
-  for (const retrieved of [await migrated.get(saved.id), (await migrated.list())[0]]) {
-    assert.ok(!retrieved.episodes[0].cards[0].prompt.startsWith('冷色调'))
-    assert.ok(retrieved.episodes[0].cards[0].prompt.endsWith('←承上：保留正文'))
-    assert.equal(retrieved.episodes[0].generationsHistory[0].cards[0].prompt, oldPrompt)
-    assert.equal(retrieved.revision, saved.revision)
+  try {
+    for (const retrieved of [await migrated.get(saved.id), (await migrated.list())[0]]) {
+      assert.ok(!retrieved.episodes[0].cards[0].prompt.startsWith('冷色调'))
+      assert.ok(retrieved.episodes[0].cards[0].prompt.endsWith('←承上：保留正文'))
+      assert.equal(retrieved.episodes[0].generationsHistory[0].cards[0].prompt, oldPrompt)
+      assert.equal(retrieved.revision, saved.revision)
+    }
+    assert.equal(readFileSync(filename, 'utf8'), before)
+  } finally {
+    await migrated.close()
   }
-  assert.equal(readFileSync(filename, 'utf8'), before)
 }))
 
 test('interrupted AI jobs fail on restart and do not alter project', async () => fixture(async (store, dir) => {
@@ -370,14 +449,18 @@ test('interrupted AI jobs fail on restart and do not alter project', async () =>
   const now = new Date().toISOString()
   await store.mutate(project.id, record => { record.jobs.push({ id: 'job-1', projectId: project.id, episodeId: project.episodeId, action: 'storyboard', status: 'running', createdAt: now, updatedAt: now, resumeKey:'private-digest', progress:{phase:'generating',completed:1,total:2}, checkpoint:{cards:[{id:'private-content'} as any]} }); return { result: null } })
   const restarted = new ScriptVideoStore(dir)
-  const job = await restarted.getJob(project.id, 'job-1')
-  assert.equal(job.status, 'failed')
-  assert.equal(job.code, 'INTERRUPTED')
-  assert.deepEqual(job.progress, {phase:'generating',completed:1,total:2})
-  assert.equal(job.checkpoint, undefined)
-  const privateState = await restarted.mutate(project.id, record => ({result: record.jobs[0].checkpoint}))
-  assert.equal(privateState?.cards[0].id, 'private-content')
-  assert.deepEqual(await restarted.get(project.id), project)
+  try {
+    const job = await restarted.getJob(project.id, 'job-1')
+    assert.equal(job.status, 'failed')
+    assert.equal(job.code, 'INTERRUPTED')
+    assert.deepEqual(job.progress, {phase:'generating',completed:1,total:2})
+    assert.equal(job.checkpoint, undefined)
+    const privateState = await restarted.mutate(project.id, record => ({result: record.jobs[0].checkpoint}))
+    assert.equal(privateState?.cards[0].id, 'private-content')
+    assert.deepEqual(await restarted.get(project.id), project)
+  } finally {
+    await restarted.close()
+  }
 }))
 
 test('server mutation failure leaves confirmed state untouched', async () => fixture(async store => {
@@ -433,13 +516,17 @@ test('server video state is authoritative and interrupted paid submissions canno
     return { result: null, documentChanged: true }
   })
   const restarted = new ScriptVideoStore(dir)
-  assert.equal((await restarted.getJob(project.id, 'video-known')).status, 'running')
-  const unknown = await restarted.getJob(project.id, 'video-unknown')
-  assert.equal(unknown.status, 'failed')
-  assert.equal(unknown.code, 'SUBMISSION_UNKNOWN')
-  const latest = await restarted.get(project.id)
-  assert.equal(latest.episodes[0].tasks[1].code, 'SUBMISSION_UNKNOWN')
-  assert.ok(latest.revision > saved.revision)
+  try {
+    assert.equal((await restarted.getJob(project.id, 'video-known')).status, 'running')
+    const unknown = await restarted.getJob(project.id, 'video-unknown')
+    assert.equal(unknown.status, 'failed')
+    assert.equal(unknown.code, 'SUBMISSION_UNKNOWN')
+    const latest = await restarted.get(project.id)
+    assert.equal(latest.episodes[0].tasks[1].code, 'SUBMISSION_UNKNOWN')
+    assert.ok(latest.revision > saved.revision)
+  } finally {
+    await restarted.close()
+  }
 }))
 
 // Real Hono endpoints, with delayed provider calls to expose races deterministically.
@@ -447,9 +534,11 @@ test('AI and paid video jobs reject stale writes and prevent duplicate submissio
   const dir = mkdtempSync(join(tmpdir(), 'script-video-routes-'))
   const previousDb = process.env.SQLITE_PATH, previousData = process.env.HUOBAO_DATA_DIR
   process.env.SQLITE_PATH = join(dir, 'test.sqlite3'); process.env.HUOBAO_DATA_DIR = dir
+  const stores: ScriptVideoStore[] = []
   try {
     const { createScriptVideoRoutes } = await import('../src/routes/script-video')
     const store = new ScriptVideoStore(join(dir, 'projects'))
+    stores.push(store)
     let project = await store.create('并发测试', STYLE)
     project.episodes[0].script = project.episodes[0].confirmedScript = '甲推开门。'
     const appearanceNotes = '甲沿用便服。'
@@ -790,6 +879,7 @@ test('AI and paid video jobs reject stale writes and prevent duplicate submissio
     const { data: crashed } = await crash.json() as any
     await persisted.promise
     const restarted = new ScriptVideoStore(store.directory)
+    stores.push(restarted)
     const stopped = await restarted.getJob(partial.id, crashed.id)
     assert.equal(stopped.code, 'INTERRUPTED')
     assert.equal(stopped.progress?.repairAttempts, 2)
@@ -884,6 +974,7 @@ test('AI and paid video jobs reject stale writes and prevent duplicate submissio
     }
     assert.deepEqual(batchSizes, [1, undefined, 1])
   } finally {
+    for (const store of stores.reverse()) await store.close()
     if (previousDb === undefined) delete process.env.SQLITE_PATH; else process.env.SQLITE_PATH = previousDb
     if (previousData === undefined) delete process.env.HUOBAO_DATA_DIR; else process.env.HUOBAO_DATA_DIR = previousData
     rmSync(dir, { recursive: true, force: true })
@@ -960,7 +1051,12 @@ test('style snapshots persist, validate strictly and preserve existing settings 
   project = await store.update(project.id, newVersion, newVersion.revision)
   assert.equal(project.settings.extra, '继续保留')
   assert.deepEqual(project.settings.stylePreset, STYLE_TWO)
-  assert.equal((await new ScriptVideoStore(dir).get(project.id)).episodes[0].production.stylePreset.prefix, STYLE.prefix)
+  const restarted = new ScriptVideoStore(dir)
+  try {
+    assert.equal((await restarted.get(project.id)).episodes[0].production.stylePreset.prefix, STYLE.prefix)
+  } finally {
+    await restarted.close()
+  }
   assert.deepEqual(project.episodes[0].production.stylePreset, STYLE)
   assert.deepEqual(project.episodes[0].cards[0], oldCard)
   for (const invalid of [null, { ...STYLE, id: 'unknown' }, { ...STYLE, name: '' }, { ...STYLE, prefix: '' }, { ...STYLE, prefix: 'x'.repeat(20001) }, { ...STYLE, extra: 'unexpected' }]) {
@@ -972,7 +1068,179 @@ test('style snapshots persist, validate strictly and preserve existing settings 
   await assert.rejects(store.create('坏风格', null as any), ScriptVideoStoreError)
 }))
 
-test('legacy prompts get asset markers and closed-mouth OS cues without rewriting the speech or history', async () => fixture(async (store, directory) => {
+test('明确重应用相同项目风格时同步旧分集，保留历史且重复提交幂等', async t => {
+  for (const nested of [false, true]) await t.test(nested ? '通过 settings 对象重应用' : '通过 settings.stylePreset 重应用', async () => fixture(async store => {
+    const latest = STYLE_TWO
+    const previous = STYLE
+    const body = '←承上：门前停住。\n镜头 01（0–3秒）\n画面与动作：木门缓缓推开。\n对白／音效：无对白。'
+    const project = await store.create('重应用风格', latest)
+    const [first] = project.episodes
+    const makeEpisode = (id: string, preset: typeof latest) => ({ ...first, id,
+      production: { stylePreset: preset, visualSpecs: '保留当前规格' },
+      cards: [{ id: 'card', prompt: preset.prefix + '\n\n' + body, assetIds: [], duration: 3,
+        shots: [{ id: 'shot', duration: 3, camera: '固定', action: '木门缓缓推开。', dialogue: '无对白。' }],
+        promptVersions: [{ id: 'original-history', prompt: '历史原稿不变。' }] }],
+    })
+    project.episodes = [makeEpisode(first.id, previous), makeEpisode('unloaded', previous), makeEpisode('synced', latest)]
+    await store.update(project.id, project, project.revision)
+    await store.mutate(project.id, ({ project }) => {
+      for (const episode of project.episodes) Object.assign(episode.cards[0], { status: 'ready', version: 5, videoUrl: `/static/videos/${episode.id}.mp4` })
+      return { result: null, documentChanged: true }
+    })
+    const before = await store.get(project.id)
+    const synced = structuredClone(before.episodes[2])
+    const settings = structuredClone(before.settings)
+    const fields = nested ? { settings } : { 'settings.stylePreset': latest }
+    const clientId = randomUUID()
+    const result = await store.applyChanges(project.id, { clientId, sequence: 1, loadedEpisodeIds: [first.id],
+      changes: [{ target: 'project', fields }] })
+    assert.deepEqual(result.episodes.map(episode => episode.id), [first.id])
+    const after = await store.get(project.id)
+    assert.deepEqual(after.episodes[2], synced)
+    for (const [index, episode] of after.episodes.entries()) {
+      if (episode.id === 'synced') continue
+      const previousCard = before.episodes[index].cards[0]
+      const card = episode.cards[0]
+      assert.deepEqual(episode.production.stylePreset, latest)
+      assert.equal(card.prompt, scriptVideoPromptStylePrefix(latest) + '\n\n' + body)
+      assert.equal(card.version, previousCard.version + 1)
+      assert.equal(card.status, 'draft')
+      assert.equal(card.videoUrl, previousCard.videoUrl)
+      assert.deepEqual(card.promptVersions.slice(0, -1), previousCard.promptVersions)
+      assert.equal(card.promptVersions.at(-1).prompt, previousCard.prompt)
+      assert.deepEqual(card.shots, previousCard.shots)
+      assert.deepEqual(episode.tasks, before.episodes[index].tasks)
+    }
+    await store.applyChanges(project.id, { clientId, sequence: 2, changes: [{ target: 'project', fields }] })
+    assert.deepEqual((await store.get(project.id)).episodes, after.episodes)
+  }))
+})
+
+test('普通读取和正文保存不重应用项目风格，也不覆盖分集自定义快照', async () => fixture(async store => {
+  const latest = getScriptVideoStylePreset('cool')!
+  const custom = { ...STYLE, prefix: '自定义柔光原文，保留作者设定。' }
+  const project = await store.create('保留自定义快照', latest)
+  const [episode] = project.episodes
+  const body = '镜头 01（0–3秒）\n画面与动作：窗帘轻轻摆动。'
+  episode.production = { stylePreset: custom, visualSpecs: '自定义规格' }
+  episode.cards = [{ id: 'card', prompt: custom.prefix + '\n\n' + body, duration: 3, assetIds: [], shots: [],
+    promptVersions: [{ prompt: '更早的自定义原稿。' }] }]
+  const saved = await store.update(project.id, project, project.revision)
+  const before = (await store.get(project.id)).episodes[0]
+  assert.deepEqual(before, JSON.parse(JSON.stringify(saved.episodes[0])))
+  const editedPrompt = before.cards[0].prompt + '\n手写备注继续保留。'
+  await store.applyChanges(project.id, { clientId: randomUUID(), sequence: 1,
+    changes: [{ target: 'card', id: 'card', episodeId: episode.id, fields: { prompt: editedPrompt } }] })
+  const after = (await store.get(project.id)).episodes[0]
+  assert.deepEqual(after.production, before.production)
+  assert.equal(after.cards[0].prompt, editedPrompt)
+  assert.deepEqual(after.cards[0].promptVersions, before.cards[0].promptVersions)
+}))
+
+test('源预设修改后轮询同步所有内置风格分集，保留自定义、历史并幂等缓存', async () => fixture(async (store, directory) => {
+  const previousSource = process.env.SCRIPT_VIDEO_STYLE_SOURCE
+  const sourceFile = join(directory, '项目风格前缀原文.txt')
+  process.env.SCRIPT_VIDEO_STYLE_SOURCE = sourceFile
+  try {
+    writeFileSync(sourceFile, '冷色调\n\n旧版泛光说明。\n\n暖色调\n\n旧暖色原文。\n')
+    const oldStyle = getCurrentScriptVideoStylePreset('cool')!
+    const project = await store.create('源文件全局同步', oldStyle)
+    const [first] = project.episodes
+    const body = '镜头 01（0–3秒）\n画面与动作：木门缓缓推开。\n对白／音效：无对白。'
+    const makeEpisode = (id: string, style?: typeof oldStyle) => ({ ...first, id,
+      ...(style && { production: { stylePreset: style, visualSpecs: '旧规格' } }),
+      cards: [{ id: 'card', duration: 3, assetIds: [], shots: [],
+        prompt: scriptVideoPromptStylePrefix(style ?? oldStyle) + '\n\n' + body,
+        promptVersions: [{ id: 'history', prompt: '更早的风格原稿。' }] }],
+    })
+    project.episodes = [makeEpisode(first.id, oldStyle), makeEpisode('unloaded'), makeEpisode('custom', STYLE)]
+    await store.update(project.id, project, project.revision)
+    const now = new Date().toISOString()
+    await store.mutate(project.id, ({ project, jobs }) => {
+      for (const episode of project.episodes) {
+        Object.assign(episode.cards[0], { status: 'ready', version: 8, videoUrl: `/static/videos/${episode.id}.mp4` })
+        episode.generationsHistory = [{ cards: [{ prompt: oldStyle.prefix }] }]
+        episode.tasks.push({ id: 'old-' + episode.id, status: 'completed', cardId: 'card', videoUrl: `/static/videos/${episode.id}.mp4` })
+      }
+      jobs.push({ id: 'saved-job', projectId: project.id, episodeId: first.id, action: 'video', status: 'completed',
+        createdAt: now, updatedAt: now, result: { prompt: oldStyle.prefix } })
+      return { result: null, documentChanged: true }
+    })
+    const before = await store.get(project.id)
+    const previousJob = await store.getJob(project.id, 'saved-job')
+    writeFileSync(sourceFile, '冷色调\n\n最新清晰方向光，不包含泛光说明。\n\n暖色调\n\n新的暖色原文。\n')
+    const latest = getCurrentScriptVideoStylePreset('cool')!
+    const activity = await store.activity(project.id, first.id)
+    assert.equal(activity.revision, before.revision + 1)
+    const after = await store.get(project.id)
+    assert.deepEqual(after.settings.stylePreset, latest)
+    assert.deepEqual(after.episodes[2], before.episodes[2])
+    for (const [index, episode] of after.episodes.entries()) {
+      if (episode.id === 'custom') continue
+      const card = episode.cards[0], oldCard = before.episodes[index].cards[0]
+      if (episode.production) assert.deepEqual(episode.production.stylePreset, latest)
+      assert.equal(card.prompt, scriptVideoPromptStylePrefix(latest) + '\n\n' + body)
+      assert.equal(card.version, oldCard.version + 1)
+      assert.equal(card.status, 'draft')
+      assert.equal(card.videoUrl, oldCard.videoUrl)
+      assert.deepEqual(card.promptVersions.slice(0, -1), oldCard.promptVersions)
+      assert.equal(card.promptVersions.at(-1).prompt, oldCard.prompt)
+      assert.deepEqual(episode.generationsHistory, before.episodes[index].generationsHistory)
+      assert.deepEqual(episode.tasks, before.episodes[index].tasks)
+    }
+    assert.equal((await store.summary(project.id)).revision, after.revision)
+    assert.equal((await store.episodeSnapshot(project.id, 'unloaded')).project.episodes[0].cards[0].prompt, after.episodes[1].cards[0].prompt)
+    assert.deepEqual(await store.getJob(project.id, 'saved-job'), previousJob)
+    const catalog = (store as any).catalog
+    const allEpisodes = catalog.allEpisodes
+    let fullReads = 0
+    catalog.allEpisodes = function (...args: unknown[]) { fullReads++; return allEpisodes.apply(this, args) }
+    try {
+      for (let count = 0; count < 3; count++) assert.equal((await store.activity(project.id, first.id)).revision, after.revision)
+      assert.equal(fullReads, 0)
+    } finally { catalog.allEpisodes = allEpisodes }
+    assert.deepEqual(await store.get(project.id), after)
+  } finally {
+    if (previousSource === undefined) delete process.env.SCRIPT_VIDEO_STYLE_SOURCE
+    else process.env.SCRIPT_VIDEO_STYLE_SOURCE = previousSource
+  }
+}))
+
+test('保存旧内置快照直接使用最新源前缀，名称不符的自定义快照保持原文', async () => fixture(async (store, directory) => {
+  const previousSource = process.env.SCRIPT_VIDEO_STYLE_SOURCE
+  const sourceFile = join(directory, '项目风格前缀原文.txt')
+  process.env.SCRIPT_VIDEO_STYLE_SOURCE = sourceFile
+  try {
+    writeFileSync(sourceFile, '冷色调\n\n全局最新的清晰方向光。\n\n暖色调\n\n暖色原文。\n')
+    const latest = getCurrentScriptVideoStylePreset('cool')!
+    const stale = { ...latest, prefix: '冷色调\n\n旧的柔和泛光。' }
+    const project = await store.create('保存时同步', stale)
+    assert.deepEqual(project.settings.stylePreset, latest)
+    const body = '镜头 01（0–3秒）\n画面与动作：窗帘轻轻摆动。\n手写备注保留。'
+    const oldPrompt = scriptVideoPromptStylePrefix(stale) + '\n\n' + body
+    project.episodes[0].production = { stylePreset: stale, visualSpecs: '旧规格' }
+    project.episodes[0].cards = [{ id: 'card', prompt: oldPrompt, assetIds: [], shots: [], duration: 3 }]
+    const saved = await store.update(project.id, project, project.revision)
+    assert.deepEqual(saved.episodes[0].production.stylePreset, latest)
+    assert.equal(saved.episodes[0].cards[0].prompt, scriptVideoPromptStylePrefix(latest) + '\n\n' + body)
+    assert.equal(saved.episodes[0].cards[0].promptVersions.at(-1).prompt, oldPrompt)
+    const custom = { ...stale, name: '作者自己的冷色调' }
+    const authored = await store.create('名称不符保持自定义', custom)
+    authored.episodes[0].production = { stylePreset: custom, visualSpecs: '自定义规格' }
+    authored.episodes[0].cards = [{ id: 'card', prompt: custom.prefix + '\n\n' + body, assetIds: [], shots: [], duration: 3 }]
+    const authoredSaved = await store.update(authored.id, authored, authored.revision)
+    const reloaded = await store.get(authored.id)
+    assert.deepEqual(reloaded.settings.stylePreset, custom)
+    assert.deepEqual(reloaded.episodes[0].production, authoredSaved.episodes[0].production)
+    assert.equal(reloaded.episodes[0].cards[0].prompt, authoredSaved.episodes[0].cards[0].prompt)
+    assert.equal(reloaded.episodes[0].cards[0].promptVersions, undefined)
+  } finally {
+    if (previousSource === undefined) delete process.env.SCRIPT_VIDEO_STYLE_SOURCE
+    else process.env.SCRIPT_VIDEO_STYLE_SOURCE = previousSource
+  }
+}))
+
+test('legacy prompts get asset markers and short OS cues without rewriting the speech or history', async () => fixture(async (store, directory) => {
   const project = await store.create('引用旧稿')
   const legacy = join(directory, 'legacy')
   mkdirSync(legacy)
@@ -988,13 +1256,18 @@ test('legacy prompts get asset markers and closed-mouth OS cues without rewritin
     promptVersions:[{prompt:raw, assetIds:['robe']}] }]
   writeFileSync(recordFile, JSON.stringify(record))
   const disk = readFileSync(recordFile,'utf8')
-  const card = (await new ScriptVideoStore(legacy).get(project.id)).episodes[0].cards[0]
-  assert.equal(card.prompt,'镜头侧拍@顾凌天_龙袍。@毒酒碗落地。\n对白／音效：@顾凌天_龙袍（内心 OS，角色闭口，嘴唇不动，不对口型）：“顾凌天。”')
-  assert.deepEqual(card.assetIds,['robe','bowl'])
-  assert.equal(card.status,'ready')
-  assert.equal(card.version,7)
-  assert.equal(card.promptVersions[0].prompt,raw)
-  assert.equal(readFileSync(recordFile,'utf8'),disk)
+  const migrated = new ScriptVideoStore(legacy)
+  try {
+    const card = (await migrated.get(project.id)).episodes[0].cards[0]
+    assert.equal(card.prompt,'镜头侧拍@顾凌天_龙袍。@毒酒碗落地。\n对白／音效：@顾凌天_龙袍(OS) ：“顾凌天。”')
+    assert.deepEqual(card.assetIds,['robe','bowl'])
+    assert.equal(card.status,'ready')
+    assert.equal(card.version,7)
+    assert.equal(card.promptVersions[0].prompt,raw)
+    assert.equal(readFileSync(recordFile,'utf8'),disk)
+  } finally {
+    await migrated.close()
+  }
 }))
 
 test('import restores a visible @ reference missed in a saved prompt after dialogue', async () => fixture(async (store, directory) => {
@@ -1047,6 +1320,112 @@ test('reading a saved SQLite draft restores visible @ assets missed on a sound l
     assert.match(delivery.prompt, /@图片2京兆府-大堂/u)
     assert.equal(db.prepare("SELECT json_extract(document,'$.cards[0].assetIds') FROM episodes WHERE project_id=?")
       .pluck().get(project.id), '["bird"]')
+  } finally {
+    db.close()
+  }
+}))
+
+test('保存回顾和独立生成中的人物正式引用，同时保留对白和背景物件原文', async () => fixture(async store => {
+  const project = await store.create('完整人物参考')
+  project.assets = [
+    { id: 'lead', name: '顾凌天_龙袍', kind: 'character', image: '/static/uploads/lead.png' },
+    { id: 'guard', name: '赵峰_微服便装', kind: 'character', image: '/static/uploads/guard.png' },
+    { id: 'spoken', name: '张浩', kind: 'character', image: '/static/uploads/spoken.png' },
+    { id: 'bell', name: '钟房', kind: 'scene', image: '/static/uploads/bell.png' },
+    { id: 'jade', name: '玉佩', kind: 'prop', image: '/static/uploads/jade.png' },
+  ]
+  const body = [
+    '前镜回顾：顾凌天_龙袍与赵峰_微服便装来过钟房，带着玉佩。',
+    '独立生成：顾凌天_龙袍听见赵峰_微服便装的脚步。',
+    '镜头 01（0–3秒）',
+    '画面与动作：顾凌天_龙袍在门前站定。',
+    '对白／音效：顾凌天_龙袍：“张浩，赵峰回来了。”',
+  ].join('\n')
+  project.episodes[0].cards = [{
+    id: 'card', prompt: body, assetIds: [], duration: 3,
+    shots: [{ id: 'shot', duration: 3, visualAssetIds: ['lead'], speakerAssetIds: ['lead'] }],
+  }]
+  const saved = await store.update(project.id, project, project.revision)
+  const [card] = saved.episodes[0].cards
+  assert.deepEqual(new Set(card.assetIds), new Set(['lead', 'guard']))
+  assert.match(card.prompt, /^前镜回顾：@顾凌天_龙袍与@赵峰_微服便装来过钟房，带着玉佩。/u)
+  assert.match(card.prompt, /独立生成：@顾凌天_龙袍听见@赵峰_微服便装的脚步。/u)
+  assert.match(card.prompt, /对白／音效：@顾凌天_龙袍：“张浩，赵峰回来了。”/u)
+  const reloaded = (await store.get(project.id)).episodes[0].cards[0]
+  assert.equal(reloaded.prompt, card.prompt)
+  assert.deepEqual(reloaded.assetIds, card.assetIds)
+}))
+
+test('读取 SQLite 旧稿补齐人物正式引用和参考绑定，保留版本、历史与磁盘原文', async () => fixture(async (store, directory) => {
+  const project = await store.create('旧稿完整人物参考')
+  project.assets = [
+    { id: 'lead', name: '顾凌天_龙袍', kind: 'character', image: '/static/uploads/lead.png' },
+    { id: 'guard', name: '赵峰_微服便装', kind: 'character', image: '/static/uploads/guard.png' },
+  ]
+  const [episode] = project.episodes
+  episode.cards = [{ id: 'card', prompt: '静态镜头。', assetIds: [], shots: [], duration: 3 }]
+  await store.update(project.id, project, project.revision)
+  const db = new Database(join(directory, 'workspace.sqlite3'))
+  try {
+    for (const at of ['', '@']) {
+      const prompt = `前镜回顾：${at}顾凌天_龙袍在门内，${at}赵峰_微服便装守在门外。\n独立生成：${at}顾凌天_龙袍原地等候。`
+      const legacyCard = { id: 'card', prompt, assetIds: [], shots: [], duration: 3,
+        version: 7, status: 'ready', videoUrl: '/static/videos/kept.mp4', promptVersions: [{ prompt }] }
+      db.prepare("UPDATE episodes SET document=json_set(document,'$.cards',json(?)) WHERE project_id=?")
+        .run(JSON.stringify([legacyCard]), project.id)
+      const disk = db.prepare('SELECT document FROM episodes WHERE project_id=?').pluck().get(project.id)
+      const card = (await store.episode(project.id, episode.id)).episode.cards[0]
+      assert.equal(card.prompt, '前镜回顾：@顾凌天_龙袍在门内，@赵峰_微服便装守在门外。\n独立生成：@顾凌天_龙袍原地等候。')
+      assert.deepEqual(card.assetIds, ['lead', 'guard'])
+      assert.deepEqual([card.version, card.status, card.videoUrl], [7, 'ready', '/static/videos/kept.mp4'])
+      assert.equal(card.promptVersions[0].prompt, prompt)
+      assert.equal((await store.get(project.id)).episodes[0].cards[0].prompt, card.prompt)
+      assert.equal(db.prepare('SELECT document FROM episodes WHERE project_id=?').pluck().get(project.id), disk)
+    }
+  } finally {
+    db.close()
+  }
+}))
+
+test('保存旧长 OS 时只保留短 OS，原有音频与表演提示及对白不变', async () => fixture(async store => {
+  const project = await store.create('短心声标注')
+  const longOs = '（内心 OS，角色闭口，嘴唇不动，不对口型）'
+  const prompt = `对白／音效：两下干脆的木门叩响。顾凌天_青布长衫 @音频2【画外只闻心声／低沉冷淡／短促】${longOs} ：“进来！${longOs}”`
+  project.episodes[0].cards = [{ id: 'card', prompt, assetIds: [], shots: [], duration: 3,
+    promptVersions: [{ prompt }] }]
+  const saved = await store.update(project.id, project, project.revision)
+  const [card] = saved.episodes[0].cards
+  assert.equal(card.prompt, `对白／音效：两下干脆的木门叩响。顾凌天_青布长衫 @音频2【画外只闻心声／低沉冷淡／短促】(OS) ：“进来！${longOs}”`)
+  assert.equal(card.promptVersions[0].prompt, prompt)
+  assert.equal((await store.get(project.id)).episodes[0].cards[0].prompt, card.prompt)
+}))
+
+test('读取有无素材的旧稿都缩短 OS，保留风格、对白、历史、版本和磁盘原文', async () => fixture(async (store, directory) => {
+  const longOs = '（内心 OS，角色闭口，嘴唇不动，不对口型）'
+  const style = { id: 'custom' as const, name: '心声格式测试', prefix: `对白／音效：顾凌天${longOs}：“风格原文。”` }
+  const project = await store.create('读取短心声', style)
+  const [episode] = project.episodes
+  episode.cards = [{ id: 'card', prompt: '静态镜头。', assetIds: [], shots: [], duration: 3 }]
+  await store.update(project.id, project, project.revision)
+  const db = new Database(join(directory, 'workspace.sqlite3'))
+  try {
+    for (const assets of [[], [{ id: 'lead', name: '顾凌天_青布长衫', kind: 'character', image: '/static/uploads/lead.png' }]]) {
+      const body = `对白／音效：@顾凌天_青布长衫 @音频2【画外只闻心声／低沉冷淡／短促】${longOs} ：“进来！${longOs}”`
+      const prompt = style.prefix + '\n\n' + body
+      const legacyCard = { id: 'card', prompt, assetIds: assets.map(asset => asset.id), shots: [], duration: 3,
+        version: 9, status: 'ready', videoUrl: '/static/videos/unchanged.mp4', promptVersions: [{ prompt }] }
+      db.prepare("UPDATE episodes SET document=json_set(document,'$.cards',json(?)) WHERE project_id=?")
+        .run(JSON.stringify([legacyCard]), project.id)
+      db.prepare('UPDATE projects SET assets=? WHERE id=?')
+        .run(JSON.stringify(assets), project.id)
+      const disk = db.prepare('SELECT document FROM episodes WHERE project_id=?').pluck().get(project.id)
+      const card = (await store.episode(project.id, episode.id)).episode.cards[0]
+      assert.equal(card.prompt, style.prefix + '\n\n' + `对白／音效：@顾凌天_青布长衫 @音频2【画外只闻心声／低沉冷淡／短促】(OS) ：“进来！${longOs}”`)
+      assert.deepEqual([card.version, card.status, card.videoUrl], [9, 'ready', '/static/videos/unchanged.mp4'])
+      assert.equal(card.promptVersions[0].prompt, prompt)
+      assert.equal((await store.get(project.id)).episodes[0].cards[0].prompt, card.prompt)
+      assert.equal(db.prepare('SELECT document FROM episodes WHERE project_id=?').pluck().get(project.id), disk)
+    }
   } finally {
     db.close()
   }
@@ -1155,40 +1534,44 @@ test('only a new manual production card can submit a free-form prompt without fo
   await store.update(project.id, saved, saved.revision)
 
   const restarted = new ScriptVideoStore(directory)
-  const current = await restarted.get(project.id)
-  assert.equal(current.episodes[0].cards[1].manuallyAdded, true)
-  let formalChecks = 0
-  const submitted: string[] = []
-  const app = createScriptVideoRoutes(restarted, {
-    assertScriptVideoFormal() { formalChecks++; throw new ScriptVideoAIError('FORMAL_REQUIRED', '正式分镜必须通过校验') },
-    async startScriptVideoGeneration({ card: submittedCard }: { card: { id: string } }) {
-      submitted.push(submittedCard.id)
-      return { taskId: 501, status: 'processing' }
-    },
-  } as any)
-  const base = `http://localhost/projects/${project.id}/episodes/${episode.id}`
-  const headers = { 'content-type': 'application/json', 'X-Script-Video-Session': randomUUID() }
-  assert.equal((await app.request(`${base}/lock`, { method: 'POST', headers })).status, 200)
-  const submit = (id: string) => app.request(`${base}/cards/${id}/video`, { method: 'POST', headers,
-    body: JSON.stringify({ expectedCardVersion: current.episodes[0].cards.find((item: { id: string }) => item.id === id).version,
-      configId: 1, model: 'test-video', aspectRatio: '16:9', resolution: '720p', manuallyAdded: true }),
-  })
-  assert.equal((await (await submit('formal')).json() as any).errorCode, 'FORMAL_REQUIRED')
-  assert.equal((await (await submit('empty')).json() as any).errorCode, 'PROMPT_REQUIRED')
-  assert.equal((await (await submit('style-only')).json() as any).errorCode, 'PROMPT_REQUIRED')
-  assert.equal((await submit('manual')).status, 201)
-  assert.equal(formalChecks, 1)
-  assert.deepEqual(submitted, ['manual'])
+  try {
+    const current = await restarted.get(project.id)
+    assert.equal(current.episodes[0].cards[1].manuallyAdded, true)
+    let formalChecks = 0
+    const submitted: string[] = []
+    const app = createScriptVideoRoutes(restarted, {
+      assertScriptVideoFormal() { formalChecks++; throw new ScriptVideoAIError('FORMAL_REQUIRED', '正式分镜必须通过校验') },
+      async startScriptVideoGeneration({ card: submittedCard }: { card: { id: string } }) {
+        submitted.push(submittedCard.id)
+        return { taskId: 501, status: 'processing' }
+      },
+    } as any)
+    const base = `http://localhost/projects/${project.id}/episodes/${episode.id}`
+    const headers = { 'content-type': 'application/json', 'X-Script-Video-Session': randomUUID() }
+    assert.equal((await app.request(`${base}/lock`, { method: 'POST', headers })).status, 200)
+    const submit = (id: string) => app.request(`${base}/cards/${id}/video`, { method: 'POST', headers,
+      body: JSON.stringify({ expectedCardVersion: current.episodes[0].cards.find((item: { id: string }) => item.id === id).version,
+        configId: 1, model: 'test-video', aspectRatio: '16:9', resolution: '720p', manuallyAdded: true }),
+    })
+    assert.equal((await (await submit('formal')).json() as any).errorCode, 'FORMAL_REQUIRED')
+    assert.equal((await (await submit('empty')).json() as any).errorCode, 'PROMPT_REQUIRED')
+    assert.equal((await (await submit('style-only')).json() as any).errorCode, 'PROMPT_REQUIRED')
+    assert.equal((await submit('manual')).status, 201)
+    assert.equal(formalChecks, 1)
+    assert.deepEqual(submitted, ['manual'])
+  } finally {
+    await restarted.close()
+  }
 }))
 
-test('video submission defaults to model voices and requires audio for opted-out roles', async () => fixture(async store => {
+test('视频提交默认需要参考音频，只有显式开启才允许模型配音', async () => fixture(async store => {
   const { createScriptVideoRoutes } = await import('../src/routes/script-video')
   let project = await store.create('对白与心声音频')
   const episodeId = project.episodeId
   const dialogue = '@阿宁：“我来了。”；@小禾（OS）：“她总算来了。”；音效：风吹树叶。'
   project.assets = [
-    { id: 'a', name: '阿宁', kind: 'character', image: '/static/uploads/a.png', voiceMode: 'reference' },
-    { id: 'b', name: '小禾', kind: 'character', image: '/static/uploads/b.png' },
+    { id: 'a', name: '阿宁', kind: 'character', image: '/static/uploads/a.png' },
+    { id: 'b', name: '小禾', kind: 'character', image: '/static/uploads/b.png', voiceMode: 'model' },
     { id: 'c', name: '阿川', kind: 'character', image: '/static/uploads/c.png' },
   ]
   const episode = project.episodes[0]
@@ -1254,10 +1637,12 @@ test('in-flight renders ignore other model selections and only their own audio c
 
   let nextTaskId = 530
   const complete = new Set<number>()
+  const submittedPrompts: string[] = []
   let continuedFrom: number | undefined
   const app = createScriptVideoRoutes(store, {
     assertScriptVideoFormal: () => {},
-    startScriptVideoGeneration: async ({ continuationSource }: { continuationSource?: { previousTaskId: number } }) => {
+    startScriptVideoGeneration: async ({ card, continuationSource }: { card: { prompt: string }; continuationSource?: { previousTaskId: number } }) => {
+      submittedPrompts.push(card.prompt)
       continuedFrom = continuationSource?.previousTaskId
       return { taskId: ++nextTaskId, status: 'processing' }
     },
@@ -1289,6 +1674,12 @@ test('in-flight renders ignore other model selections and only their own audio c
   await finish(originalTask)
   const changedTask = await submit('changed')
   const independentTask = await submit('independent')
+  await store.mutate(project.id, ({ project, jobs }) => {
+    // Under the prior digest, the same model source was used for an unset mode.
+    jobs.find(item => item.taskId === independentTask)!.videoDigestVersion = 7
+    delete project.assets[1].voiceMode
+    return { result: null, documentChanged: true }
+  })
   const before = await store.get(project.id)
   const changed = structuredClone(before)
   changed.assets[0].voiceAudio.url = '/static/uploads/lead-new.wav'
@@ -1317,6 +1708,7 @@ test('in-flight renders ignore other model selections and only their own audio c
 
   const beforeLegacy = await store.get(project.id)
   beforeLegacy.assets = beforeLegacy.assets.filter(asset => asset.id !== 'unreferenced')
+  beforeLegacy.assets[1].voiceMode = 'model'
   beforeLegacy.episodes[0].modelName = episode.modelName
   beforeLegacy.episodes[0].modelProvider = episode.modelProvider
   beforeLegacy.episodes[0].resolution = '480P'
@@ -1324,7 +1716,7 @@ test('in-flight renders ignore other model selections and only their own audio c
   const legacyTask = await submit('independent')
   await store.mutate(project.id, ({ project, jobs }) => {
     const job = jobs.find(item => item.taskId === legacyTask)!
-    assert.equal(job.videoDigestVersion, 7)
+    assert.equal(job.videoDigestVersion, 9)
     // Captured from the previous release for this exact legacy fixture.
     job.baseDigest = '6f050eae23c54670cc11d634a05d6095509d45a8ca0913f4a359b7732ab55ab8'
     job.videoDigestVersion = 4
@@ -1336,6 +1728,10 @@ test('in-flight renders ignore other model selections and only their own audio c
   const legacy = (await store.get(project.id)).episodes[0]
   assert.equal(legacy.cards[2].status, 'ready')
   assert.equal(legacy.cards[2].videoUrl, `/static/videos/task-${legacyTask}.mp4`)
+  assert.match(legacy.cards[2].prompt, /@小禾\(OS\) ：“轮到我了。”/u)
+  assert.equal(legacy.cards[2].shots[0].dialogue, '@小禾（OS）：“轮到我了。”')
+  assert.ok(submittedPrompts.some(prompt => /@小禾\(OS\) ：“轮到我了。”/u.test(prompt)))
+  for (const prompt of submittedPrompts) assert.doesNotMatch(prompt, /角色闭口|嘴唇不动|不对口型/u)
 }))
 
 test('video submission uses only the saved current predecessor for a matching handoff', async () => fixture(async (store) => {

@@ -55,7 +55,7 @@ test('相同的资产身份贯穿简称、OS、缩略图、实际音色和原话
   assert.deepEqual(result.images.map(a => a.id), ['costume','first'])
   assert.deepEqual(result.voices.map(v => v.asset.id), ['costume'])
   assert.match(result.prompt, /跟随@图片1顾凌天。/)
-  assert.match(result.prompt, /声音：顾凌天_龙袍【缓慢】（音色参考@音频1）（内心 OS，角色闭口，嘴唇不动，不对口型）：\{王禄拿走了玉佩。\}/)
+  assert.match(result.prompt, /对白／音效：@图片1顾凌天_龙袍 @音频1【缓慢】\(OS\) ：“王禄拿走了玉佩。”/)
   assert.match(result.prompt, /@图片1顾凌天_龙袍的角色音色参考@音频1/)
   assert.doesNotMatch(result.prompt, /@图片\d+\s*(?:玉佩|同图)/)
   assert.match(result.prompt, /<衣袖摩擦。>/)
@@ -145,11 +145,13 @@ test('逐镜素材标注统一驱动交付，场外声音与纯候选配图各�
     ].join('\n'),
   }
   const delivery = buildScriptVideoDelivery(marked, assets, options)
-  assert.deepEqual(delivery.images.map(asset => asset.id), ['first'])
+  assert.deepEqual(delivery.images.map(asset => asset.id), ['first', 'costume'])
   assert.deepEqual(delivery.voices.map(voice => voice.asset.id), ['costume'])
   assert.deepEqual(delivery.missingVoices, [])
   assert.match(delivery.prompt, /画面与动作：@图片1王禄抬眼。/u)
-  assert.doesNotMatch(delivery.prompt, /@图片\d+\s*(?:同图|顾凌天)/u)
+  assert.doesNotMatch(delivery.prompt, /@图片\d+\s*同图/u)
+  assert.match(delivery.prompt, /@图片2顾凌天/u)
+  assert.match(delivery.prompt, /@图片2 顾凌天_龙袍（画外声音来源，不安排出镜）/u)
   assert.equal(portableDeliveryCard(marked, assets, options).prompt, delivery.prompt)
 })
 
@@ -188,19 +190,21 @@ test('说明、镜头外视线和道具归属里的同名造型不会覆盖逐�
     ].join('\n'),
   })
   const reported = buildScriptVideoDelivery(current(), projectAssets, options)
-  assert.deepEqual(reported.images.map(asset => asset.id), ['xiao', 'badge'])
+  assert.deepEqual(reported.images.map(asset => asset.id), ['xiao', 'badge', 'zhao'])
   assert.deepEqual(reported.voices.map(voice => voice.asset.id), ['xiao'])
   assert.match(reported.prompt, /赵峰赵大人来了！/u)
   assert.match(reported.prompt, /赵峰留下的@图片\d+腰牌/u)
+  assert.match(reported.prompt, /@图片3 赵峰（人物外观参考，是否出镜以当前分镜为准）/u)
+  assert.match(reported.prompt, /@图片3赵峰只在话中被提及，不入画、不发声/u)
 
   const inFrame = buildScriptVideoDelivery(current(['casual']), projectAssets, options)
-  assert.deepEqual(inFrame.images.map(asset => asset.id), ['xiao', 'badge', 'casual'])
+  assert.deepEqual(inFrame.images.map(asset => asset.id), ['xiao', 'badge', 'casual', 'zhao', 'uniform'])
   assert.deepEqual(inFrame.voices.map(voice => voice.asset.id), ['xiao', 'uniform'])
   assert.match(inFrame.prompt, /画面与动作：@图片\d+赵峰进门/u)
   assert.throws(() => buildScriptVideoDelivery(current(['casual', 'uniform']), projectAssets, options), /镜头 02的「赵峰」有多个匹配/u)
 })
 
-test('同名候选仅在本镜实际出画面或发声时绑定，情境用语保留原文', async t => {
+test('同名多造型候选保持消歧，实际发声人物提交参考图与音色', async t => {
   const projectAssets: PreviewAsset[] = [
     { id: 'guard', name: '周护卫', kind: 'character', image: png, voiceAudio: { url: voice, name: '护卫.wav' } },
     { id: 'injured', name: '魏校尉_受伤', kind: 'character', image: png + 'AA==', voiceAudio: { url: voice + 'AA==', name: '校尉.wav' } },
@@ -214,18 +218,18 @@ test('同名候选仅在本镜实际出画面或发声时绑定，情境用语�
     { id: 'small-eagle', name: '幼年猎隼', originalName: '猎隼', kind: 'creature', image: png + 'CA==' },
   ]
   const cases = [
-    { title: '前情、人物关系和下段预告', header: ['前镜回顾：魏校尉曾经来过书房。', '人物：周护卫是魏校尉的旧部。'], action: '周护卫在桌前站定。', ending: '下一段才见到魏校尉。', images: ['guard'] },
-    { title: '画外视线、寻找和等待', action: '周护卫看向画外的魏校尉，搜寻猎隼未果，在原地等待魏校尉。', images: ['guard'] },
-    { title: '命令、设想、回忆与尚未发生的转场', action: '周护卫派人通知魏校尉稍后带玉牌去书房。他回想魏校尉从前在书房的样子，画面停在眼前。', images: ['guard'] },
-    { title: '道具归属和信件署名', action: '周护卫展开魏校尉留下的家书，上面署名“魏校尉”，信中提到玉牌。', images: ['guard', 'letter'] },
+    { title: '前情、人物关系和下段预告', header: ['前镜回顾：魏校尉曾经来过书房。', '人物：周护卫是魏校尉的旧部。'], action: '周护卫在桌前站定。', ending: '下一段才见到魏校尉。', images: ['guard'], references: ['injured'] },
+    { title: '画外视线、寻找和等待', action: '周护卫看向画外的魏校尉，搜寻猎隼未果，在原地等待魏校尉。', images: ['guard'], references: ['injured'] },
+    { title: '命令、设想、回忆与尚未发生的转场', action: '周护卫派人通知魏校尉稍后带玉牌去书房。他回想魏校尉从前在书房的样子，画面停在眼前。', images: ['guard'], references: ['injured'] },
+    { title: '道具归属和信件署名', action: '周护卫展开魏校尉留下的家书，上面署名“魏校尉”，信中提到玉牌。', images: ['guard', 'letter'], references: ['injured'] },
     { title: '画外物理音效和明确为空的画面', action: '画面保持空镜。', dialogue: '音效：从远处书房传来猎隼的叫声。', images: [] },
-    { title: '真正的画外发声只带音色', action: '只拍周护卫侧耳。', dialogue: '魏校尉（画外）：“我在外面。”', images: ['guard'], voices: ['injured'] },
+    { title: '真正的画外发声带参考图与音色，仍不安排出镜', action: '只拍周护卫侧耳。', dialogue: '魏校尉（画外）：“我在外面。”', images: ['guard'], voices: ['injured'] },
     { title: '心声保留发声者但不让他入画', action: '固定拍家书。', dialogue: '魏校尉（内心 OS）：“莫让他看见。”', images: ['letter'], voices: ['injured'] },
     { title: '实际闪回中的角色、场景和道具依然入画', action: '切到闪回，镜头进入书房，魏校尉拿起玉牌。', images: ['palace', 'injured', 'jade-old'] },
     { title: '真的拍到寻获的道具和生物仍用本镜具体版本', action: '周护卫终于找到玉牌，猎隼落在窗台。', images: ['guard', 'jade-new', 'small-eagle'] },
     { title: '明确手动引用可以补充逐镜清单', action: '只拍@别院-书房空景。', images: [], explicitImages: ['villa'] },
   ]
-  for (const { title, header = [], action, dialogue = '无对白', ending, images, voices = [], explicitImages = [] } of cases) {
+  for (const { title, header = [], action, dialogue = '无对白', ending, images, voices = [], explicitImages = [], references = [] } of cases) {
     await t.test(title, () => {
       const reviewed: PreviewCard = {
         ...card,
@@ -235,16 +239,32 @@ test('同名候选仅在本镜实际出画面或发声时绑定，情境用语�
         prompt: [...header, '镜头 01（0–5秒）', '画面与动作：' + action, '对白／音效：' + dialogue,
           ...(ending ? ['→衔接：' + ending] : [])].join('\n'),
       }
+      if (references.length) {
+        assert.throws(() => buildScriptVideoDelivery(reviewed, projectAssets, options),
+          /魏校尉.*多个匹配.*魏校尉_受伤.*魏校尉_礼服/u)
+        // Select one appearance for references while keeping the shot's actual
+        // visual and speaker lists unchanged.
+        reviewed.assetIds = reviewed.assetIds.filter(id => id !== 'dress')
+      }
       const result = buildScriptVideoDelivery(reviewed, projectAssets, options)
-      assert.deepEqual(new Set(result.images.map(asset => asset.id)), new Set([...images, ...explicitImages]))
+      assert.deepEqual(new Set(result.images.map(asset => asset.id)), new Set([...images, ...explicitImages, ...voices, ...references]))
       assert.deepEqual(result.voices.map(v => v.asset.id), voices)
       assert.deepEqual(result.missingVoices, [])
+      if (references.length) {
+        assert.match(result.prompt, /魏校尉_受伤（人物外观参考，是否出镜以当前分镜为准）/u)
+        assert.match(result.prompt, /@图片\d+魏校尉/u)
+      }
+      if (action.includes('署名')) assert.match(result.prompt, /署名“魏校尉”/u)
+      for (const id of voices.filter(id => !images.includes(id))) {
+        const asset = projectAssets.find(asset => asset.id === id)!
+        assert.ok(result.prompt.includes(`${asset.name}（画外声音来源，不安排出镜）`))
+      }
       assert.equal(portableDeliveryCard(reviewed, projectAssets, options).prompt, result.prompt)
     })
   }
 })
 
-test('同场切镜前的回顾不会把上一段造型带入本段参考图', () => {
+test('同场切镜前回顾中的人物正式提交参考图，旧造型不因此安排出镜', () => {
   const roles: PreviewAsset[] = [
     { id: 'wei', name: '魏忠国', kind: 'character', image: png + 'BA==' },
     { id: 'q', name: '魏忠国_3DQ版', kind: 'character', image: png + 'BQ==' },
@@ -263,9 +283,10 @@ test('同场切镜前的回顾不会把上一段造型带入本段参考图', ()
   }
   const settings = { model: 'jimeng-seedance-2.5', provider: 'jimeng' }
   const cut = buildScriptVideoDelivery(current, roles, settings)
-  assert.deepEqual(cut.images.map(asset => asset.id), ['wei'])
+  assert.deepEqual(cut.images.map(asset => asset.id), ['wei', 'q'])
   assert.match(cut.prompt, /@图片1魏忠国仍站在柱旁/u)
-  assert.doesNotMatch(cut.prompt, /@图片\d+魏忠国_3DQ版/u)
+  assert.match(cut.prompt, /@图片2魏忠国_3DQ版/u)
+  assert.match(cut.prompt, /@图片2 魏忠国_3DQ版（人物外观参考，是否出镜以当前分镜为准）/u)
   assert.deepEqual(cut.missingVoices, [])
 
   const continuous = buildScriptVideoDelivery({
@@ -301,7 +322,7 @@ test('交付排除旧绑定的画外布景和未出镜道具，保留原话、�
   const delivery = buildScriptVideoDelivery(current, [...assets, ...added], options)
   assert.deepEqual(delivery.images.map(asset => asset.id).sort(), ['costume', 'first', 'letter', 'yard'])
   assert.deepEqual(delivery.voices.map(voice => voice.asset.id), ['costume'])
-  assert.match(delivery.prompt, /\{@玉佩和@药箱还在@御书房，@未知标记照写。\}/)
+  assert.match(delivery.prompt, /“@玉佩和@药箱还在@御书房，@未知标记照写。”/)
   assert.match(delivery.prompt, /<从远处@?钟房传来三声钟响。>/)
   assert.match(delivery.prompt, /本段全程在.*偏殿院落/)
   assert.match(delivery.prompt, /手持@图片\d+金封密信/)
@@ -322,14 +343,15 @@ test('实际的画外说话人仍按角色绑定原声', () => {
     ].join('\n'),
   }
   const delivery = buildScriptVideoDelivery(current, assets, options)
-  assert.deepEqual(delivery.images.map(asset => asset.id), ['costume'])
+  assert.deepEqual(delivery.images.map(asset => asset.id), ['costume', 'first'])
   assert.deepEqual(delivery.voices.map(voice => voice.asset.id), ['first'])
   assert.match(delivery.prompt, /王禄的对白音色参考@音频1/)
-  assert.match(delivery.prompt, /王禄（音色参考@音频1）\(OV\)：[“{]陛下，门外有人等候。/)
+  assert.match(delivery.prompt, /@图片2王禄 @音频1\(OV\)：[“{]陛下，门外有人等候。/)
+  assert.match(delivery.prompt, /@图片2 王禄（画外声音来源，不安排出镜）/u)
 })
 
 test('当前卡有两种造型时不能把裸人名指向任选一张图', () => {
-  assert.throws(() => buildScriptVideoDelivery({...card,assetIds:['costume','other']},assets,options), /镜头 01.*顾凌天.*多个匹配.*顾凌天_龙袍.*顾凌天_常服/u)
+  assert.throws(() => buildScriptVideoDelivery({...card,assetIds:['costume','other']},assets,options), /本段提示词.*顾凌天.*多个匹配.*顾凌天_龙袍.*顾凌天_常服/u)
 })
 
 test('角色设定不参与配音，仅实际发声的 OS 有声音，读圣旨和显示圣旨文字分别处理', () => {
@@ -339,17 +361,17 @@ test('角色设定不参与配音，仅实际发声的 OS 有声音，读圣旨�
   ].join('\n') }
   const result = buildScriptVideoDelivery(scene, assets, options)
   assert.deepEqual(result.voices.map(v => v.asset.id), ['costume'])
-  assert.match(result.prompt,/声音：顾凌天_龙袍【缓慢】（音色参考@音频1）（内心 OS，角色闭口，嘴唇不动，不对口型）：\{为何王禄仍未走？\}/)
+  assert.match(result.prompt,/对白／音效：@图片1顾凌天_龙袍 @音频1【缓慢】\(OS\) ：“为何王禄仍未走？”/)
   assert.ok(!result.prompt.includes('上呈现本段指定文字'))
   const screen = buildScriptVideoDelivery({...scene,prompt:scene.prompt.replace('手握圣旨','展开圣旨，圣旨上写着“奉天承运”')},assets,options)
   assert.match(screen.prompt,/只在圣旨上呈现本段指定文字，无额外对白字幕。/)
   const handwritten = buildScriptVideoDelivery({...scene,prompt:'顾凌天_龙袍(OS)：{为何王禄仍未走？}'},assets,options)
   assert.deepEqual(handwritten.voices.map(v => v.asset.id), ['costume'])
   assert.ok(handwritten.prompt.indexOf('只参考音色，不照搬音频中的内容。') < handwritten.prompt.indexOf('为何王禄仍未走？'))
-  assert.match(handwritten.prompt, /顾凌天_龙袍（音色参考@音频1）（内心 OS，角色闭口，嘴唇不动，不对口型）：\{为何王禄仍未走？\}/)
+  assert.match(handwritten.prompt, /@图片\d+顾凌天_龙袍 @音频1\(OS\) ：“为何王禄仍未走？”/)
 })
 
-test('同一镜的内心 OS 逐句闭口，正常对白和系统 OV 保持原样', () => {
+test('同一镜的心声逐句用简洁OS格式，正常对白和系统 OV 保持原样', () => {
   const mixed = {
     ...card,
     assetIds: ['costume'],
@@ -362,10 +384,11 @@ test('同一镜的内心 OS 逐句闭口，正常对白和系统 OV 保持原样
   for (const model of ['doubao-seedance-2-5-260628', 'wf-minimax-h3', 'wan3.0-video']) {
     const settings = { model, cast: [{ name: '林心声' }] }
     const { prompt, voices } = buildScriptVideoDelivery(mixed, assets, settings)
-    assert.equal(prompt.match(/内心 OS，角色闭口，嘴唇不动，不对口型/gu)?.length, 2)
-    assert.match(prompt, /不对口型）：[“{]别急；先问一句。/)
-    assert.match(prompt, /未绑定角色（内心 OS，角色闭口，嘴唇不动，不对口型）：[“{]我也听见了。/)
-    assert.match(prompt, /顾凌天（音色参考(?:@?音频1|<Audio 1>)）：[“{]你听见什么？/)
+    assert.equal(prompt.match(/\(OS\)/gu)?.length, 2)
+    assert.match(prompt, /\(OS\) ：“别急；先问一句。”/)
+    assert.match(prompt, /未绑定角色\(OS\) ：“我也听见了。”/)
+    assert.doesNotMatch(prompt, /角色闭口|嘴唇不动|不对口型|声音：/u)
+    assert.match(prompt, /顾凌天 (?:@?音频1|<Audio 1>)：[“{]你听见什么？/)
     assert.match(prompt, /系统面板\(OV\)：“提示已发送。”/)
     assert.match(prompt, /[“{]他说的是内心OS。/)
     assert.match(prompt, /林心声：“门开了。”/)
@@ -387,9 +410,9 @@ test('即梦同一角色的每处对白和心声都有对应音频引用，原�
   const { prompt, voices } = buildScriptVideoDelivery(script, assets, { model: 'jimeng-seedance-2.5-flash', provider: 'jimeng' })
   assert.deepEqual(voices.map(voice => voice.asset.id), ['costume', 'first'])
   assert.match(prompt, /画面与动作：@图片1顾凌天_龙袍望向@图片2王禄。/)
-  assert.match(prompt, /顾凌天_龙袍（音色参考@音频1）：“去问王禄。”/)
-  assert.match(prompt, /王禄（音色参考@音频2）（内心 OS[^）]*）：“好。”/)
-  assert.match(prompt, /顾凌天_龙袍（音色参考@音频1）：“现在。”/)
+  assert.match(prompt, /顾凌天_龙袍 @音频1：“去问王禄。”/)
+  assert.match(prompt, /@图片2王禄 @音频2\(OS\) ：“好。”/)
+  assert.match(prompt, /顾凌天_龙袍 @音频1：“现在。”/)
 })
 
 test('Seedance 2.5 以实际镜头决定角色顺序，现场对白和纯心声用不同的声画处理', () => {
@@ -416,13 +439,14 @@ test('Seedance 2.5 以实际镜头决定角色顺序，现场对白和纯心声�
     const [, move, first, inner, reaction, mixed] = result.prompt.split(/^镜头\d+(?:（\d+–\d+秒）)?\n/mu)
     assert.match(move, /@图片1王禄是该动作的主体.*由同一人接续下一镜/u)
     assert.match(first, /@图片1王禄保持对应参考图的造型，是本镜画内发声者/u)
-    assert.match(first, /@图片1王禄（音色参考@音频1）：\{臣遵旨！\}/u)
-    assert.match(inner, /嘴部始终在画框外；主体为@图片1王禄/u)
+    assert.match(first, /@图片1王禄 @音频1：\{臣遵旨！\}/u)
+    assert.match(inner, /景别／机位／运动：中近景正面，@图片1王禄面部与胸前。/u)
     assert.match(inner, /@图片1王禄抱拳的手收紧/u)
-    assert.match(inner, /声音：王禄（音色参考@音频1）（内心 OS，角色闭口，嘴唇不动，不对口型）：\{我也照抓不误！\}/u)
+    assert.match(inner, /台词：@图片1王禄 @音频1\(OS\) ：“我也照抓不误！”/u)
+    assert.doesNotMatch(inner, /角色闭口|嘴唇不动|不对口型|嘴部始终在画框外|声音：/u)
     assert.match(reaction, /反打@图片2顾凌天_龙袍的面部特写/u)
     assert.match(mixed, /@图片1王禄正面近景/u)
-    assert.match(mixed, /@图片1王禄（音色参考@音频1）：\{请听我说。\}/u)
+    assert.match(mixed, /@图片1王禄 @音频1：\{请听我说。\}/u)
   }
 })
 

@@ -5,7 +5,7 @@ import fs from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
-import { after, test } from 'node:test'
+import { after, mock, test } from 'node:test'
 
 const root = await fs.mkdtemp(path.join(os.tmpdir(), 'script-video-export-'))
 process.env.SQLITE_PATH = path.join(root, 'test.sqlite3')
@@ -16,10 +16,21 @@ const require = createRequire(import.meta.url)
 const ffmpeg = process.env.FFMPEG_BIN || require('ffmpeg-static') as string
 const ffprobe = process.env.FFPROBE_BIN || require('ffprobe-static').path as string
 const { ScriptVideoStore } = await import('../src/services/script-video-store.js')
+const stores = new Set<InstanceType<typeof ScriptVideoStore>>()
+const getQueue = Object.getOwnPropertyDescriptor(ScriptVideoStore.prototype, 'queue')!.get!
+mock.getter(ScriptVideoStore.prototype, 'queue', function (this: InstanceType<typeof ScriptVideoStore>) {
+  stores.add(this)
+  return getQueue.call(this)
+})
 const { createScriptVideoRoutes } = await import('../src/routes/script-video.js')
+const { db } = await import('../src/db/index.js')
 const store = new ScriptVideoStore(path.join(root, 'projects'))
 const routes = createScriptVideoRoutes(store)
-after(() => fs.rm(root, { recursive: true, force: true }))
+after(async () => {
+  await Promise.all([...stores].map(item => item.close()))
+  db.$client.close()
+  await fs.rm(root, { recursive: true, force: true })
+})
 
 function card(id: string, status: string, videoUrl?: string) {
   return { id, title: id, status, videoUrl, duration: 1, summary: '', prompt: '', shots: [], assetIds: [], version: 1 }

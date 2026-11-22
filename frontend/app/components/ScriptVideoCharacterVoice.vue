@@ -31,7 +31,7 @@
       <label class="sv-voice-model">
         <input
           type="checkbox"
-          :checked="asset.voiceMode !== 'reference'"
+          :checked="asset.voiceMode === 'model'"
           :disabled="disabled || uploading"
           @change="setModelVoice"
         />

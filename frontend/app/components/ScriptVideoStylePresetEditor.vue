@@ -19,6 +19,10 @@
         <span>{{ preset.name }}</span>
       </label>
     </div>
+    <div v-if="latestPreset" class="sv-style-update">
+      <span>已保存的前缀与当前预设内容不同。</span>
+      <button type="button" @click="useLatestPreset">使用最新预设</button>
+    </div>
     <details class="sv-style-preview">
       <summary>查看完整前缀原文</summary>
       <pre aria-label="完整前缀原文" v-text="prefix"></pre>
@@ -39,8 +43,16 @@ const emit = defineEmits<{ 'update:modelValue': [value: ScriptVideoStylePreset] 
 const groupId = useId()
 const headingId = groupId + '-heading'
 const prefix = computed(() => formatScriptVideoStylePreset(props.modelValue))
+const latestPreset = computed(() => {
+  if (props.modelValue.id !== 'cool' && props.modelValue.id !== 'warm') return
+  const preset = props.presets.find(item => item.id === props.modelValue.id)
+  return preset && preset.prefix !== props.modelValue.prefix ? preset : undefined
+})
 function selectPreset(preset: ScriptVideoStylePreset) {
   emit('update:modelValue', { ...preset })
+}
+function useLatestPreset() {
+  if (latestPreset.value) selectPreset(latestPreset.value)
 }
 </script>
 
@@ -79,6 +91,29 @@ function selectPreset(preset: ScriptVideoStylePreset) {
 .sv-style-swatch { width: 36px; height: 24px; flex: none; border-radius: 4px; }
 .sv-style-swatch[data-style="cool"] { background: linear-gradient(130deg, #23384b, #7599b3); }
 .sv-style-swatch[data-style="warm"] { background: linear-gradient(130deg, #a4663f, #efd299); }
+.sv-style-update {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  color: var(--text-2);
+  font-size: 12px;
+}
+.sv-style-update button {
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-raised, var(--surface-1));
+  color: var(--accent-text, var(--accent));
+  font: inherit;
+  cursor: pointer;
+}
+.sv-style-update button:hover { border-color: var(--accent); }
+.sv-style-update button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 .sv-style-preview { margin-top: 10px; }
 .sv-style-preview summary {
   width: fit-content;

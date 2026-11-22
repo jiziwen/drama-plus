@@ -7,9 +7,11 @@
     loading="lazy"
     decoding="async"
   />
+  <span v-else-if="asset.kind === 'audio'" class="preview-initial"><Headphones :size="22" aria-hidden="true" /></span>
   <span v-else class="preview-initial">{{ asset.name.slice(0, 1) }}</span>
 </template>
 <script setup lang="ts">
+import { Headphones } from 'lucide-vue-next'
 import type { PreviewAsset } from '~/utils/scriptVideoPreview'
 defineProps<{ asset: PreviewAsset }>()
 </script>

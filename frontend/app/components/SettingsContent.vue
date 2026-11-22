@@ -375,6 +375,37 @@
               <span v-if="cliAccount?.authenticated" class="tag tag-success">{{ cliLabel('connected') }}</span>
               <span v-else-if="cliAccount?.available" class="tag tag-accent">{{ cliLabel(cliPending ? 'pending' : 'disconnected') }}</span>
             </div>
+            <div class="video-cli-account-picker">
+              <label v-if="cliAccounts?.length" class="field">
+                <span class="field-label">{{ t('settings.cliAccount.selected') }}</span>
+                <BaseSelect :model-value="cliSelectedAccountId" :options="cliAccountOptions" :aria-label="t('settings.cliAccount.selected')" :disabled="cliBusy || cliPhoneBusy || cfgOperationPending" @update:model-value="selectCliAccount" />
+              </label>
+              <button type="button" class="btn btn-sm" :disabled="cliBusy || cliPhoneBusy || cfgOperationPending" @click="addCliAccount">{{ t('settings.cliAccount.add') }}</button>
+              <a v-if="cliAssistantDownloadUrl && !cfgOperationPending" class="btn btn-sm" :href="cliAssistantDownloadUrl" download>{{ t('settings.cliAccount.authorizeWeb') }}</a>
+              <a v-else-if="cliVerificationUrl && !cfgOperationPending" class="btn btn-sm" :href="cliVerificationUrl" target="_blank" rel="noopener noreferrer">{{ t('settings.cliAccount.authorizeWeb') }}</a>
+              <button v-else-if="cliSelectedAccountId && !cliAccount?.authenticated && !cliAccount?.canvas_preparing && !cliPhoneOpen" ref="cliConnectButton" type="button" class="btn btn-sm" :disabled="cliBusy || cfgOperationPending" @click="authorizeCli">{{ t('settings.cliAccount.authorizeWeb') }}</button>
+              <button v-if="cliSelectedAccountId" type="button" class="btn btn-ghost btn-sm" :disabled="cliBusy || cliPhoneBusy || cfgOperationPending" @click="openCliAccountEditor('rename')">{{ t('settings.cliAccount.rename') }}</button>
+              <button v-if="cliSelectedAccountId" type="button" class="btn btn-ghost btn-sm" :disabled="cliBusy || cliPhoneBusy || cfgOperationPending" @click="cliAccountEditor = 'remove'">{{ t('settings.cliAccount.remove') }}</button>
+            </div>
+            <p v-if="!cliBusy && !cliAccounts?.length && !cliAccount" class="field-hint">{{ t('settings.cliAccount.empty') }}</p>
+            <p class="field-hint">{{ t('settings.cliAccount.selectionHint') }}</p>
+            <form v-if="cliAccountEditor === 'rename'" class="video-cli-account-edit" @submit.prevent="saveCliAccountName">
+              <label class="field">
+                <span class="field-label">{{ t('settings.cliAccount.name') }}</span>
+                <input v-model="cliAccountName" class="input" maxlength="80" :placeholder="t('settings.cliAccount.namePlaceholder')" :disabled="cliBusy" />
+              </label>
+              <div class="video-cli-account-actions">
+                <button type="submit" class="btn btn-sm" :disabled="!cliAccountName.trim() || cliBusy">{{ t('common.save') }}</button>
+                <button type="button" class="btn btn-ghost btn-sm" :disabled="cliBusy" @click="cliAccountEditor = ''">{{ t('common.cancel') }}</button>
+              </div>
+            </form>
+            <div v-else-if="cliAccountEditor === 'remove'" class="video-cli-account-edit" role="group" :aria-label="t('settings.cliAccount.remove')">
+              <p class="field-hint">{{ t('settings.cliAccount.removeConfirm', { name: cliSelectedAccountName }) }}</p>
+              <div class="video-cli-account-actions">
+                <button type="button" class="btn btn-danger btn-sm" :disabled="cliBusy" @click="confirmRemoveCliAccount">{{ t('settings.cliAccount.confirmRemove') }}</button>
+                <button type="button" class="btn btn-ghost btn-sm" :disabled="cliBusy" @click="cliAccountEditor = ''">{{ t('common.cancel') }}</button>
+              </div>
+            </div>
             <div v-if="cliAccount?.authenticated" class="video-cli-account-details">
               <span v-if="cliAccount.username">{{ cliAccount.username }}</span>
               <span v-if="cliAccount.plan || cliAccount.membership">{{ cliAccount.plan || cliAccount.membership }}</span>
@@ -384,19 +415,16 @@
             <p v-if="cliError" class="field-hint" role="alert">{{ cliError }}</p>
             <p v-else-if="cliBusy && !cliAccount" class="field-hint" role="status">{{ cliLabel('checking') }}</p>
             <p v-else-if="cliAccount?.available === false" class="field-hint" role="status">{{ cliAccount.message || cliLabel('unavailable') }}</p>
-            <p v-else-if="cliPending" class="field-hint" role="status">{{ cliLabel(activeVideoCli === 'libtv' && (cliAccount?.authenticated || cliAccount?.canvas_preparing) ? 'preparingCanvas' : 'completeAuthorization') }}</p>
+            <p v-else-if="cliPending" class="field-hint" role="status">{{ cliAssistantDownloadUrl ? t('settings.libtv.helperInstructions') : cliLabel(activeVideoCli === 'libtv' && (cliAccount?.authenticated || cliAccount?.canvas_preparing) ? 'preparingCanvas' : 'completeAuthorization') }}</p>
             <p v-else-if="activeVideoCli === 'libtv' && cliAccount?.can_authorize === false && !cliAccount.can_authorize_phone && !cliAccount.authenticated" class="field-hint" role="status">{{ cliAccount.message || cliLabel('authorizationUnavailable') }}</p>
             <p v-else-if="activeVideoCli === 'libtv' && cliAccount?.authenticated && cliAccount.canvas_ready === false" class="field-hint" role="status">{{ cliAccount.message || cliLabel('canvasUnavailable') }}</p>
             <p v-else-if="cliJustDisconnected && !cliAccount?.authenticated && !cliPhoneOpen" class="field-hint" role="status">
-              {{ t(cliAccount?.can_authorize_phone ? 'settings.cliAccount.reconnectPhone' : 'settings.cliAccount.reconnectWeb') }}
-              <a v-if="!cliAccount?.can_authorize_phone" class="video-cli-switch-link" :href="cliWebsites[activeVideoCli]" target="_blank" rel="noopener noreferrer">{{ t('settings.cliAccount.openWebsite') }}</a>
+              {{ t('settings.cliAccount.reconnectWeb') }}
+              <a class="video-cli-switch-link" :href="cliWebsites[activeVideoCli]" target="_blank" rel="noopener noreferrer">{{ t('settings.cliAccount.openWebsite') }}</a>
             </p>
             <div class="video-cli-account-actions">
-              <a v-if="cliVerificationUrl && !cfgOperationPending" class="btn btn-sm" :href="cliVerificationUrl" target="_blank" rel="noopener noreferrer">{{ cliLabel('openAuthorization') }}</a>
-              <button v-else-if="activeVideoCli === 'jimeng' && cliAccount?.available && !cliAccount.authenticated && cliPending" type="button" class="btn btn-sm" :disabled="cliBusy || cfgOperationPending" @click="authorizeCli">{{ cliLabel('openAuthorization') }}</button>
-              <button v-else-if="activeVideoCli === 'libtv' && cliAccount?.available && cliAccount.can_authorize_phone && !cliAccount.authenticated && !cliPending && !cliPhoneOpen" ref="cliConnectButton" type="button" class="btn btn-sm" :disabled="cliBusy" @click="startCliPhone">{{ cliLabel('connect') }}</button>
-              <button v-else-if="cliAccount?.available && cliAccount.can_authorize !== false && !cliAccount.authenticated && !cliPending && !cliPhoneOpen" ref="cliConnectButton" type="button" class="btn btn-sm" :disabled="cliBusy" @click="authorizeCli">{{ cliLabel('connect') }}</button>
-              <button v-else-if="activeVideoCli === 'libtv' && cliAccount?.authenticated && cliAccount.canvas_ready === false && (cliAccount.can_prepare_canvas ?? cliAccount.can_authorize !== false) && !cliPending" type="button" class="btn btn-sm" :disabled="cliBusy" @click="prepareCliCanvas">{{ cliLabel('prepareCanvas') }}</button>
+              <button v-if="activeVideoCli === 'libtv' && cliAccount?.authenticated && cliAccount.canvas_ready === false && (cliAccount.can_prepare_canvas ?? cliAccount.can_authorize !== false) && !cliPending" type="button" class="btn btn-sm" :disabled="cliBusy" @click="prepareCliCanvas">{{ cliLabel('prepareCanvas') }}</button>
+              <button v-if="activeVideoCli === 'libtv' && cliAccount?.available && cliAccount.can_authorize_phone && !cliAccount.authenticated && !cliPending && !cliPhoneOpen" type="button" class="btn btn-ghost btn-sm" :disabled="cliBusy || cfgOperationPending" @click="startCliPhone">{{ t('settings.libtv.phoneAlternative') }}</button>
               <button type="button" class="btn btn-ghost btn-sm" :disabled="cliBusy || cliPhoneBusy || cfgOperationPending" @click="refreshCliAccount">{{ cliLabel('refresh') }}</button>
               <button v-if="canDisconnectCli" type="button" class="btn btn-danger btn-sm" :disabled="cliBusy || cfgOperationPending" @click="cliDisconnectConfirm = true">{{ t(cliAccount?.authenticated ? 'settings.cliAccount.disconnect' : 'settings.cliAccount.cancelAuthorization') }}</button>
             </div>
@@ -726,7 +754,26 @@ const {
   account: cliAccount, busy: cliBusy, pending: cliPending, error: cliError, verificationUrl: cliVerificationUrl,
   phone: cliPhone, refresh: refreshCliAccount, authorize: authorizeCli, prepare: prepareCliCanvas,
   canDisconnect: canDisconnectCli, disconnecting: cliDisconnecting, disconnect: disconnectCli,
+  accounts: cliAccounts = ref([]), activeAccountId: cliActiveAccountId = ref(''), selectedAccountId: cliSelectedAccountId = ref(''),
+  assistantDownloadUrl: cliAssistantDownloadUrl = ref(''),
+  selectAccount: selectCliAccount, addAccount: addCliAccount, renameAccount: renameCliAccount, removeAccount: removeCliAccount,
 } = useVideoCliAccount(activeVideoCli, t)
+const cliAccountEditor = ref('')
+const cliAccountName = ref('')
+const cliAccountOptions = computed(() => (cliAccounts.value || []).map(account => ({
+  value: account.id, label: account.name + (account.id === cliActiveAccountId.value ? ` · ${t('settings.cliAccount.current')}` : ''),
+})))
+const cliSelectedAccountName = computed(() => cliAccounts.value?.find(account => account.id === cliSelectedAccountId.value)?.name || '')
+function openCliAccountEditor(mode) {
+  cliAccountEditor.value = mode
+  cliAccountName.value = mode === 'rename' ? cliSelectedAccountName.value : ''
+}
+async function saveCliAccountName() {
+  if (await renameCliAccount(cliAccountName.value)) cliAccountEditor.value = ''
+}
+async function confirmRemoveCliAccount() {
+  if (await removeCliAccount()) cliAccountEditor.value = ''
+}
 const {
   open: cliPhoneOpen, number: cliPhoneNumber, code: cliPhoneCode, challenge: cliPhoneChallenge,
   busy: cliPhoneBusy, error: cliPhoneError, expired: cliPhoneExpired, masked: cliMaskedPhone,
@@ -736,6 +783,12 @@ const libtvPhoneInput = ref(null)
 const cliConnectButton = ref(null)
 const cliDisconnectConfirm = ref(false)
 const cliJustDisconnected = ref(false)
+watch(cliSelectedAccountId, () => {
+  cliAccountEditor.value = ''
+  cliAccountName.value = ''
+  cliDisconnectConfirm.value = false
+  cliJustDisconnected.value = false
+})
 const cfgOperationPending = computed(() => cfgSaving.value || cliDisconnecting.value || cliDisconnectConfirm.value)
 const cliProviderName = provider => provider === 'jimeng' ? t('settings.jimeng.provider') : 'LibTV'
 const cliWebsites = { jimeng: 'https://jimeng.jianying.com/', libtv: 'https://www.liblib.tv/zh' }
@@ -748,6 +801,8 @@ const cfgDeleteMessage = computed(() => {
   return t(multiple ? 'settings.cfg.deleteMessage' : 'settings.cfg.deleteLastCli', { name, provider: cliProviderName(config.provider) })
 })
 watch(activeVideoCli, () => {
+  cliAccountEditor.value = ''
+  cliAccountName.value = ''
   cliDisconnectConfirm.value = false
   cliJustDisconnected.value = false
 })
@@ -1778,6 +1833,9 @@ onBeforeUnmount(stopUsagePoll)
 .video-cli-account-details { font-size: 12px; color: var(--text-2); }
 .video-cli-account-details strong { color: var(--text-0); }
 .video-cli-account-actions a { text-decoration: none; }
+.video-cli-account-picker { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; }
+.video-cli-account-picker .field { flex: 1 1 240px; min-width: 0; }
+.video-cli-account-edit { display: grid; gap: 9px; padding: 10px 0; border-block: 1px solid var(--border); }
 .video-cli-switch-link { color: var(--accent); text-decoration: underline; }
 .video-cli-phone { display: grid; gap: 9px; padding-top: 10px; border-top: 1px solid var(--border); }
 .video-cli-phone .field { max-width: 320px; }

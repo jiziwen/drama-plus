@@ -26,10 +26,11 @@ import { isPreTlsConnectionReset } from '../utils/network-error.js'
 import { mkdir, mkdtemp, rename, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { STORAGE_ROOT } from '../utils/paths.js'
-import { downloadJimengVideo, inspectJimengVideo, JimengCliError, runJimengVideo, type JimengVideoRunInput } from './jimeng-cli.js'
+import { downloadJimengVideo, inspectJimengVideo, JimengCliError, runJimengVideo, withJimengAccount, type JimengVideoRunInput } from './jimeng-cli.js'
 import { prepareJimengVideo, validateJimengVideo } from './jimeng-video.js'
-import { createLibTVVideoNode, inspectLibTVVideo, LibTVCliError, libtvProjectId, runLibTVVideo, validateLibTVVideo, withLibTVCanvas, type LibTVNode } from './libtv-cli.js'
-import { assertVideoCliNotDisconnecting } from './video-cli-tasks.js'
+import { createLibTVVideoNode, inspectLibTVVideo, LibTVCliError, libtvProjectId, runLibTVVideo, validateLibTVVideo, withLibTVAccount, withLibTVCanvas, type LibTVNode } from './libtv-cli.js'
+import { assertVideoCliNotDisconnecting, holdVideoCliSubmission } from './video-cli-tasks.js'
+import { resolveVideoCliAccountId } from './video-cli-accounts.js'
 import { cancelUpstreamVideo } from './video-upstream-cancel.js'
 import { scheduleRetiredUploadCleanup } from './script-video-media-retention.js'
 
@@ -95,6 +96,8 @@ export interface GenerateVideoParams {
   forceNew?: boolean
   allowJimeng?: boolean
   allowLibTV?: boolean
+  /** 提交时固定的本地账号，切换默认账号不改变已有任务。 */
+  videoCliAccountId?: string
 }
 
 export async function generateImage(params: GenerateImageParams): Promise<number> {
@@ -143,6 +146,7 @@ export type VideoSubmissionControl = {
 }
 
 export async function generateVideo(params: GenerateVideoParams, control?: VideoSubmissionControl): Promise<number> {
+  let releaseCliSubmission: (() => void) | undefined
   const storyboardId = params.storyboardId
   if (storyboardId && videoSubmissions.has(storyboardId)) throw new Error('该分镜正在提交任务，请勿重复点击')
   if (storyboardId) videoSubmissions.add(storyboardId)
@@ -154,18 +158,22 @@ export async function generateVideo(params: GenerateVideoParams, control?: Video
       if (latest?.status === 'failed' && params.forceNew !== true) throw new Error('请先恢复原任务；重新生成需确认可能再次计费')
     }
     const config = await resolveMediaConfig('video', params)
+    if (config.provider === 'jimeng' || config.provider === 'libtv') {
+      params = { ...params, videoCliAccountId: resolveVideoCliAccountId(config.provider, params.videoCliAccountId) }
+      releaseCliSubmission = holdVideoCliSubmission(config.provider, params.videoCliAccountId)
+    }
     if (config.provider === 'libtv') {
       if (!params.allowLibTV) throw new Error('请通过私有站点的「剧本转视频」使用 LibTV')
-      await libtvProjectId()
+      await withLibTVAccount(params.videoCliAccountId!, () => libtvProjectId())
       validateLibTVVideo({ ...params, model: config.model })
     }
     control?.signal.throwIfAborted()
-    assertVideoCliNotDisconnecting(config.provider)
+    assertVideoCliNotDisconnecting(config.provider, params.videoCliAccountId)
     let jimeng: JimengVideoRunInput | undefined
     if (config.provider === 'jimeng') {
       if (!params.allowJimeng) throw new JimengCliError('请通过私有站点的「剧本转视频」使用即梦积分')
       try {
-        jimeng = await prepareJimengVideo(params, config, control?.signal)
+        jimeng = await withJimengAccount(params.videoCliAccountId!, () => prepareJimengVideo(params, config, control?.signal))
       } catch (error) {
         control?.signal.throwIfAborted()
         if (error instanceof JimengCliError) throw error
@@ -195,6 +203,7 @@ export async function generateVideo(params: GenerateVideoParams, control?: Video
     })
     return id
   } finally {
+    releaseCliSubmission?.()
     if (storyboardId) videoSubmissions.delete(storyboardId)
   }
 }
@@ -208,6 +217,7 @@ function videoTaskInputs(params: GenerateVideoParams, provider: string) {
     ...(params.sourceUploadUrls?.length && { sourceUploadUrls: params.sourceUploadUrls }),
     referenceLinkUrl, generateAudio: generateAudio === false ? 0 : 1, duration, aspectRatio,
     resolution: normalizeStoredVideoResolution(resolution, provider), seed, promptExtend, watermark,
+    ...(params.videoCliAccountId && { videoCliAccountId: params.videoCliAccountId }),
   }
 }
 
@@ -352,7 +362,7 @@ async function processTask(id: number, config: AIConfig) {
       return
     }
     if (config.provider === 'libtv') {
-      await withLibTVCanvas(async () => {
+      await withLibTVAccount(params.videoCliAccountId || 'default', () => withLibTVCanvas(async () => {
         const node = await createLibTVVideoNode({
           ...params, model: record.model || config.model, prompt: record.prompt || '', generateAudio: params.generateAudio !== 0,
         }, id).catch(async error => {
@@ -368,15 +378,17 @@ async function processTask(id: number, config: AIConfig) {
         }).where(and(eq(schema.sysTask.id, id), ne(schema.sysTask.status, 'canceled')))
         beginSubmission('polling')
         let url: string | undefined
+        let submissionFailure: string | undefined
         try { url = await runLibTVVideo(node) } catch (error) {
           if (error instanceof LibTVCliError && error.terminal) {
             await failTask(id, safeTaskError(error), 'generation_failed')
             return
           }
+          submissionFailure = safeTaskError(error)
         }
         if (url) await handleVideoComplete(record, url, params.duration)
-        else await recoverLibTVNode(record, node)
-      })
+        else await recoverLibTVNode(record, node, submissionFailure)
+      }))
       return
     }
     if (config.provider === 'comfyui') {
@@ -673,14 +685,15 @@ async function pollTaskResponse(record: SysTaskRecord, config: AIConfig, taskId:
   await failTask(record.id, 'Timeout: polling attempts exhausted')
 }
 
-async function recoverLibTVNode(record: SysTaskRecord, node: LibTVNode) {
+async function recoverLibTVNode(record: SysTaskRecord, node: LibTVNode, submissionFailure?: string) {
   let url: string | undefined
   try { url = await inspectLibTVVideo(node) } catch (error) {
-    await failTask(record.id, safeTaskError(error), 'submission_unknown')
+    await failTask(record.id, [submissionFailure, safeTaskError(error)].filter(Boolean).join('；'),
+      error instanceof LibTVCliError && error.terminal ? 'generation_failed' : 'submission_unknown')
     return
   }
   if (url) await handleVideoComplete(record, url, parseTaskParams(record.params).duration)
-  else await failTask(record.id, 'LibTV 原画布节点尚未返回成片。请先在 LibTV 核对原任务，或恢复任务再查。', 'submission_unknown')
+  else await failTask(record.id, [submissionFailure, 'LibTV 原画布节点尚未返回成片。请先在 LibTV 核对原任务，或恢复任务再查。'].filter(Boolean).join('；'), 'submission_unknown')
 }
 
 async function pollJimengTask(record: SysTaskRecord, input: JimengVideoRunInput) {
@@ -690,7 +703,7 @@ async function pollJimengTask(record: SysTaskRecord, input: JimengVideoRunInput)
     if (attempt > 0) await new Promise(resolve => setTimeout(resolve, profile.intervalMs))
     let operation: Awaited<ReturnType<typeof inspectJimengVideo>>
     try {
-      operation = await inspectJimengVideo(input.projectId, input.submitId)
+      operation = await inspectJimengVideo(input.projectId, input.submitId, input.profileId)
     } catch (error) {
       lastError = safeTaskError(error)
       continue
@@ -710,7 +723,7 @@ async function pollJimengTask(record: SysTaskRecord, input: JimengVideoRunInput)
         const temporary = await mkdtemp(path.join(folder, '.jimeng-'))
         try {
           const output = path.join(temporary, 'result.mp4')
-          await downloadJimengVideo(input.projectId, operation.resourceId, output)
+          await downloadJimengVideo(input.projectId, operation.resourceId, output, input.profileId)
           if (!(await stat(output)).size) throw new Error('即梦返回了空视频文件')
           await rename(output, getAbsolutePath(localPath))
         } finally { await rm(temporary, { recursive: true, force: true }).catch(() => {}) }
@@ -867,7 +880,8 @@ export async function recoverVideoTask(id: number): Promise<void> {
       if (!shot || shot.deletedAt) throw new Error('分镜已删除，请先从回收站恢复')
     }
     const config = record.taskId && !record.resultUrl ? await recoveryConfig(record) : null
-    assertVideoCliNotDisconnecting(record.provider)
+    const originalParams = parseTaskParams(record.params)
+    assertVideoCliNotDisconnecting(record.provider, originalParams.videoCliAccountId ?? originalParams[record.provider || '']?.profileId ?? 'default')
     db.update(schema.sysTask).set({ status: 'processing', errorMsg: null, errorCode: null,
       stage: record.resultUrl ? 'downloading' : record.stage === 'transferring' || record.errorCode === 'delivery_failed' ? 'transferring' : 'polling', updatedAt: now() }).where(eq(schema.sysTask.id, id)).run()
     void (async () => {

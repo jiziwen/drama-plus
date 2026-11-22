@@ -88,8 +88,11 @@ function shotVisuals(card: Card) {
 }
 
 type Declaration = {
-  name: string; identity: string; numbered: boolean; weather: string; lighting: string; description: string; first?: number; last?: number
+  name: string; identity: string; location: string; time: string; day: string
+  numbered: boolean; weather: string; lighting: string; description: string; first?: number; last?: number
 }
+
+type LightingStateDetails = { scene: Declaration; change: string }
 
 function declarations(card: Card, sources: SourceScene[], assets: readonly ScriptVideoAsset[]): Declaration[] {
   const header = /^\s*场景\s*[：:]\s*([^\r\n]+)/mu.exec(card.prompt || '')?.[1] || card.scene
@@ -128,7 +131,10 @@ function declarations(card: Card, sources: SourceScene[], assets: readonly Scrip
     const number = source ? 'script-' + source.index : id
     const identity = JSON.stringify([resolved[0]?.id || name, number, relativeDay || source?.time.match(dayChange)?.[0],
       timeOf(source?.time || '') || time, !source && matches.length > 1 && !id ? card.id : undefined])
-    return [{ name, identity, numbered: !!(id || source?.number), weather: sourceWeather || weather, description, lighting, first: bounds ? Number(bounds[1]) : undefined, last: bounds ? Number(bounds[2] || bounds[1]) : undefined }]
+    return [{ name, identity, location: resolved[0]?.id || name, time: timeOf(source?.time || '') || time,
+      day: relativeDay || source?.time.match(dayChange)?.[0] || '',
+      numbered: !!(id || source?.number), weather: sourceWeather || weather, description, lighting,
+      first: bounds ? Number(bounds[1]) : undefined, last: bounds ? Number(bounds[2] || bounds[1]) : undefined }]
   })
   return found.length === sections.length ? found : []
 }
@@ -193,7 +199,10 @@ function changedLight(visual: string): string {
   return ''
 }
 
-export function buildScriptVideoLightingPlan(cards: readonly Card[], script: string, assets: readonly ScriptVideoAsset[]): Record<string, ScriptVideoLightingSceneRange[]> {
+export function buildScriptVideoLightingPlan(
+  cards: readonly Card[], script: string, assets: readonly ScriptVideoAsset[],
+  details?: Map<string, LightingStateDetails>,
+): Record<string, ScriptVideoLightingSceneRange[]> {
   const sources = sourceScenes(script || '')
   const result: Record<string, ScriptVideoLightingSceneRange[]> = Object.create(null)
   // A cutaway can return to a specifically numbered screenplay scene. Without a
@@ -243,6 +252,7 @@ export function buildScriptVideoLightingPlan(cards: readonly Card[], script: str
         state = { key: JSON.stringify([scene.identity, card.id, index + 1]), weather: scene.weather, lightAfterChange: change }
         if (scene.numbered) numberedScenes.set(scene.identity, state)
       } else if (scene.weather) state.weather = scene.weather
+      details?.set(state.key, { scene, change: state.lightAfterChange })
       const lighting = state.lightAfterChange || scene.lighting
       const previous = ranges.at(-1)
       if (previous && previous.sceneKey === state.key && previous.lastShot === index) {
@@ -253,6 +263,49 @@ export function buildScriptVideoLightingPlan(cards: readonly Card[], script: str
         ranges.push({ sceneKey: state.key, sceneName: scene.name, lighting, firstShot: index + 1, lastShot: index + 1,
           startSeconds, endSeconds: seconds, stableStartSeconds: cut ? seconds : startSeconds, stableEndSeconds: seconds, ...(cut ? { transitionIn: true } : {}) })
       }
+    }
+  }
+  return result
+}
+
+type LightingEpisode = { id: string; cards: readonly Card[]; confirmedScript?: string; script?: string }
+
+function lightingKinds(text: string) {
+  return [
+    /阳光|日光|直射光|日照/u, /天光|散射光|漫射光/u, /月光/u, /烛光|烛火/u,
+    /灯光|灯火/u, /冷光/u, /暖光/u, /逆光/u, /侧光/u, /昏暗|幽暗/u,
+  ].flatMap((pattern, index) => pattern.test(text) ? [index] : []).join(',')
+}
+
+/** Each screenplay owns its scene numbers. Only the adjacent ending and opening
+ * can establish continuity across that boundary; screenplay text is never merged. */
+export function buildScriptVideoEpisodeLightingPlan(
+  project: { episodes: readonly LightingEpisode[]; assets: readonly ScriptVideoAsset[] }, episodeId: string,
+): Record<string, ScriptVideoLightingSceneRange[]> {
+  const index = project.episodes.findIndex(episode => episode.id === episodeId)
+  const episode = project.episodes[index]
+  if (!episode) return Object.create(null)
+  const afterDetails = new Map<string, LightingStateDetails>()
+  const result = buildScriptVideoLightingPlan(episode.cards, episode.confirmedScript || episode.script || '', project.assets, afterDetails)
+  const previous = project.episodes[index - 1], last = previous?.cards.at(-1), first = episode.cards[0]
+  if (!last || !first) return result
+  const beforeDetails = new Map<string, LightingStateDetails>()
+  const beforePlan = buildScriptVideoLightingPlan(previous.cards, previous.confirmedScript || previous.script || '', project.assets, beforeDetails)
+  result[last.id] = beforePlan[last.id] || []
+  const end = result[last.id].at(-1), start = result[first.id]?.[0]
+  if (!end || !start || end.lastShot !== last.shots?.length || start.firstShot !== 1 || start.transitionIn) return result
+  const before = beforeDetails.get(end.sceneKey), after = afterDetails.get(start.sceneKey)
+  if (!before || !after || before.scene.location !== after.scene.location || after.scene.day || after.change) return result
+  const beforeTime = timeOf(before.change) || before.scene.time
+  const afterTime = after.scene.time
+  if (beforeTime !== afterTime || before.scene.weather !== after.scene.weather ||
+      lightingKinds(before.scene.lighting) !== lightingKinds(after.scene.lighting)) return result
+  const openingKey = start.sceneKey
+  for (const card of episode.cards) {
+    for (const range of result[card.id] || []) {
+      if (range.sceneKey !== openingKey) continue
+      range.sceneKey = end.sceneKey
+      if (before.change) range.lighting = end.lighting
     }
   }
   return result

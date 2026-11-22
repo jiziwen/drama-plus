@@ -118,14 +118,16 @@ test('旧流程默认不开启悬停，换图后失败占位状态会重置', ()
   app.dispose()
 })
 
-test('口播内的角色别名显示悬浮标记并命中服装缩略图，textarea 字面和光标偏移不变', () => {
+test('口播内的角色别名只高亮并命中服装缩略图，不生成上标 @ 或改写原话', () => {
   const text = '顾凌天：“张浩。”'
   const options = [role('顾凌天_龙袍'),role('火枪卫小旗_飞鱼服')]
   const app = controller({modelValue:text, options, resolvePreviewRanges:()=>[
     {start:0,end:3,name:options[0].value}, {start:5,end:7,name:options[1].value},
   ]})
   assert.equal(app.text.value,text)
-  assert.match(app.highlightedHtml.value,/mention-virtual" data-mention-index="1">张浩</u)
+  assert.match(app.highlightedHtml.value,/data-mention-index="1">张浩</u)
+  assert.doesNotMatch(app.highlightedHtml.value, /mention-virtual/u)
+  assert.doesNotMatch(source, /content:\s*['"]@['"]/u)
   app.setTokens([token(1,rect(100,110,130,130))])
   app.onPreviewMove({clientX:110,clientY:120,buttons:0})
   assert.equal(app.preview.value.option.image,'/火枪卫小旗_飞鱼服.png')

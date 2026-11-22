@@ -26,6 +26,19 @@ https://162.14.83.236 {
             header_up -X-Drama-Authenticated-User
         }
     }
+    # The official login returns through a local helper, so browser site-session
+    # cookies may be absent. The app validates an expiring, single-use state.
+    @libtvAuthorizationCallback {
+        method POST
+        path /api/v1/libtv/auth/callback
+    }
+    handle @libtvAuthorizationCallback {
+        reverse_proxy 127.0.0.1:5679 {
+            header_up -Authorization
+            header_up -X-Drama-Jimeng-Private-Proxy
+            header_up -X-Drama-Authenticated-User
+        }
+    }
     # Site session handlers. Enable only once the app has the matching HTTPS origin and proxy secret.
     @siteSessionCheck path /api/v1/site-session/check
     handle @siteSessionCheck {

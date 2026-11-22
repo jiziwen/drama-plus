@@ -146,14 +146,14 @@ test('rendering without a cast never turns an ambiguous literal character name i
   assert.doesNotThrow(() => validate(rendered, '人物：张浩内心、张浩\n张浩内心：【平静】“这是我的名字。”'))
 })
 
-test('rendering a known character still adds the required inner voice performance direction', () => {
+test('已知角色的心声统一渲染为简短 OS 标记', () => {
   const card = sample()
   card.characters = '张浩站在窗前。'
   card.assetIds = ['zhang']
   card.shots = [{ ...card.shots[0], duration: 4, action: '张浩闭口站在窗前。', dialogue: '张浩内心【平静】：“别回头。”' }]
   const assets = [{ id: 'zhang', name: '张浩', kind: 'character' }]
   card.prompt = renderScriptVideoPrompt(card, assets)
-  assert.match(card.prompt, /对白／音效：@?张浩【平静】（内心 OS，角色闭口，嘴唇不动，不对口型）/u)
+  assert.match(card.prompt, /对白／音效：@?张浩【平静】\(OS\) ：“别回头。”/u)
   assert.doesNotThrow(() => assertScriptVideoCards({ script: '张浩(OS)：“别回头。”', assets, cards: [card] }))
 })
 

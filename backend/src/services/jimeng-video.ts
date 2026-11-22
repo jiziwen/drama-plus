@@ -5,7 +5,7 @@ import { STORAGE_ROOT } from '../utils/paths.js'
 import type { AIConfig } from './adapters/types.js'
 import type { GenerateVideoParams } from './generation.js'
 import {
-  createJimengCanvas, createJimengVideoDraft, getJimengPersonalSpaceAccountId, JimengCliError, uploadJimengReference,
+  createJimengCanvas, createJimengVideoDraft, getJimengPersonalSpaceAccountId, getCurrentJimengAccountId, JimengCliError, uploadJimengReference, withJimengAccount,
 } from './jimeng-cli.js'
 import { jimengVideoModel } from './jimeng-video-models.js'
 
@@ -86,10 +86,11 @@ function providerPrompt(prompt: string, references: { kind: Reference['kind']; r
 }
 
 function getCanvas(accountId: string) {
-  let canvas = canvases.get(accountId)
+  const key = `${getCurrentJimengAccountId()}:${accountId}`
+  let canvas = canvases.get(key)
   if (!canvas) {
-    canvas = createJimengCanvas('小李短剧 · Seedance 分镜').catch(error => { canvases.delete(accountId); throw error })
-    canvases.set(accountId, canvas)
+    canvas = createJimengCanvas('小李短剧 · Seedance 分镜').catch(error => { canvases.delete(key); throw error })
+    canvases.set(key, canvas)
   }
   return canvas
 }
@@ -98,7 +99,10 @@ export function validateJimengVideo(params: GenerateVideoParams, config: AIConfi
   draftInput(params, config)
 }
 
-export async function prepareJimengVideo(params: GenerateVideoParams, config: AIConfig, signal?: AbortSignal) {
+export function prepareJimengVideo(params: GenerateVideoParams, config: AIConfig, signal?: AbortSignal) {
+  return withJimengAccount(params.videoCliAccountId, () => prepareScopedJimengVideo(params, config, signal))
+}
+async function prepareScopedJimengVideo(params: GenerateVideoParams, config: AIConfig, signal?: AbortSignal) {
   if (preparing >= 3) throw new JimengCliError('即梦正在准备的任务过多，请稍后再试')
   preparing++
   let scratch: string | undefined

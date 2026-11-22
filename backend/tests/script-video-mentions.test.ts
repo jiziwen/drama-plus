@@ -175,3 +175,91 @@ test('a Q版 alias uses the selected stylized costume or remains ambiguous', () 
   assert.deepEqual(unresolved.ambiguous, ['3DQ版小咖妃'])
   assert.deepEqual(unresolved.assetIds, [live.id])
 })
+
+test('回顾、事件说明和衔接中的人物正式引用素材，保持 context 分类和对白原话', () => {
+  const assets = [...cast, { id: 'study', name: '御书房', kind: 'scene' }, { id: 'token', name: '玉佩', kind: 'prop' }]
+  const text = [
+    '前镜回顾：顾凌天曾在御书房。',
+    '独立生成：顾凌天想起玉佩。',
+    '镜头 01（0–5秒）',
+    '对白／音效：无对白。',
+    '→衔接至第2段：顾凌天走向王禄。',
+  ].join('\n')
+  const result = scan(text, assets, ['顾凌天_龙袍', '王禄'], options)
+  assert.equal(result.text, [
+    '前镜回顾：@顾凌天_龙袍曾在御书房。',
+    '独立生成：@顾凌天_龙袍想起玉佩。',
+    '镜头 01（0–5秒）',
+    '对白／音效：无对白。',
+    '→衔接至第2段：@顾凌天_龙袍走向@王禄。',
+  ].join('\n'))
+  const roles = result.mentions.filter(hit => assets.find(asset => asset.id === hit.id)?.kind === 'character')
+  assert.ok(roles.every(hit => hit.usage === 'context' && !hit.literal && !hit.spoken))
+  assert.deepEqual(result.assetIds, ['顾凌天_龙袍', '王禄'])
+  assert.ok(result.mentions.filter(hit => hit.id === 'study' || hit.id === 'token').every(hit => hit.literal && hit.usage === 'context'))
+  const normalized = scan(result.text, assets, result.assetIds, options)
+  assert.equal(normalized.text, result.text)
+  assert.ok(normalized.mentions.filter(hit => assets.find(asset => asset.id === hit.id)?.kind === 'character')
+    .every(hit => hit.usage === 'context' && !hit.literal))
+
+  const spoken = '对白／音效：顾凌天：“张浩在御书房，王禄拿着玉佩。”'
+  const dialogue = scan(spoken, assets, bound, options)
+  assert.equal(dialogue.text, spoken.replace('顾凌天：', '@顾凌天_龙袍：'))
+  assert.deepEqual(dialogue.assetIds, ['顾凌天_龙袍'])
+  assert.ok(dialogue.mentions.filter(hit => hit.spoken).every(hit => hit.literal))
+})
+
+test('笑声等发声主体正式引用完整人物素材，别名定义继续保留原文', () => {
+  const text = '人物：@火枪卫小旗_飞鱼服（张浩）：立在阶前。\n对白／音效：张浩低笑一声，王禄叹息。'
+  const result = scan(text, cast, bound, options)
+  assert.equal(result.text, '人物：@火枪卫小旗_飞鱼服（张浩）：立在阶前。\n对白／音效：@火枪卫小旗_飞鱼服低笑一声，@王禄叹息。')
+  assert.ok(result.mentions.filter(hit => hit.vocalization).every(hit => !hit.literal && hit.usage === 'speaker'))
+  assert.deepEqual(result.assetIds, ['火枪卫小旗_飞鱼服', '王禄'])
+  assert.equal(scan(result.text, cast, result.assetIds, options).text, result.text)
+})
+
+test('回顾中的显式人物引用保持精确造型，多造型简称不擅自选取且尊重排除', () => {
+  const text = '前镜回顾：顾凌天先前出镜，@顾凌天_夜行曾在门外。'
+  const result = scan(text, cast, ['顾凌天_龙袍', '顾凌天_夜行'], options)
+  assert.equal(result.text, text)
+  assert.deepEqual(result.assetIds, ['顾凌天_夜行'])
+  assert.deepEqual(result.ambiguous, ['顾凌天'])
+  assert.deepEqual(result.mentions.map(hit => [hit.id, hit.usage, hit.literal]), [['顾凌天_夜行', 'context', false]])
+
+  const excluded = { ...options, excludedIds: ['顾凌天', '顾凌天_夜行'] }
+  assert.equal(scan('前镜回顾：顾凌天先前出镜。', cast, [], excluded).text, '前镜回顾：顾凌天先前出镜。')
+  assert.deepEqual(scan('前镜回顾：@顾凌天_夜行曾在门外。', cast, [], excluded).assetIds, ['顾凌天_夜行'])
+})
+
+test('非对白的人物 context 多造型必须报歧义，原话和场景道具仍保持原有保护', () => {
+  const assets = [
+    character('赵峰_便装'), character('赵峰_官服'), character('王禄'),
+    { id: 'hall', name: '府邸-前厅', kind: 'scene' }, { id: 'other-hall', name: '官署-前厅', kind: 'scene' },
+    { id: 'old-jade', name: '旧玉佩', originalName: '玉佩', kind: 'prop' },
+    { id: 'new-jade', name: '新玉佩', originalName: '玉佩', kind: 'prop' },
+  ]
+  const selected = assets.map(asset => asset.id)
+  for (const text of [
+    '前镜回顾：赵峰曾在门前。',
+    '独立生成：赵峰想起前事。',
+    '→衔接至第2段：赵峰走来。',
+    '对白／音效：〈衣料摩擦，赵峰的脚步声渐远。〉',
+  ]) {
+    const result = scan(text, assets, selected, options)
+    assert.deepEqual(result.ambiguous, ['赵峰'], text)
+    assert.deepEqual(result.problems.map(problem => [problem.type, problem.name, problem.candidates]),
+      [['ambiguous', '赵峰', ['赵峰_便装', '赵峰_官服']]], text)
+    assert.deepEqual(result.assetIds, [], text)
+    assert.equal(result.text, text)
+  }
+  for (const text of [
+    '对白／音效：王禄：“赵峰还在前厅，玉佩也在那里。”',
+    '对白／音效：王禄：赵峰还在前厅，玉佩也在那里。',
+    '对白／音效：〈录音里提到“赵峰”。〉',
+    '前镜回顾：前厅里曾放着玉佩。',
+  ]) {
+    const result = scan(text, assets, selected, options)
+    assert.deepEqual(result.ambiguous, [], text)
+    assert.deepEqual(result.problems, [], text)
+  }
+})

@@ -20,14 +20,14 @@ function makeCard(dialogue: string) {
   }
 }
 
-test('默认允许模型生成音色，显式关闭后要求实际出声造型有音频', () => {
+test('未设置配音时，实际出声角色需要参考音频', () => {
   const card = makeCard('宁宁（OS）：“别急；@阿川还没动。”；@小禾：“把门关上。”；宁宁：“我知道了。”；音效：木门撞击。')
-  assert.deepEqual(getScriptVideoMissingVoices(card, assets, options), [])
-  const referenceOnly = assets.map(asset => ['court', 'he'].includes(asset.id) ? { ...asset, voiceMode: 'reference' as const } : asset)
-  assert.deepEqual(getScriptVideoMissingVoices(card, referenceOnly, options), ['阿宁_礼服', '小禾'])
-  assert.deepEqual(buildScriptVideoDelivery(card, referenceOnly, options).missingVoices, ['阿宁_礼服', '小禾'])
+  assert.deepEqual(getScriptVideoMissingVoices(card, assets, options), ['阿宁_礼服', '小禾'])
+  const withoutAudio = buildScriptVideoDelivery(card, assets, options)
+  assert.deepEqual(withoutAudio.missingVoices, ['阿宁_礼服', '小禾'])
+  assert.doesNotMatch(withoutAudio.prompt, /由模型生成音色/u)
 
-  const voiced = referenceOnly.map(asset => ['court', 'he'].includes(asset.id) ? { ...asset, voiceAudio: audio } : asset)
+  const voiced = assets.map(asset => ['court', 'he'].includes(asset.id) ? { ...asset, voiceAudio: audio } : asset)
   const delivery = buildScriptVideoDelivery(card, voiced, options)
   assert.deepEqual(delivery.missingVoices, [])
   assert.deepEqual(delivery.voices.flatMap(voice => voice.roles.map(role => role.id)), ['court', 'he'])
@@ -70,7 +70,7 @@ test('一句齐声对白按各个已绑定角色的配音设置处理', () => {
   assert.deepEqual(getScriptVideoMissingVoices(card, [group, audioRequired], jimeng), [child.name])
   const withAudio = buildScriptVideoDelivery(card, [group, { ...child, voiceAudio: audio }], jimeng)
   assert.deepEqual(withAudio.voices.map(voice => voice.asset.id), [child.id])
-  assert.match(withAudio.prompt, /@图片2断腿小乞丐（音色参考@音频1）/u)
+  assert.match(withAudio.prompt, /@图片2断腿小乞丐 @音频1/u)
   assert.doesNotMatch(withAudio.prompt, /断腿小乞丐由模型生成音色/u)
 
   const normalized = card.prompt.replace(cue, cue.replace(group.name, '残障乞讨孩童／群体'))
@@ -126,8 +126,8 @@ test('闭合引号后紧接同一行的发声角色要校验声音并在成片�
   assert.deepEqual(getScriptVideoMissingVoices(card, roles.slice(1)), ['魏忠国'])
 
   const jimeng = buildScriptVideoDelivery(card, roles, { provider: 'jimeng', model: 'jimeng-seedance-2.5' })
-  assert.match(jimeng.prompt, /顾凌天_龙袍（音色参考@音频2）【平淡下令／简短】：“带魏忠国进来。”@图片1魏忠国（音色参考@音频1）【领命／干脆】：“是！”音效：衣袍摩擦。/u)
+  assert.match(jimeng.prompt, /顾凌天_龙袍 @音频2【平淡下令／简短】：“带魏忠国进来。”@图片1魏忠国 @音频1【领命／干脆】：“是！”音效：衣袍摩擦。/u)
   const seedance = buildScriptVideoDelivery(card, roles, { provider: 'volcengine', model: 'doubao-seedance-2-5-260628' })
-  assert.match(seedance.prompt, /顾凌天_龙袍（音色参考@音频2）【平淡下令／简短】：\{带魏忠国进来。\}@图片1魏忠国（音色参考@音频1）【领命／干脆】：\{是！\}<衣袍摩擦。>/u)
+  assert.match(seedance.prompt, /顾凌天_龙袍 @音频2【平淡下令／简短】：\{带魏忠国进来。\}@图片1魏忠国 @音频1【领命／干脆】：\{是！\}<衣袍摩擦。>/u)
   assert.doesNotMatch(seedance.prompt, /是本镜画内发声者/u)
 })

@@ -121,7 +121,7 @@ test('自然语言与明确 @ 引用的场景歧义均提示，供进入分镜�
   assert.match(issue?.message || '', /镜头 09.*御书房.*皇宫-御书房、别院-御书房/u)
 })
 
-test('逐镜素材已确定时，画外对象、道具归属和前情中的同名角色不会触发预览歧义', () => {
+test('逐镜素材已确定时，情境人物的多造型仍需明确选择，对白原话不变', () => {
   const image = 'blob:preview'
   const assets: PreviewAsset[] = [
     { id: 'xiao', kind: 'character', name: '老萧', image },
@@ -140,11 +140,23 @@ test('逐镜素材已确定时，画外对象、道具归属和前情中的同�
   }
   card.prompt = buildCardPrompt(card, assets)
   const result = inspectPreviewCardAssets(card, assets)
-  assert.deepEqual(result.problems, [])
+  assert.deepEqual(result.problems.map(problem => [problem.type, problem.name]),
+    [['ambiguous', '赵峰']])
+  assert.ok(result.warnings.some(issue => issue.code === 'AMBIGUOUS_ASSET' &&
+    /赵峰.*赵峰_微服便装.*赵峰_飞鱼服_断指染血/u.test(issue.message)))
   assert.deepEqual(result.materialUse.imageIds, ['xiao', 'badge'])
   assert.deepEqual(result.materialUse.speakerIds, ['xiao'])
   assert.match(result.text, /“赵峰赵大人来了。”/u)
   assert.doesNotMatch(result.text, /@赵峰/u)
+
+  const selected = { ...card, assetIds: [...card.assetIds, 'casual'] }
+  selected.prompt = buildCardPrompt(selected, assets)
+  const clarified = inspectPreviewCardAssets(selected, assets)
+  assert.deepEqual(clarified.problems, [])
+  assert.deepEqual(clarified.materialUse.imageIds, ['xiao', 'badge', 'casual'])
+  assert.deepEqual(clarified.materialUse.speakerIds, ['xiao'])
+  assert.match(clarified.text, /@赵峰_微服便装/u)
+  assert.match(clarified.text, /“赵峰赵大人来了。”/u)
 })
 
 test('镜头素材引用的类型、绑定和配图问题均作为可修改的提醒', () => {

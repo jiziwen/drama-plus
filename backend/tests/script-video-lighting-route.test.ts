@@ -16,9 +16,21 @@ test('换机位使用最近成片重取光线，出片记下跳光镜号，换�
   process.env.STORAGE_PATH = path.join(root, 'static')
   process.env.MYSQL_AUTO_IMPORT = 'false'
   const { ScriptVideoStore } = await import('../src/services/script-video-store.js')
+  const stores = new Set<InstanceType<typeof ScriptVideoStore>>()
+  const getQueue = Object.getOwnPropertyDescriptor(ScriptVideoStore.prototype, 'queue')!.get!
+  t.mock.getter(ScriptVideoStore.prototype, 'queue', function (this: InstanceType<typeof ScriptVideoStore>) {
+    stores.add(this)
+    return getQueue.call(this)
+  })
   const { createScriptVideoRoutes } = await import('../src/routes/script-video.js')
   const { db, schema } = await import('../src/db/index.js')
-  t.after(async () => { db.$client.close(); await fs.rm(root, { recursive: true, force: true }) })
+  let observer: Database.Database | undefined
+  t.after(async () => {
+    observer?.close()
+    await Promise.all([...stores].map(store => store.close()))
+    db.$client.close()
+    await fs.rm(root, { recursive: true, force: true })
+  })
 
   const videos = path.join(root, 'static/videos')
   await fs.mkdir(videos, { recursive: true })
@@ -29,6 +41,7 @@ test('换机位使用最近成片重取光线，出片记下跳光镜号，换�
   }
 
   const store = new ScriptVideoStore(path.join(root, 'projects'))
+  stores.add(store)
   const { id } = await store.create('光线测试')
   const episodeId = await store.mutate(id, record => {
     const episode = record.project.episodes[0]
@@ -74,8 +87,7 @@ test('换机位使用最近成片重取光线，出片记下跳光镜号，换�
   })
   const episodeRoute = '/projects/' + id + '/episodes/' + episodeId
   const headers = { 'Content-Type': 'application/json', 'X-Script-Video-Session': randomUUID() }
-  const observer = new Database(path.join(root, 'projects', 'workspace.sqlite3'), { readonly: true })
-  t.after(() => observer.close())
+  observer = new Database(path.join(root, 'projects', 'workspace.sqlite3'), { readonly: true })
   const snapshot = observer.pragma('data_version', { simple: true })
   const finalPrompt = (body: object) => app.request(episodeRoute + '/final-prompt', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),

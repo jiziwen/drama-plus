@@ -1,4 +1,5 @@
-/** Verbatim source: workspace/skills/script-to-video/references/项目风格前缀原文.txt.
+/** Browser fallback copied from workspace/skills/script-to-video/references/项目风格前缀原文.txt.
+ * The running server reads the source through script-video-style-source.ts.
  * JS template literals normalize physical line endings; restore the original CRLF.
  * The shared module runs in the browser as well as the backend, without filesystem access. */
 export type ScriptVideoStylePreset = {
@@ -10,19 +11,19 @@ const cool = `冷色调
 
 全局核心要求复核确认画面风格：电影级写实人像、低调戏剧光人像、伦勃朗光人像、硬调肖像
 相机 / 镜头参数全画幅高像素机身、85mm/105mm 中长焦定焦、f/1.4 大光圈、8K RAW、眼部对焦、超浅景深
-光影质感Chiaroscuro 明暗对比、高反差硬光、侧前方主光、弱轮廓光、低调布光、深邃阴影、硬光质感
+
 画质规格8K 超高清、无损 RAW、高动态范围、14bit 色深、焦点锐利、焦外柔焦、皮肤细节还原
+
 色调倾向暖色调、电影 LUT 调色、暗色系、冷暖对比。
+
 具体内容（需根据角色外观服装去生成）（需根据风格参考去生成）不许出现文字，不许出现字幕，不许出现背景音乐，不要出现重复的人物，只有音效，和角色台词：
 
 3A游戏CG渲染风格，虚幻引擎5级画面质感，电影级光影表现，HDR高动态范围成像，细节极度丰富真实，整体画面明亮通透，曝光充足偏高但高光不死白，色彩干净通透，高饱和自然，画面清晰锐利，真实高级游戏CG质感。需要有皮肤纹理。
 
-画面带有柔和泛光与轻微发光感，空气中有薄雾和细腻氛围感，远景空气透视明显，空间纵深强。清晰方向光照射，形成明显光影对比与长阴影，体积光清晰可见，光束穿过薄雾，增强空间层次和电影感。
-
 整体画面清爽、明亮、通透、干净。
 
 人物皮肤触发高级次表面散射SSS，皮肤内部透出温润半透明红晕，带自然血色与生命感，肤质细腻真实，血肉感饱满但不恐怖，面部光影柔和立体，角色具有高品质3A游戏CG人物质感。
-图片画风影调参考 。
+
 具体内容（需根据角色外观服装去生成）（需根据风格参考去生成）不许出现文字，不许出现字幕，不许出现背景音乐，只有音效，和角色台词：
 
 影调：低调，高反差影调，蓝灰低饱和调色，暗部压黑但保留细节，具体内容，不许出现字幕，禁止生成背景音乐，禁止生成环境氛围音，仅保留对白和必要的物理音效

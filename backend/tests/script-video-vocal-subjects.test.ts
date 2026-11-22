@@ -14,13 +14,13 @@ const options = { dialogue: true, autoBind: true, detectUnboundSpeakers: true }
 const bound = assets.map(a => a.id)
 const scan = (text: string) => annotateScriptVideoAssets(text, assets, bound, options)
 
-test('第六镜笑声绑定实际发声的吴良和家丁群体，原文及第二次提及吴良的位置保持不变', () => {
+test('第六镜笑声绑定实际发声的吴良和家丁群体，方向中的人物正式引用而第二次吴良不误作发声者', () => {
   const dialogue = '〈吴良短促仰头发笑，身侧家丁跟着哄笑；笑声随吴良低头收住。〉'
   const result = scan(dialogue)
   assert.deepEqual(result.mentions.filter(hit => hit.vocalization).map(hit =>
     [hit.id, dialogue.slice(hit.start, hit.end), hit.usage, hit.spoken, hit.literal]),
-  [['wu', '吴良', 'speaker', true, true], ['crowd', '家丁', 'speaker', true, true]])
-  assert.equal(result.text, dialogue)
+  [['wu', '吴良', 'speaker', true, false], ['crowd', '家丁', 'speaker', true, false]])
+  assert.equal(result.text, `〈@吴良短促仰头发笑，身侧@${crowdName}跟着哄笑；笑声随@吴良低头收住。〉`)
   const delivery = buildScriptVideoDelivery({ duration: 3, assetIds: bound, shots: [{ duration: 3, dialogue }],
     prompt: '镜头 01（0–3秒）\n对白／音效：' + dialogue }, assets, { provider: 'jimeng', model: 'jimeng-seedance-2.5' })
   assert.deepEqual(delivery.voices.map(voice => voice.asset.id), ['wu'])
@@ -44,6 +44,35 @@ test('只把对白字段内实际发出的哭、喊、叹息和咳声归到主�
   assert.deepEqual(scan('吴良发笑。家丁：“住口。”').mentions.filter(hit => hit.usage === 'speaker').map(hit => hit.id), ['wu', 'crowd'])
 })
 
+test('对白中的语气说明不会生成另一个发声角色', () => {
+  for (const direction of [
+    '【现场，凄厉哭喊；一气求饶，最后一字的拖音延至切点】',
+    '（现场，撕心裂肺地哭喊）',
+    '[现场（压低声音），听见，来客哭喊；急促收尾]',
+    '【表演示例；来客：“先走。”，随后压低声音】',
+  ]) {
+    const dialogue = '@吴良' + direction + '：“陛下饶命！”〈脚步声、衣料摩擦〉'
+    const delivery = buildScriptVideoDelivery({
+      duration: 4, assetIds: bound, shots: [{ duration: 4, dialogue }],
+      prompt: '镜头 06（13.5–18秒）\n对白／音效：' + dialogue,
+    }, assets, { provider: 'jimeng', model: 'jimeng-seedance-2.5' })
+    assert.deepEqual(delivery.missingVoices, [], direction)
+    assert.deepEqual(delivery.voices.map(voice => voice.asset.id), ['wu'], direction)
+    assert.ok(delivery.prompt.includes(direction), direction)
+  }
+})
+
+test('无主体的声音描述不要求音频，音效中明确的角色仍需校验', () => {
+  const unnamed = scan('〈凄厉地哭喊，极其惊恐地尖叫，撕心裂肺地哀嚎。〉')
+  assert.deepEqual(unnamed.unboundSpeakers, [])
+  for (const direction of ['〈巡夜人凄厉地哭喊。〉', '音效：【巡夜人撕心裂肺地哭喊。】']) {
+    assert.deepEqual(scan(direction).unboundSpeakers, ['巡夜人'], direction)
+  }
+  assert.deepEqual(scan('【吴良凄厉地哭喊。】').mentions.filter(hit => hit.vocalization).map(hit => hit.id), ['wu'])
+  assert.deepEqual(scan('来客【凄厉哭喊】：“救命！”').unboundSpeakers, ['来客'])
+  assert.deepEqual(scan('@凄厉：“救命！”').unboundSpeakers, ['凄厉'])
+})
+
 test('叙述的人声保留缺角色、群体歧义校验，不会用领头家丁的声音代替群众', () => {
   assert.deepEqual(scan('〈巡夜人低声抽泣。〉').unboundSpeakers, ['巡夜人'])
   const other = { ...assets[1], name: '七天_素材/角色/赵府家丁/群体', id: 'other' }
@@ -56,7 +85,7 @@ test('家丁群体的声音简称不改变同段领头家丁的镜头和画面�
   const result = annotateScriptVideoAssets(source, assets, bound, { autoBind: true })
   assert.deepEqual(result.mentions.filter(hit => hit.usage === 'visual').map(hit => hit.id), ['chief'])
   assert.deepEqual(result.mentions.filter(hit => hit.vocalization).map(hit => hit.id), ['crowd'])
-  assert.equal(result.text, source.replace('吴良为首家丁', '@吴良为首家丁'))
+  assert.equal(result.text, source.replace('吴良为首家丁', '@吴良为首家丁').replace('身侧家丁跟着哄笑', `身侧@${crowdName}跟着哄笑`))
 })
 
 test('音色标注不会提前闭合外围音效或把下一句对白吞入音效', () => {

@@ -53,6 +53,7 @@ export interface ScriptVideoGenerationInput {
   lightingRanges?: readonly ScriptVideoLightingRange[]
   allowJimeng?: boolean
   allowLibTV?: boolean
+  videoCliAccountId?: string
 }
 
 export class ScriptVideoGenerationValidationError extends Error {
@@ -459,6 +460,7 @@ async function prepareSubmission(input: ScriptVideoGenerationInput) {
     ...(sourceUploadUrls.length && { sourceUploadUrls }),
     ...(usesJimeng && { allowJimeng: input.allowJimeng }),
     ...(libtv && { allowLibTV: input.allowLibTV }),
+    ...((usesJimeng || libtv) && { videoCliAccountId: input.videoCliAccountId }),
   } satisfies Parameters<typeof generateVideo>[0]
   return { params, config, continuation, lightingRanges: delivery.lightingRanges, references: deliveryReferences(delivery) }
 }

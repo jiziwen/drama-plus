@@ -85,6 +85,7 @@ await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
 const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
 after(async () => {
   await new Promise<void>(resolve => server.close(() => resolve()))
+  db.$client.close()
   await fs.rm(root, { recursive: true, force: true })
 })
 
@@ -126,7 +127,7 @@ test('有未知、未绑定、歧义或丢失素材时可查看正文，仅有�
   assert.match(preview.prompt, /@旗帜/u)
   assert.match(preview.prompt, /@来客/u)
   assert.ok(!preview.prompt.includes('undefined'))
-  assert.deepEqual(preview.images.map(image => [image.index, image.name]), [[1, '长剑']])
+  assert.deepEqual(preview.images.map(image => [image.index, image.name]), [[1, '侍卫'], [2, '长剑']])
   assert.deepEqual(preview.audios, [])
   for (const warning of ['未知道具', '来客', '旗帜', '营帐', 'deleted', '声音文件不存在']) {
     assert.ok(preview.warnings?.some(message => message.includes(warning)), warning)
@@ -253,7 +254,7 @@ test('拒绝无效模型、时长、绑定或本地参考图，且不创建任�
   await check({card: {...card, assetIds: ['b']}}, /尚未绑定/)
   await check({assets: [{...assets[0], image: '/static/uploads/missing.png'}, assets[1]]}, /不存在/)
   await check({
-    assets: [{ ...assets[0], kind: 'character', voiceMode: 'reference' }, assets[1]],
+    assets: [{ ...assets[0], kind: 'character' }, assets[1]],
     card: { ...card, prompt: '对白／音效：@侍卫（OS）：“天亮了。”' },
   }, /侍卫.*上传角色参考音频/u)
   assert.equal(db.select().from(schema.sysTask).all().length, before)
@@ -273,7 +274,7 @@ test('提示词的文字时长与时码不阻断提交，实际请求使用结�
 test('服务商拒绝时保留实际失败状态，未生成播放地址', async () => {
   const submitted = await startScriptVideoGeneration({
     ...input,
-    assets: [{ ...assets[0], kind: 'character' }, assets[1]],
+    assets: [{ ...assets[0], kind: 'character', voiceMode: 'model' }, assets[1]],
     card: { ...input.card, prompt: '对白／音效：@侍卫（OS）：“服务端拒绝。”' },
   })
   const result = await finish(submitted.taskId)
@@ -643,4 +644,30 @@ test('同场换机位把本地影调帧传到 AICost 普通图片序列，返回
   assert.deepEqual(await Promise.all(uploaded.map(async file => Buffer.from(await file.arrayBuffer()))), [png, png2, image])
   assert.match(String(sent.get('prompt')), /镜头1「北院」[^\n]+@图片3参考同场人物受光/u)
   assert.doesNotMatch(String(sent.get('prompt')), /作为本段首帧/u)
+})
+
+test('回顾和独立生成的人物参考随模型实际请求一起发送，台词保持原话', async () => {
+  const recalled = { ...assets[1], id: 'recalled', name: '赵峰_微服便装', kind: 'character' }
+  const catalog = [{ ...assets[0], kind: 'character', voiceMode: 'model' as const }, recalled]
+  const card = {
+    ...input.card,
+    assetIds: ['a', 'recalled'],
+    openingAssetIds: [],
+    shots: [{ duration: 5, visualAssetIds: ['a'], speakerAssetIds: ['a'], dialogue: '侍卫：“赵峰，过来。”' }],
+    prompt: [
+      '前镜回顾：赵峰守在门外。',
+      '独立生成：侍卫等候赵峰。',
+      '镜头 01（0–5秒）',
+      '画面与动作：侍卫抬手。',
+      '对白／音效：侍卫：“赵峰，过来。”',
+    ].join('\n'),
+  }
+  const submitted = await startScriptVideoGeneration({ ...input, assets: catalog, card })
+  assert.equal((await finish(submitted.taskId)).status, 'completed')
+  const sent = submissions.at(-1)!
+  assert.match(sent.content[0].text!, /前镜回顾：@图片2赵峰守在门外。/u)
+  assert.match(sent.content[0].text!, /独立生成：@图片1侍卫等候@图片2赵峰。/u)
+  assert.match(sent.content[0].text!, /“赵峰，过来。”/u)
+  assert.deepEqual(sent.content.slice(1).map(item => item.image_url?.url),
+    [png, png2].map(data => 'data:image/png;base64,' + data.toString('base64')))
 })

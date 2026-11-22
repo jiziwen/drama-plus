@@ -8,9 +8,9 @@ import { test } from 'node:test'
 import { serve } from '@hono/node-server'
 import { eq } from 'drizzle-orm'
 import { Hono } from 'hono'
-import { holdVideoCliSubmission } from '../src/services/video-cli-tasks.js'
 
 test('LibTV web authorization is local, single-flight, and provisions only after a user starts it', async t => {
+  let closeDatabase: (() => void) | undefined
   const root = await fs.mkdtemp(path.join(tmpdir(), 'drama-libtv-auth-'))
   const binary = path.join(root, 'mock-libtv')
   const canvasId = '01322532-e5de-42a4-9549-5248fb705309'
@@ -22,11 +22,13 @@ test('LibTV web authorization is local, single-flight, and provisions only after
   }
   const originals = Object.entries(vars).map(([key]) => [key, process.env[key]] as const)
   Object.assign(process.env, vars)
+  const { holdVideoCliSubmission } = await import('../src/services/video-cli-tasks.js')
   t.after(async () => {
     for (const [key, value] of originals) {
       if (value === undefined) delete process.env[key]
       else process.env[key] = value
     }
+    closeDatabase?.()
     await fs.rm(root, { recursive: true, force: true })
   })
 
@@ -95,6 +97,7 @@ if (args[0] === 'account') {
   const [{ default: libtv }, { default: configs }, { db, schema }] = await Promise.all([
     import('../src/routes/libtv.js'), import('../src/routes/aiConfigs.js'), import('../src/db/index.js'),
   ])
+  closeDatabase = () => db.$client.close()
   const app = new Hono().route('/ai-configs', configs).route('/', libtv)
   const server = serve({ fetch: app.fetch, hostname: '127.0.0.1', port: 0 })
   await once(server, 'listening')
@@ -123,8 +126,7 @@ if (args[0] === 'account') {
   }
 
   assert.equal((await send('/auth/start', { Origin: 'https://untrusted.example.test' }, 'POST')).status, 403)
-  assert.equal((await send('/auth/start', gateway, 'POST')).status, 409)
-  assert.equal((await account('/account', gateway)).can_authorize, false)
+  assert.equal((await account('/account', gateway)).can_authorize, true)
   await fs.writeFile(loggedIn, 'prior CLI login')
   assert.equal((await account()).authenticated, true)
   assert.equal((await account()).canvas_ready, false)

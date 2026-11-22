@@ -28,6 +28,8 @@ dist/
 Thumbs.db
 
 # Data (database and uploaded files)
+# 多账号 CLI 的登录凭据与账号状态，仅保存在本机。
+/data/video-accounts/
 data/drama_generator.db
 data/drama_generator.db-wal
 data/drama_generator.db-shm

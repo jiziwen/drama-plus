@@ -40,6 +40,7 @@ export function selectScriptVideoEpisodeAssets(
   const mentioned = (name: string) => Boolean(name) && text.includes(normalize(name))
 
   return input.assets.filter((asset) => {
+    if (asset.kind === 'audio') return false
     if (selected.has(asset.id)) return true
     if (asset.kind === 'character') {
       const entity = scriptVideoCharacterName(asset)

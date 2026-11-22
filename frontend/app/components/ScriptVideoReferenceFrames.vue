@@ -1,18 +1,19 @@
 <template>
-  <section v-if="rows.length || loading || error" class="sv-frame-list" aria-label="成片参考帧">
+  <section class="sv-frame-list" aria-label="成片参考帧">
     <p v-if="loading" class="sv-frame-status" role="status">正在准备参考帧…</p>
     <p v-if="error" class="sv-frame-error" role="alert">{{ error }}
       <button type="button" class="btn btn-sm btn-ghost" :disabled="busy" @click="$emit('retry')">重新读取</button>
     </p>
     <div v-for="row in rows" :key="keyOf(row)" class="sv-frame-row">
       <img v-if="row.imageUrl" :src="row.imageUrl" :alt="label(row)" class="sv-frame-thumb" loading="lazy" />
+      <div v-else class="sv-frame-thumb sv-frame-placeholder" aria-hidden="true" />
       <div class="sv-frame-details">
         <strong>{{ label(row) }}</strong>
-        <span>{{ row.state === 'off' ? '已移除' : row.state === 'pending' ? '等待来源成片' : row.state === 'missing' ? '暂无可用画面' : row.mode === 'manual' ? '手动选帧' : '自动选帧' }}<template v-if="row.sourceLabel"> · 来源 {{ row.sourceLabel }}</template><template v-if="row.state === 'ready' && row.seconds !== undefined"> · {{ row.seconds.toFixed(2) }} 秒</template></span>
+        <span>{{ frameStatus(row) }}<template v-if="row.sourceLabel"> · 来源 {{ row.sourceLabel }}</template><template v-if="row.state === 'ready' && row.seconds !== undefined"> · {{ row.seconds.toFixed(2) }} 秒</template></span>
       </div>
       <div class="sv-frame-actions">
-        <button v-if="row.videoUrl" type="button" class="btn btn-sm btn-ghost" :aria-label="`为${label(row)}选帧`" :disabled="busy" @click="openPicker(row)">选帧</button>
-        <button v-if="row.mode !== 'off'" type="button" class="btn btn-sm btn-ghost" :aria-label="`移除${label(row)}`" :disabled="busy" @click="change(row, 'off')">移除</button>
+        <button type="button" class="btn btn-sm btn-ghost" :aria-label="`为${label(row)}选帧`" :disabled="busy || !row.videoUrl" @click="openPicker(row)">选帧</button>
+        <button v-if="row.mode !== 'off' && (row.state !== 'missing' || row.mode === 'manual')" type="button" class="btn btn-sm btn-ghost" :aria-label="`移除${label(row)}`" :disabled="busy" @click="change(row, 'off')">移除</button>
         <button v-if="row.mode !== 'auto'" type="button" class="btn btn-sm btn-ghost" :aria-label="`恢复${label(row)}自动选帧`" :disabled="busy" @click="change(row, 'auto')">恢复自动</button>
       </div>
       <div v-if="pickedKey === keyOf(row) && row.videoUrl" class="sv-frame-picker">
@@ -43,7 +44,9 @@ const props = defineProps<{
   choose: (row: Row, mode: FrameSelection, seconds?: number) => Promise<boolean>
 }>()
 defineEmits<{ retry: [] }>()
-const rows = computed(() => props.frames ? [...(props.frames.tail ? [props.frames.tail] : []), ...props.frames.lighting] : [])
+const emptyTail: Row = { kind: 'tail', mode: 'auto', state: 'missing' }
+const emptyStyle: Row = { kind: 'lighting', mode: 'auto', state: 'missing' }
+const rows = computed(() => [props.frames?.tail ?? emptyTail, ...(props.frames?.lighting.length ? props.frames.lighting : [emptyStyle])])
 const busy = computed(() => props.loading || props.changing)
 const pickedKey = ref(''), pickedSource = ref(''), ready = ref(false), seconds = ref<number>(), playbackError = ref('')
 const videos = ref<HTMLVideoElement[]>([])
@@ -51,7 +54,13 @@ const keyOf = (row: Row) => row.kind === 'tail' ? 'tail' : 'lighting-' + row.sta
 function label(row: Row) {
   if (row.kind === 'tail') return '上一段尾帧'
   const span = row.endShot && row.endShot !== row.startShot ? `${row.startShot}–${row.endShot}` : row.startShot
-  return [row.sceneName, '光线参考图', span && `镜头 ${span}`].filter(Boolean).join(' · ')
+  return ['风格参考', row.sceneName, row.endShot && span && `镜头 ${span}`].filter(Boolean).join(' · ')
+}
+function frameStatus(row: Row) {
+  if (row.state === 'off') return '已移除'
+  if (row.state === 'pending') return '等待来源成片'
+  if (row.state === 'missing') return row.videoUrl ? '未选帧' : '暂无可选成片'
+  return row.mode === 'manual' ? '手动选帧' : '自动选帧'
 }
 const source = computed(() => rows.value.find(row => keyOf(row) === pickedKey.value)?.videoUrl)
 watch(source, next => { if (pickedKey.value && pickedSource.value !== next) pickedKey.value = '' })
@@ -89,6 +98,7 @@ function useFrame(row: Row) {
 .sv-frame-list { display: grid; gap: 8px; margin-top: 10px; }
 .sv-frame-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 9px 12px; border: 1px solid var(--border); border-radius: 8px; }
 .sv-frame-thumb { width: 76px; height: 46px; border-radius: 4px; object-fit: contain; background: var(--surface-input); }
+.sv-frame-placeholder { border: 1px dashed var(--border); }
 .sv-frame-details { display: grid; gap: 3px; margin-right: auto; font-size: 13px; }
 .sv-frame-details span, .sv-frame-status, .sv-frame-picker span { color: var(--text-3); font-size: 12px; }
 .sv-frame-status, .sv-frame-error { margin: 0; }

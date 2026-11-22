@@ -1,4 +1,4 @@
-import { scriptVideoFoleyCues, scriptVideoNextTurnStart, scriptVideoSpeechQuote, speechClosers, unquotedSpeaker } from './script-video-foley.js'
+import { scriptVideoFoleyCues, scriptVideoNamedAudioCue, scriptVideoNextTurnStart, scriptVideoPerformanceBracket, scriptVideoPerformanceDirections, scriptVideoSpeechQuote, speechClosers, unquotedSpeaker } from './script-video-foley.js'
 import { isScriptVideoChibiAppearance, scriptVideoCharacterBase, scriptVideoCharacterName } from './script-video-asset-identity.js'
 import { hasScriptVideoInnerOs } from './script-video-inner-os.js'
 import { scriptVideoVocalSubjects } from './script-video-vocal-subjects.js'
@@ -19,8 +19,9 @@ export type AssetMention = {
   spoken: boolean
   literal: boolean
   explicit: boolean
-  usage: 'visual' | 'speaker' | 'context'
+  usage: 'visual' | 'speaker' | 'audio' | 'context'
   vocalization?: true
+  manualAudioId?: string
 }
 export type ScriptVideoReferenceProblem = { type: 'unknown' | 'ambiguous'; name: string; start: number; candidates?: string[] }
 type CardReferences = {
@@ -54,7 +55,8 @@ const shotTitle = /^[ \t]*镜头[ \t]*\d/u
 const otherField = /^[ \t]*(?:总时长|独立生成|本段事件|(?:编辑|制作|导演|手写)?备注|后续(?:计划|说明)|校验说明)[ \t]*[:：]/u
 const cardSection = /^[ \t]*(?:(←承上|开场画面)|(场景(?:[一二三四五六七八九十\d]+)?)|(独立生成|本段事件|→衔接|末镜停在)|前镜回顾|(人物|角色设定)|总时长)[ \t]*[：:]/gmu
 const storyboardField = (text: string) => visualField.test(text) || visualDirection.test(text) || shotTitle.test(text) || otherField.test(text)
-const speakerCue = /^(?<cue>(?:[ \t]*(?:[（(【\[][^\n）)】\]]+[）)】\]]|心声|内心独白|内心|画外音|旁白|说|问|道|答))*)[ \t]*[：:][ \t]*(?<words>.+)/u
+const speakerCue = new RegExp('^(?<cue>(?:[ \\t]*(?:' + scriptVideoPerformanceBracket.source +
+  '|心声|内心独白|内心|画外音|旁白|说|问|道|答))*)[ \\t]*[：:][ \\t]*(?<words>.+)', 'u')
 const attributionLabel = /^[ \t]*(?<label>@?[\p{L}\p{N}·・_. /／-]{1,120}?(?:、[ \t]*@?[\p{L}\p{N}·・_. /／-]{1,120}?)*)(?=[ \t]*(?:[（(【\[]|[：:]))/u
 const genericSoundLabel = /^(?:音效|拟音|(?:物理|背景)音效|环境(?:音|声)|(?:动作|背景)音|音乐|配乐|BGM|SFX|旁白|画外音|心声|O\.?[SV]\.?|V\.?O\.?|系统(?:面板|界面|播报|提示音|提示|音)?|广播(?:音|声)?|录音|字幕|音色|(?:屏幕|牌匾)(?:显示|文字|字样)?|对白|台词|无台词|无对白|无声|静默|沉默)$/iu
 const silentWords = /^(?:(?:[（(【\[]\s*)?(?:无台词|无对白|无对话|无声|沉默|静默|不说话)(?:\s*[）)】\]])?|[-—/]+|“\s*”|「\s*」|『\s*』|"\s*"|\{\s*\})\s*(?:[。，；;]|$)/u
@@ -149,7 +151,10 @@ function speakerLabels(
     const start = line.start + line.headingLength
     const offsets = [0]
     if (line.inDialogue) {
-      for (const actor of scriptVideoVocalSubjects(body, byName)) {
+      const directions = scriptVideoPerformanceDirections(body, line.foleyCues)
+      const canStart = (offset: number) => !directions.some(({ start, end }) => start <= offset && offset < end) &&
+        !protectedText.some(([from, to]) => from <= start + offset && start + offset < to)
+      for (const actor of scriptVideoVocalSubjects(body, byName, directions)) {
         const from = start + actor.start
         if (scopes.some(scope => scope.kind !== 'sound' && scope.start <= from && from < scope.end)) continue
         const inEffect = line.foleyCues.some(cue => cue.start <= actor.start && actor.start < cue.end)
@@ -161,10 +166,10 @@ function speakerLabels(
       }
       for (const separator of body.matchAll(/[；;]/gu)) {
         const offset = separator.index!
-        if (!protectedText.some(([from, to]) => from <= start + offset && start + offset < to)) offsets.push(offset + 1)
+        if (canStart(offset)) offsets.push(offset + 1)
       }
       for (const end of turnEnds) {
-        if (end > start && end < line.end && !protectedText.some(([from, to]) => from <= end && end < to)) offsets.push(end - start)
+        if (end > start && end < line.end && canStart(end - start)) offsets.push(end - start)
       }
     }
     for (const offset of offsets) {
@@ -240,6 +245,7 @@ export function describeScriptVideoReferenceProblem(text: string, problem: Scrip
 }
 
 function assetNames(asset: MentionAsset) {
+  if (asset.kind === 'audio') return [asset.name]
   const names = new Set([asset.name])
   if (asset.kind === 'character' || !asset.kind) {
     const characterNames = [asset]
@@ -351,8 +357,18 @@ export function annotateScriptVideoAssets(
   // laugh together. The crowd shorthand belongs only to a sound attribution.
   const servants = boundCrowds.filter(asset => scriptVideoCharacterBase(asset).endsWith('家丁/群体'))
   const speakerNames = servants.length && !byName.has('家丁') ? new Map(byName).set('家丁', servants) : byName
-  const lines = promptLines(text, options.dialogue || false, speakerNames)
   const quoted = quotedRanges(text)
+  const audioNames = new Map(assets.filter(asset => asset.kind === 'audio').map(asset => [asset.name, asset]))
+  const audioPattern = scriptVideoNamedAudioCue([...audioNames.keys()])
+  const audioAt = new Map<number, MentionAsset>()
+  // Ignore an adjacent hand-picked sound when parsing the speaker, but keep
+  // the original offsets and text for the editable token and provider payload.
+  const speakerText = audioPattern ? text.replace(new RegExp(audioPattern, 'gu'), (token, start: number) => {
+    if (quoted.some(([from, to]) => from <= start && start < to)) return token
+    audioAt.set(start, audioNames.get(token.slice(1))!)
+    return ' '.repeat(token.length)
+  }) : text
+  const lines = promptLines(speakerText, options.dialogue || false, speakerNames)
   const turnEnds = new Set(quoted.filter(([from, to]) => to - from > 1 && text[to - 1] === speechClosers[text[from]])
     .flatMap(([, to]) => [to, scriptVideoNextTurnStart(text, to)]))
   const cueEnds = new Map<number, number>()
@@ -373,7 +389,7 @@ export function annotateScriptVideoAssets(
     const end = cueEnds.get(start)
     return end !== undefined && end < scope.end ? { ...scope, end } : scope
   })
-  const labels = speakerLabels(text, lines, scopes, protectedText, turnEnds, speakerNames)
+  const labels = speakerLabels(speakerText, lines, scopes, protectedText, turnEnds, speakerNames)
   const speakerAliases = new Map<string, MentionAsset[]>()
   for (const { name } of labels.values()) {
     if (byName.has(name) || speakerAliases.has(name)) continue
@@ -421,10 +437,11 @@ export function annotateScriptVideoAssets(
     const invalidEnd = wordEnd.test(text[end] || '')
     const token = explicit && (!namedCandidates || invalidEnd) ? unknownName.exec(text.slice(start + 1))?.[0] || '' : ''
     const referenceEnd = token ? start + token.length + 1 : end
-    const attribution = label?.end === referenceEnd || line && isSpeakerAt(text, start, referenceEnd, line, turnEnds)
+    const attribution = label?.end === referenceEnd || line && isSpeakerAt(speakerText, start, referenceEnd, line, turnEnds)
     // In a full prompt an explicit @ can add an image even on a sound line.
     // Actual speech and sound effects have their own protected spans.
-    let contextual = !vocalization && (spoken || scope === 'handoff' || scope === 'sound' || scope === 'summary' && !explicit ||
+    let contextual = !vocalization && (spoken || scope === 'handoff' || scope === 'sound' ||
+      scope === 'summary' && (!explicit || namedCandidates?.every(asset => asset.kind === 'character')) ||
       line && !attribution && (options.dialogue || !explicit && (line.inDialogue || !line.inVisual)) ||
       isScriptVideoNonvisualMention(text, start, referenceEnd))
     if (!namedCandidates || invalidEnd) {
@@ -437,6 +454,14 @@ export function annotateScriptVideoAssets(
       }
       continue
     }
+    const audio = explicit ? audioAt.get(start) : undefined
+    if (audio?.name === name) {
+      mentions.push({ id: audio.id, name: audio.name, start, end, explicit, spoken: false, literal: false, usage: 'audio' })
+      assetIds.add(audio.id)
+      continue
+    }
+    const visualCandidates = namedCandidates.filter(asset => asset.kind !== 'audio')
+    if (!visualCandidates.length) continue
     if (!explicit && /[A-Za-z0-9_-]/u.test(text[start - 1] || '') && /^[A-Za-z0-9_-]/u.test(name)) continue
     // An unbound Q figure must never fall back to the live character's name.
     if (!explicit && qQualifier.test(text.slice(Math.max(0, start - 16), start))) continue
@@ -448,8 +473,8 @@ export function annotateScriptVideoAssets(
     const heading = headings[shotIndex]
     const section = sections[sectionIndex]
     const shot = heading && heading.start > (section?.index ?? -1) ? shots[heading.index] : undefined
-    const speakers = !contextual && attribution ? namedCandidates.filter(asset => !asset.kind || asset.kind === 'character') : []
-    let candidates = speakers.length ? speakers : namedCandidates
+    const speakers = !contextual && attribution ? visualCandidates.filter(asset => !asset.kind || asset.kind === 'character') : []
+    let candidates = speakers.length ? speakers : visualCandidates
     let scoped: MentionAsset[] | undefined
     if (!contextual && !explicit) {
       if (speakers.length) {
@@ -487,9 +512,15 @@ export function annotateScriptVideoAssets(
       const named = selected.filter(a => a.name === name)
       if (named.length === 1) available = named
     }
+    const soundDirection = !quoted.some(([from, to]) => from <= start && start < to) &&
+      (scope === 'sound' || !!line?.foleyCues.some(cue => {
+        const origin = line.start + line.headingLength
+        return origin + cue.start <= start && start < origin + cue.end
+      }))
     if (available.length !== 1) {
       const ambiguityKey = `${explicit ? 'explicit' : 'implicit'}:${name}`
-      if (available.length > 1 && usage !== 'context' && !ambiguityKeys.has(ambiguityKey)) {
+      const characterReference = (!spoken || soundDirection) && available.some(asset => asset.kind === 'character')
+      if (available.length > 1 && (usage !== 'context' || characterReference) && !ambiguityKeys.has(ambiguityKey)) {
         ambiguityKeys.add(ambiguityKey)
         ambiguous.add(name)
         problems.push({ type: 'ambiguous', name, start, candidates: [...new Set(available.map(asset => asset.name))] })
@@ -502,16 +533,22 @@ export function annotateScriptVideoAssets(
     const prior = mentions.at(-1)
     const declaredAlias = prior?.id === asset.id && !explicit
       && /^[（(]$/u.test(text.slice(prior.end, start)) && /^[）)]/u.test(text.slice(end))
-    const literal = !!vocalization || usage === 'context' || declaredAlias
+    // Character identity remains a formal reference outside the words being
+    // spoken, including recaps and sound directions. Context still describes
+    // whether the role belongs on camera; it no longer suppresses its reference.
+    const literal = declaredAlias || !vocalization &&
+      (spoken && !soundDirection || usage === 'context' && asset.kind !== 'character')
+    const manualAudioId = usage === 'speaker' ? audioAt.get(end + (/^[ \t]*/u.exec(text.slice(end))?.[0].length ?? 0))?.id : undefined
     mentions.push({ id: asset.id, name: asset.name, start, end, explicit, spoken, literal, usage,
+      ...(manualAudioId && { manualAudioId }),
       ...(vocalization && { vocalization: true }) })
-    if (usage !== 'context') assetIds.add(asset.id)
-    else contextAssetIds.add(asset.id)
+    if (usage !== 'context' || !literal) assetIds.add(asset.id)
+    if (usage === 'context') contextAssetIds.add(asset.id)
     if (literal) continue
     output += text.slice(previous, start) + '@' + asset.name
     previous = end
   }
-  const resolvedSpeakers = new Set(mentions.filter(mention => mention.usage === 'speaker').map(mention => mention.start))
+  const resolvedSpeakers = new Set(mentions.filter(mention => mention.usage === 'speaker' || mention.usage === 'audio').map(mention => mention.start))
   return { text: output + text.slice(previous), mentions, assetIds: [...assetIds], contextAssetIds: [...contextAssetIds],
     unboundSpeakers: options.detectUnboundSpeakers ? [...new Set([...labels].filter(([start, { name }]) =>
       !resolvedSpeakers.has(start) && !ambiguous.has(name)).map(([, { name }]) => name))] : [],
@@ -524,7 +561,7 @@ export function scriptVideoVisualAssetIds(
   scan: { mentions: readonly AssetMention[]; contextAssetIds: readonly string[] }, boundIds: readonly string[],
 ) {
   const visual = new Set(scan.mentions.filter(hit => hit.usage === 'visual').map(hit => hit.id))
-  const contextual = new Set([...scan.contextAssetIds, ...scan.mentions.filter(hit => hit.usage === 'speaker').map(hit => hit.id)])
+  const contextual = new Set([...scan.contextAssetIds, ...scan.mentions.filter(hit => hit.usage === 'speaker' || hit.usage === 'audio').map(hit => hit.id)])
   return [...new Set([...boundIds.filter(id => !contextual.has(id) || visual.has(id)), ...visual])]
 }
 
@@ -579,7 +616,7 @@ export function scriptVideoMaterialIds(
   }
   let shotIndex = -1, sectionIndex = -1
   for (const hit of scan.mentions) {
-    if (hit.usage === 'context') continue
+    if (hit.usage !== 'visual' && hit.usage !== 'speaker') continue
     while ((shots[shotIndex + 1]?.start ?? Infinity) <= hit.start) shotIndex++
     while ((sections[sectionIndex + 1]?.index ?? Infinity) <= hit.start) sectionIndex++
     const shot = shots[shotIndex]

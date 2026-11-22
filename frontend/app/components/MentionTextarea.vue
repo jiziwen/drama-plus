@@ -365,9 +365,8 @@ const highlightedHtml = computed(() => {
       const index = indexById.size && hit.id != null ? indexById.get(hit.id) : indexOf.get(hit.name)
       if (index == null) continue
       const group = mentionTokenGroup(props.options[index].kind)
-      const virtual = text.value[hit.start] !== '@' ? ' mention-virtual' : ''
       html += escapeHtml(text.value.slice(last, hit.start))
-      html += `<span class="mention-token mention-token-${group}${virtual}" data-mention-index="${index}">${escapeHtml(text.value.slice(hit.start, hit.end))}</span>`
+      html += `<span class="mention-token mention-token-${group}" data-mention-index="${index}">${escapeHtml(text.value.slice(hit.start, hit.end))}</span>`
       last = hit.end
     }
   } else if (re) {
@@ -676,7 +675,11 @@ function syncDisplay(value, start, end, direction) {
   ta.setSelectionRange(start, end, direction)
   updateMentionState(focus === ta)
 }
-defineExpose({ syncDisplay })
+function remapDisplay(previous, value, mapOffset) {
+  const ta = taEl.value
+  if (ta?.value === previous) syncDisplay(value, mapOffset(ta.selectionStart), mapOffset(ta.selectionEnd), ta.selectionDirection)
+}
+defineExpose({ syncDisplay, remapDisplay })
 </script>
 
 <style scoped>
@@ -730,17 +733,6 @@ defineExpose({ syncDisplay })
 }
 .mention-hover-preview .mention-backdrop :deep(.mention-token) {
   font-weight: inherit;
-}
-/* Position the display-only @ in the line leading. It takes no inline space,
-   so hover bounds and native caret offsets match even after wrapping. */
-.mention-backdrop :deep(.mention-virtual) { position: relative; }
-.mention-backdrop :deep(.mention-virtual)::before {
-  content: '@';
-  position: absolute;
-  left: 0;
-  top: -.5em;
-  font-size: .65em;
-  line-height: 1;
 }
 .mention-backdrop :deep(.mention-token-role) {
   color: var(--accent-text);

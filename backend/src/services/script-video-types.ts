@@ -652,7 +652,7 @@ function checkDialogue(
           issues.push({
             code: 'DIALOGUE_INNER_OS',
             message: card.title + '的镜头' + shot + '的对白／音效栏中「' + line.text + '」'
-              + (modeConflict.innerOs ? '是原稿的内心 OS。保留原词，标注只闻心声、角色闭口且不对口型。'
+              + (modeConflict.innerOs ? '是原稿的心声。保留原词，简短标注 (OS)。'
                 : '的原稿未标内心 OS。请恢复原有的对白或画外音标记。'),
           })
         }

@@ -1,10 +1,13 @@
 import { execFile } from 'node:child_process'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash, randomUUID } from 'node:crypto'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { jimengVideoModelSpecs } from './jimeng-video-models.js'
 import { whileVideoCliDisconnecting } from './video-cli-tasks.js'
+import { videoCliFailure } from './video-cli-errors.js'
+import { getActiveVideoCliAccountId, resolveVideoCliAccountId, updateVideoCliAccountNameFromPlatform, videoCliAccountDirectory } from './video-cli-accounts.js'
 
 type CliData = Record<string, unknown>
 export type JimengReferenceKind = 'image' | 'video' | 'audio'
@@ -52,6 +55,8 @@ export interface JimengVideoRunInput {
   accountId: string
   draftFingerprint: string
   submitId: string
+  /** Saved local account profile; absent on tasks created before multi-account support. */
+  profileId?: string
   /** Ceiling a user confirmed before direct submission was introduced. */
   credits?: number
 }
@@ -68,6 +73,14 @@ export class JimengCliError extends Error {
     super(message)
     this.name = 'JimengCliError'
   }
+}
+
+const accountContext = new AsyncLocalStorage<string>()
+export function getActiveJimengAccountId() { return getActiveVideoCliAccountId('jimeng') }
+export function getCurrentJimengAccountId() { return accountContext.getStore() ?? getActiveJimengAccountId() }
+export function withJimengAccount<T>(accountId: string | undefined, action: () => T): T {
+  const id = resolveVideoCliAccountId('jimeng', accountId ?? accountContext.getStore())
+  return accountContext.run(id, action)
 }
 
 const processEnvironment = [
@@ -115,18 +128,20 @@ function cliError(info: CliData) {
   const candidate = string(info.reason)
   const reason = candidate && /^[a-z][a-z0-9_]{0,70}$/u.test(candidate) ? candidate : undefined
   if (code === 3) return new JimengCliError('请先授权即梦账号', code, 'auth_required')
-  if (code === 40018) return new JimengCliError('即梦积分授权未成功，请检查账号和积分后重试', code, reason)
+  if (code === 40018) return new JimengCliError(videoCliFailure('jimeng', info, '即梦积分授权未成功，请检查账号和积分后重试'), code, reason)
   if (reason === 'vip_membership_required') return new JimengCliError('当前即梦账号没有使用该模型所需的会员权益', code, reason)
   if (reason === 'account_changed') return new JimengCliError('即梦授权账号已变更，请重新提交', code, reason)
-  const details = [code, reason].filter(value => value !== undefined).join('，')
-  return new JimengCliError(details ? `即梦官方 CLI 请求失败（${details}）` : '即梦官方 CLI 请求失败', code, reason)
+  return new JimengCliError(videoCliFailure('jimeng', info, '即梦官方 CLI 请求失败'), code, reason)
 }
 
 function invoke(args: readonly string[], timeout = 30_000, signal?: AbortSignal): Promise<CliData> {
   const binary = cliBinary()
-  const profile = process.env.JIMENG_CLI_PROFILE?.trim() || 'drama-plus'
+  const id = resolveVideoCliAccountId('jimeng', getCurrentJimengAccountId())
+  const baseProfile = process.env.JIMENG_CLI_PROFILE?.trim() || 'drama-plus'
+  const profile = id === 'default' ? baseProfile : `${baseProfile}-${id}`
   if (args.some(arg => arg.includes('\0'))) throw new JimengCliError('即梦请求参数含有无效字符')
   const env = Object.fromEntries(processEnvironment.map(key => [key, process.env[key]]))
+  if (id !== 'default') env.DREAMINA_CANVAS_STATE_DIR = videoCliAccountDirectory('jimeng', id)
   return new Promise((resolve, reject) => {
     const child = execFile(binary, [
       '--format=json', '--non-interactive', `--profile=${profile}`, ...args,
@@ -136,7 +151,7 @@ function invoke(args: readonly string[], timeout = 30_000, signal?: AbortSignal)
       if (!error && output.ok === true) return resolve(object(output.data))
       // Failed commands emit the official JSON envelope on stderr. Never return raw output or execFile errors.
       const failure = output.ok === false ? output : readEnvelope(stderr)
-      if (failure.ok === false) return reject(cliError(object(failure.error)))
+      if (failure.ok === false) return reject(cliError({ ...object(failure.error), diagnostics: failure.diagnostics }))
       if (error?.code === 'ENOENT' || error?.code === 'EACCES') {
         return reject(new JimengCliError('当前服务环境无法运行即梦官方画布 CLI，请检查安装及执行权限', undefined, 'unavailable'))
       }
@@ -158,24 +173,41 @@ function officialVerificationUrl(value: unknown) {
   }
 }
 
-let startingAuthorization: Promise<JimengAuthorization> | undefined
-let activeAuthorization: { state: JimengAuthorization; controller: AbortController; finished: Promise<void> } | undefined
-let authorizationMessage: string | undefined
-let disconnecting: Promise<void> | undefined
+interface AuthorizationScope {
+  authenticated?: boolean
+  starting?: Promise<JimengAuthorization>
+  active?: { state: JimengAuthorization; controller: AbortController; finished: Promise<void> }
+  message?: string
+  disconnecting?: Promise<void>
+}
+const authorizationScopes = new Map<string, AuthorizationScope>()
+function authorizationScope() {
+  const id = getCurrentJimengAccountId()
+  let scope = authorizationScopes.get(id)
+  if (!scope) { scope = {}; authorizationScopes.set(id, scope) }
+  return scope
+}
 
-export async function getJimengAccount(): Promise<JimengAccount> {
+export function getJimengAccount(): Promise<JimengAccount> {
+  return withJimengAccount(undefined, getScopedJimengAccount)
+}
+async function getScopedJimengAccount(): Promise<JimengAccount> {
+  const scope = authorizationScope()
   let authenticated = false
   try {
     const status = await invoke(['auth', 'status'])
     authenticated = status.loggedIn === true
+    scope.authenticated = authenticated
     if (!authenticated) {
-      return { available: true, authenticated, authorizationPending: !!activeAuthorization, message: authorizationMessage }
+      return { available: true, authenticated, authorizationPending: !!scope.active, message: scope.message }
     }
     const data = await invoke(['auth', 'account'])
+    const username = string(data.displayName)
+    updateVideoCliAccountNameFromPlatform('jimeng', getCurrentJimengAccountId(), username)
     return {
       available: true,
       authenticated,
-      username: string(data.displayName),
+      username,
       credits: creditAmount(data.availableCredits ?? object(data.credits).available),
       membership: string(data.vipLevel),
       accountId: string(data.userId),
@@ -188,15 +220,19 @@ export async function getJimengAccount(): Promise<JimengAccount> {
 }
 
 export function startJimengAuthorization(): Promise<JimengAuthorization> {
-  if (disconnecting) return Promise.reject(new JimengCliError('正在断开即梦账号，请稍后重新连接', undefined, 'account_busy'))
-  if (activeAuthorization) return Promise.resolve(activeAuthorization.state)
-  if (startingAuthorization) return startingAuthorization
-  startingAuthorization = beginAuthorization().finally(() => { startingAuthorization = undefined })
-  return startingAuthorization
+  return withJimengAccount(undefined, () => {
+    const scope = authorizationScope()
+    if (scope.disconnecting) return Promise.reject(new JimengCliError('正在断开即梦账号，请稍后重新连接', undefined, 'account_busy'))
+    if (scope.active) return Promise.resolve(scope.active.state)
+    if (scope.starting) return scope.starting
+    scope.starting = beginAuthorization().finally(() => { scope.starting = undefined })
+    return scope.starting
+  })
 }
 
 async function beginAuthorization(): Promise<JimengAuthorization> {
-  authorizationMessage = undefined
+  const scope = authorizationScope()
+  scope.message = undefined
   const data = await invoke(['auth', 'login', '--no-browser'])
   if (data.status === 'reused' || data.status === 'logged_in') return { authenticated: true }
   const challenge = object(data.challenge)
@@ -210,30 +246,63 @@ async function beginAuthorization(): Promise<JimengAuthorization> {
   const controller = new AbortController()
   const finished = invoke(['auth', 'wait', `--device-code=${deviceCode}`, '--timeout=5m'], 305_000, controller.signal)
     .then(result => {
-      if (result.status !== 'logged_in') authorizationMessage = '即梦账号授权尚未完成，请重新发起授权'
+      if (result.status !== 'logged_in') scope.message = '即梦账号授权尚未完成，请重新发起授权'
     })
-    .catch(() => {
-      if (!controller.signal.aborted) authorizationMessage = '即梦账号授权未完成或已过期，请重新发起授权'
+    .catch(error => {
+      if (!controller.signal.aborted) scope.message = error instanceof JimengCliError ? error.message : '即梦账号授权未完成或已过期，请重新发起授权'
     })
-    .finally(() => { activeAuthorization = undefined })
-  activeAuthorization = { state, controller, finished }
+    .finally(() => { scope.active = undefined })
+  scope.active = { state, controller, finished }
   return state
 }
 
-export function disconnectJimengAccount(): Promise<void> {
-  if (disconnecting) return disconnecting
+export function disconnectJimengAccount(options: { removeIfUnauthenticated?: boolean } = {}): Promise<void> {
+  return withJimengAccount(undefined, () => disconnectScopedJimengAccount(options))
+}
+async function removableUnauthenticatedJimengAccount(scope: AuthorizationScope): Promise<boolean> {
+  try {
+    const status = await invoke(['auth', 'status'])
+    if (status.loggedIn === true) { scope.authenticated = true; return false }
+    if (status.loggedIn === false) { scope.authenticated = false; return true }
+    throw new JimengCliError('即梦未返回可确认的登录状态，请刷新后再移除账号')
+  } catch (error) {
+    if (!(error instanceof JimengCliError)) throw error
+    if (error.reason === 'auth_required') { scope.authenticated = false; return true }
+    if (error.reason !== 'unavailable' || scope.authenticated === true) throw error
+    const id = getCurrentJimengAccountId()
+    const directory = id === 'default' ? process.env.DREAMINA_CANVAS_STATE_DIR : videoCliAccountDirectory('jimeng', id)
+    // 未配置 legacy 状态目录时无法核实凭据，保留账号，避免丢失原授权。
+    if (!directory) throw error
+    const entries = await fs.readdir(directory).catch((failure: NodeJS.ErrnoException) => {
+      if (failure.code === 'ENOENT') return []
+      throw failure
+    })
+    if (entries.length) throw error
+    return true
+  }
+}
+function disconnectScopedJimengAccount(options: { removeIfUnauthenticated?: boolean }): Promise<void> {
+  const scope = authorizationScope()
+  if (scope.disconnecting) return scope.disconnecting
   const busy = new JimengCliError('还有即梦视频任务在提交或运行，请等任务结束后再断开账号', undefined, 'account_busy')
-  disconnecting = whileVideoCliDisconnecting('jimeng', busy, async () => {
-    await startingAuthorization?.catch(() => {})
-    const authorization = activeAuthorization
+  scope.disconnecting = whileVideoCliDisconnecting('jimeng', busy, async () => {
+    await scope.starting?.catch(() => {})
+    const authorization = scope.active
     // Let the waiting CLI process exit before logout so a late approval cannot write its credentials back.
     authorization?.controller.abort()
     await authorization?.finished
-    const result = await invoke(['auth', 'logout'])
-    if (result.loggedOut !== true) throw new JimengCliError('即梦官方 CLI 未确认账号已断开')
-    authorizationMessage = undefined
-  }).finally(() => { disconnecting = undefined })
-  return disconnecting
+    if (!options.removeIfUnauthenticated || !await removableUnauthenticatedJimengAccount(scope)) {
+      try {
+        const result = await invoke(['auth', 'logout'])
+        if (result.loggedOut !== true) throw new JimengCliError('即梦官方 CLI 未确认账号已断开')
+      } catch (error) {
+        if (!options.removeIfUnauthenticated || !(error instanceof JimengCliError) || error.reason !== 'auth_required') throw error
+      }
+    }
+    scope.authenticated = false
+    scope.message = undefined
+  }, getCurrentJimengAccountId()).finally(() => { scope.disconnecting = undefined })
+  return scope.disconnecting
 }
 
 export async function getJimengVideoModels(): Promise<JimengVideoModel[]> {
@@ -333,7 +402,10 @@ async function quoteNode(projectId: string, nodeId: string, accountId: string) {
   return total
 }
 
-export async function createJimengVideoDraft(input: JimengVideoDraftInput, accountId: string): Promise<JimengVideoRunInput> {
+export function createJimengVideoDraft(input: JimengVideoDraftInput, accountId: string): Promise<JimengVideoRunInput> {
+  return withJimengAccount(undefined, () => createScopedJimengVideoDraft(input, accountId))
+}
+async function createScopedJimengVideoDraft(input: JimengVideoDraftInput, accountId: string): Promise<JimengVideoRunInput> {
   const models = (await getJimengVideoModels()).filter(item => item.id === input.model || item.canonicalModel === input.model)
   if (models.length !== 1) throw new JimengCliError('当前即梦账号未返回唯一可用的所选 Seedance 模型')
   const data = await invoke([
@@ -346,10 +418,13 @@ export async function createJimengVideoDraft(input: JimengVideoDraftInput, accou
   if (!nodeId) throw new JimengCliError('即梦未返回视频草稿节点 ID')
   const node = await showVideoNode(input.projectId, nodeId)
   verifyVideoDraft(input, models[0].canonicalModel, node)
-  return { projectId: input.projectId, nodeId, accountId, draftFingerprint: draftFingerprint(node), submitId: randomUUID() }
+  return { projectId: input.projectId, nodeId, accountId, profileId: getCurrentJimengAccountId(), draftFingerprint: draftFingerprint(node), submitId: randomUUID() }
 }
 
-export async function runJimengVideo(input: JimengVideoRunInput, beforeRun?: () => void): Promise<void> {
+export function runJimengVideo(input: JimengVideoRunInput, beforeRun?: () => void): Promise<void> {
+  return withJimengAccount(input.profileId ?? 'default', () => runScopedJimengVideo(input, beforeRun))
+}
+async function runScopedJimengVideo(input: JimengVideoRunInput, beforeRun?: () => void): Promise<void> {
   const { projectId, nodeId, submitId, accountId } = input
   if (input.credits !== undefined && (!Number.isSafeInteger(input.credits) || input.credits < 0)) {
     throw new JimengCliError('已确认的即梦积分上限无效')
@@ -374,7 +449,7 @@ export async function runJimengVideo(input: JimengVideoRunInput, beforeRun?: () 
     result = await invoke(['node', 'run', ...context, `--submit-id=${submitId}`, `--credit-token=${token}`], 60_000)
   } catch (error) {
     const cause = error instanceof JimengCliError ? error : undefined
-    throw new JimengCliError('即梦提交状态暂不明确，将查询原任务', cause?.code, cause?.reason, true)
+    throw new JimengCliError(`即梦提交状态暂不明确，将查询原任务${cause?.message ? `。${cause.message}` : ''}`, cause?.code, cause?.reason, true)
   }
   const item = list(result.items).find(item => item.submitId === submitId && item.nodeId === nodeId)
   const state = String(item?.state).toUpperCase()
@@ -382,7 +457,10 @@ export async function runJimengVideo(input: JimengVideoRunInput, beforeRun?: () 
   if (state !== 'ACCEPTED') throw new JimengCliError('即梦提交状态暂不明确，将查询原任务', undefined, undefined, true)
 }
 
-export async function inspectJimengVideo(projectId: string, submitId: string): Promise<JimengVideoStatus> {
+export function inspectJimengVideo(projectId: string, submitId: string, profileId = 'default'): Promise<JimengVideoStatus> {
+  return withJimengAccount(profileId, () => inspectScopedJimengVideo(projectId, submitId))
+}
+async function inspectScopedJimengVideo(projectId: string, submitId: string): Promise<JimengVideoStatus> {
   const context = `--project-id=${projectId}`
   let operation: CliData
   try {
@@ -393,9 +471,8 @@ export async function inspectJimengVideo(projectId: string, submitId: string): P
   }
   const state = String(operation.state).toLowerCase()
   if (state === 'failed' || state === 'awaiting_confirmation' || state === 'rejected') {
-    const message = state === 'awaiting_confirmation'
-      ? '即梦未受理生成，请检查积分授权后重试'
-      : cliError(object(operation.submissionError)).message
+    const message = videoCliFailure('jimeng', operation.submissionError ?? operation.error ?? operation,
+      state === 'awaiting_confirmation' ? '即梦未受理生成，请检查积分授权后重试' : '即梦视频生成失败')
     return { state: 'failed', message }
   }
   if (!['succeeded', 'success', 'completed'].includes(state)) return { state: 'pending' }
@@ -403,6 +480,9 @@ export async function inspectJimengVideo(projectId: string, submitId: string): P
     const resourceId = string(item.resourceId)
     if (!resourceId) continue
     const resource = await invoke(['resource', 'get', context, '--', resourceId])
+    if (['failed', 'failure', 'rejected', 'error'].includes(String(resource.status).toLowerCase())) {
+      return { state: 'failed', message: videoCliFailure('jimeng', resource.error ?? resource, '即梦视频素材生成失败') }
+    }
     if (resource.resourceId !== resourceId || String(resource.type).toLowerCase() !== 'video' ||
       !['succeeded', 'success', 'completed'].includes(String(resource.status).toLowerCase())) continue
     const duration = object(resource.video).durationSeconds
@@ -411,7 +491,10 @@ export async function inspectJimengVideo(projectId: string, submitId: string): P
   return { state: 'pending' }
 }
 
-export async function downloadJimengVideo(projectId: string, resourceId: string, destinationPath: string): Promise<void> {
+export function downloadJimengVideo(projectId: string, resourceId: string, destinationPath: string, profileId = 'default'): Promise<void> {
+  return withJimengAccount(profileId, () => downloadScopedJimengVideo(projectId, resourceId, destinationPath))
+}
+async function downloadScopedJimengVideo(projectId: string, resourceId: string, destinationPath: string): Promise<void> {
   const data = await invoke(['resource', 'download', `--project-id=${projectId}`, `--output=${destinationPath}`, '--', resourceId], 120_000)
   const file = await fs.open(destinationPath, 'r')
   try {

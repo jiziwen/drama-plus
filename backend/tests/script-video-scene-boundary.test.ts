@@ -89,3 +89,11 @@ test('the same explicit, unambiguous location can continue without a scene image
     assert.equal(getScriptVideoContinuationScene({ ...previous, scene: uncertain }, { ...next, scene: uncertain }, []), undefined)
   }
 })
+
+test('跨集承接说明识别上集尾帧与下集续接，保留切镜和禁用判断', () => {
+  const previous = card({ ending: `${state}下一集从本集尾帧继续。` })
+  const next = card({ opening: `同一镜头续接上集尾帧。${state}` })
+  assert.equal(getScriptVideoContinuationScene(previous, next, assets), courtyard)
+  assert.equal(getScriptVideoContinuationScene(previous, { ...next, opening: '不使用上一集尾帧。' }, assets), undefined)
+  assert.equal(getScriptVideoContinuationScene({ ...previous, ending: `${state}下集切到另一机位。` }, next, assets), undefined)
+})

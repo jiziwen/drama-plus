@@ -2,7 +2,7 @@ import { computed, onScopeDispose, ref, shallowRef, toRaw, watch } from 'vue'
 import { updateScriptVideoReferenceChoice, validScriptVideoFrameTime } from '../../../backend/src/services/script-video-reference-settings'
 import type { ScriptVideoFrameChoice, ScriptVideoReferenceFrameRow, ScriptVideoReferenceFrames, ScriptVideoReferenceSettings } from '../../../backend/src/services/script-video-reference-settings'
 
-type Scope = { projectId: string; episodeId: string; card: { id: string; referenceFrameSettings?: ScriptVideoReferenceSettings } }
+type Scope = { projectId: string; episodeId: string; card: { id: string; version?: number; referenceFrameSettings?: ScriptVideoReferenceSettings } }
 type Request = (path: string, body: object, signal: AbortSignal) => Promise<ScriptVideoReferenceFrames>
 export type FrameSelection = 'auto' | 'off' | 'manual'
 
@@ -14,19 +14,20 @@ export function useScriptVideoReferenceFrames(
   const loading = ref(false), changing = ref(false), error = ref('')
   let reader: AbortController | undefined, writer: AbortController | undefined
   let timer: ReturnType<typeof setTimeout> | undefined
+  let sourceVersion = 0
   const path = computed(() => {
     const scope = current()
     return scope ? `/projects/${scope.projectId}/episodes/${scope.episodeId}/cards/${scope.card.id}/reference-frames` : ''
   })
 
-  async function load(saveFirst: boolean) {
+  async function load(saveFirst: boolean, keepError = false) {
     clearTimeout(timer)
     reader?.abort()
     const scope = current(), endpoint = path.value
     if (!scope || changing.value) return
     const controller = reader = new AbortController()
     loading.value = true
-    error.value = ''
+    if (!keepError) error.value = ''
     try {
       if (saveFirst) await save(scope.projectId)
       if (controller.signal.aborted) return
@@ -40,17 +41,26 @@ export function useScriptVideoReferenceFrames(
   }
   const refresh = () => load(true)
 
-  function reset() {
+  function invalidateRead() {
     clearTimeout(timer)
     reader?.abort()
-    writer?.abort()
-    reader = writer = undefined
+    reader = undefined
     frames.value = undefined
-    loading.value = changing.value = false
+    loading.value = false
+  }
+  function reset() {
+    invalidateRead()
+    writer?.abort()
+    writer = undefined
+    changing.value = false
     error.value = ''
   }
   watch(path, reset, { flush: 'sync' })
-  watch([path, sourceRevision, () => JSON.stringify(current()?.card.referenceFrameSettings)], ([next], [prior]) => {
+  watch(sourceRevision, () => {
+    sourceVersion++
+    invalidateRead()
+  }, { flush: 'sync' })
+  watch([path, sourceRevision, () => current()?.card.version, () => JSON.stringify(current()?.card.referenceFrameSettings)], ([next], [prior]) => {
     if (!next || changing.value) return
     if (next !== prior) { void refresh(); return }
     clearTimeout(timer)
@@ -66,7 +76,7 @@ export function useScriptVideoReferenceFrames(
     if (!selected || toRaw(selected) !== toRaw(row) || (row.kind === 'lighting' && !row.startShot)) return false
     if (mode === 'manual' && (!row.videoUrl || !validScriptVideoFrameTime(seconds))) return false
     const controller = writer = new AbortController()
-    const revision = sourceRevision()
+    const version = sourceVersion
     const original = row.kind === 'tail' ? scope.card.referenceFrameSettings?.tail : scope.card.referenceFrameSettings?.lighting?.[String(row.startShot)]
     const originalChoice = JSON.stringify(original)
     changing.value = true
@@ -82,11 +92,12 @@ export function useScriptVideoReferenceFrames(
         const frame = result.candidate
         if (!frame?.imageUrl || frame.videoUrl !== row.videoUrl || !validScriptVideoFrameTime(frame.seconds))
           throw new Error('来源成片已变化，请刷新后重新选帧。')
-        if (sourceRevision() !== revision) {
+        if (sourceVersion !== version) {
+          const rechecking = sourceVersion
           const latest = await request(endpoint, {}, controller.signal)
           if (controller.signal.aborted) return false
-          frames.value = latest
-          if (selectedRow(latest)?.videoUrl !== row.videoUrl) throw new Error('来源成片已变化，请重新选帧。')
+          if (sourceVersion !== rechecking || selectedRow(latest)?.videoUrl !== row.videoUrl)
+            throw new Error('来源成片已变化，请重新选帧。')
         }
         choice = { mode, videoUrl: frame.videoUrl, seconds: frame.seconds }
       }
@@ -103,9 +114,12 @@ export function useScriptVideoReferenceFrames(
     } catch (cause) {
       if (!controller.signal.aborted) error.value = cause instanceof Error ? cause.message : '参考帧设置失败'
     } finally {
-      if (controller === writer) { changing.value = false; writer = undefined }
+      if (controller === writer) {
+        changing.value = false
+        writer = undefined
+        if (saved || sourceVersion !== version) await load(false, !saved)
+      }
     }
-    if (saved) await load(false)
     return saved
   }
   return { frames, loading, changing, error, refresh, choose }

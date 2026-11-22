@@ -161,6 +161,7 @@ export function renderScriptVideoCardReferences(
 ) {
   const style = stylePreset ?? production?.stylePreset
   const prompt = annotateScriptVideoInnerOs(omitScriptVideoRecapQuotes(scriptVideoStoryboardBody(card), card.shots), {
+    referenceAudioNames: assets.filter(asset => asset.kind === 'audio').map(asset => asset.name),
     speakers: [...assets.filter(asset => !asset.kind || asset.kind === 'character').map(asset => asset.name),
       ...(production?.characters?.map(role => role.name) ?? [])],
   })

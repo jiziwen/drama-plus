@@ -1,8 +1,13 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { execFile, spawn } from 'node:child_process'
+import { mkdirSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { realpath, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import path from 'node:path'
+import { getActiveVideoCliAccountId, resolveVideoCliAccountId, updateVideoCliAccountNameFromPlatform, videoCliAccountDirectory } from './video-cli-accounts.js'
+import { videoCliFailure } from './video-cli-errors.js'
+import { libtvWebAssistant } from './libtv-web-assistant.js'
 import { STORAGE_ROOT } from '../utils/paths.js'
 import type { GenerateVideoParams } from './generation.js'
 import { libtvVideoModel, LIBTV_VIDEO_RATIOS } from './libtv-video-models.js'
@@ -47,9 +52,11 @@ function outputObject(stdout: string) {
 function libtvRuntime() {
   const executable = process.env.LIBTV_CLI_BIN?.trim() || path.join(homedir(), '.libtv', process.platform === 'win32' ? 'libtv.exe' : 'libtv')
   if (!path.isAbsolute(executable)) throw new LibTVCliError('LIBTV_CLI_BIN 必须是 LibTV 官方 CLI 的绝对路径', false, 'unavailable')
-  // This account belongs to the service process and is configured by official CLI login.
+  // Keep credentials isolated per saved account; the default slot preserves existing CLI login.
   const env: NodeJS.ProcessEnv = { LIBTV_DEBUG: '0' }
   for (const key of runtimeEnv) if (process.env[key] !== undefined) env[key] = process.env[key]
+  const directory = videoCliAccountDirectory('libtv', currentProfileId())
+  if (directory) { mkdirSync(directory, { recursive: true, mode: 0o700 }); env.LIBTV_CONFIG_DIR = directory }
   return { executable, options: { env, cwd: path.dirname(executable), windowsHide: true } }
 }
 
@@ -63,10 +70,10 @@ export async function runLibTVCli(args: readonly string[], generation = false, t
     }, (error, stdout, stderr) => {
       const output = outputObject(stdout)
       if (output && [3, 4].includes(Number(output.status))) {
-        const message = typeof output.failedReason === 'string' ? output.failedReason.trim() : ''
-        return reject(new LibTVCliError(message || 'LibTV 已确认视频任务失败', true))
+        return reject(new LibTVCliError(videoCliFailure('libtv', output, 'LibTV 已确认视频任务失败'), true))
       }
-      if (!error && output) return resolve(output)
+      if (!error && output && output.ok !== false && output.success !== false && !output.error &&
+          (output.code === undefined || String(output.code) === '0')) return resolve(output)
       if (error?.code === 'ENOENT' || error?.code === 'EACCES') {
         return reject(new LibTVCliError('服务端尚未安装可执行的 LibTV 官方 CLI', false, 'unavailable'))
       }
@@ -75,7 +82,7 @@ export async function runLibTVCli(args: readonly string[], generation = false, t
       }
       if (error?.killed) return reject(new LibTVCliError('等待 LibTV 官方 CLI 响应超时', false, 'timeout'))
       // Raw stderr and child-process error messages can include arguments or credentials.
-      return reject(new LibTVCliError(generation ? 'LibTV 未返回可确认的生成结果' : 'LibTV 官方 CLI 调用失败，请检查服务端登录与画布权限'))
+      return reject(new LibTVCliError(videoCliFailure('libtv', output ?? stderr, generation ? 'LibTV 未返回可确认的生成结果' : 'LibTV 官方 CLI 调用失败，请检查服务端登录与画布权限')))
     })
     child.stdin?.end()
   })
@@ -98,37 +105,64 @@ export type LibTVAccount = {
   message?: string
   expires_at?: number
   verification_url?: string
+  assistant_download_url?: string
+  login_method?: 'local_helper'
 }
 
 type LoginFailure = { status: 'expired' | 'failed' | 'unavailable'; message: string }
-type LocalLogin = { expiresAt: number; verification?: string; closed: Promise<void>; cancel: () => void; stopping?: boolean }
+type LocalLogin = { expiresAt: number; scope: string; relayState?: string; assistantDownloadUrl?: string; verification?: string; closed: Promise<void>; cancel: () => void; stopping?: boolean }
+type AuthorizationOptions = { scope?: string; helperOrigin?: string }
+type WebRelay = { expiresAt: number; callback: string; login: LocalLogin }
+const webRelays = new Map<string, WebRelay>()
 const LOGIN_START_MS = 8_000
 const LOGIN_LIFETIME_MS = 5 * 60_000
 const ACCOUNT_TIMEOUT_MS = 8_000
 const SMS_COOLDOWN_MS = 60_000
 const SMS_ATTEMPT_LIMIT = 5
 type PhoneChallenge = { id: string; scope: string; phone: string; expiresAt: number; attempts: number }
-let phoneChallenge: PhoneChallenge | undefined
-let phoneStepInFlight = false
-let nextPhoneSendAt = 0
-let localLogin: LocalLogin | undefined
-let authStart: Promise<LibTVAccount> | undefined
-let disconnectRequest: Promise<void> | undefined
-let accountProbe: Promise<LibTVAccount> | undefined
-let lastLoginFailure: LoginFailure | undefined
-let canvasSetup: { expiresAt: number } | undefined
-let canvasSetupFailure: { accountId: string; message: string } | undefined
+type AccountSession = {
+  authenticated?: boolean
+  phoneChallenge?: PhoneChallenge
+  phoneStepInFlight: boolean
+  nextPhoneSendAt: number
+  localLogin?: LocalLogin
+  authStart?: Promise<LibTVAccount>
+  authStartScope?: string
+  disconnectRequest?: Promise<void>
+  accountProbe?: Promise<LibTVAccount>
+  lastLoginFailure?: LoginFailure
+  canvasSetup?: { expiresAt: number }
+  canvasSetupFailure?: { accountId: string; message: string }
+}
+const accountContext = new AsyncLocalStorage<string>()
+const accountSessions = new Map<string, AccountSession>()
+export const getActiveLibTVAccountId = () => getActiveVideoCliAccountId('libtv')
+export function withLibTVAccount<T>(id: string, action: () => T): T {
+  return accountContext.run(resolveVideoCliAccountId('libtv', id), action)
+}
+function currentProfileId() { return accountContext.getStore() ?? getActiveLibTVAccountId() }
+function session() {
+  const id = currentProfileId()
+  let state = accountSessions.get(id)
+  if (!state) {
+    state = { phoneStepInFlight: false, nextPhoneSendAt: 0 }
+    accountSessions.set(id, state)
+  }
+  return state
+}
 
 function pendingAccount(login: LocalLogin, includeVerification = false): LibTVAccount {
   return { available: true, authenticated: false, status: 'pending', canvas_ready: false,
-    expires_at: login.expiresAt, ...(includeVerification && { verification_url: login.verification }) }
+    expires_at: login.expiresAt, ...(includeVerification && (login.assistantDownloadUrl
+      ? { assistant_download_url: login.assistantDownloadUrl, login_method: 'local_helper' as const }
+      : { verification_url: login.verification })) }
 }
 
 function loginError(status: LoginFailure['status'], message: string): LibTVAccount {
   return { status, available: status !== 'unavailable', authenticated: false, canvas_ready: false, message }
 }
 
-function localVerificationUrl(line: string, expiresAt: number) {
+function localVerificationUrl(line: string, login: LocalLogin, authorization: AuthorizationOptions) {
   const candidate = line.match(/https:\/\/www\.liblib\.tv\/zh\?[^\s<>"']+/u)?.[0]
   if (!candidate) return
   try {
@@ -142,10 +176,55 @@ function localVerificationUrl(line: string, expiresAt: number) {
     // The official CLI still receives and independently validates the credential.
     const expiringCallback = new URL(callbackUrl)
     expiringCallback.searchParams.set('state', randomUUID())
-    expiringCallback.searchParams.set('expires_at', String(expiresAt))
+    expiringCallback.searchParams.set('expires_at', String(login.expiresAt))
+    if (authorization.helperOrigin) {
+      const origin = new URL(authorization.helperOrigin)
+      if (origin.protocol !== 'https:' || origin.search || origin.hash || origin.username || origin.password || origin.pathname !== '/') return
+      const state = randomUUID()
+      const download = new URL('/api/v1/libtv/auth/assistant', origin)
+      download.searchParams.set('state', state)
+      download.searchParams.set('accountId', currentProfileId())
+      login.relayState = state
+      login.assistantDownloadUrl = download.href
+      webRelays.set(state, { expiresAt: login.expiresAt, callback: callbackUrl, login })
+      return url.href
+    }
     url.searchParams.set('callback_url', expiringCallback.href)
     return url.href
   } catch {}
+}
+
+export function getLibTVWebAssistant(state: string, scope: string) {
+  const relay = webRelays.get(state)
+  if (!relay || relay.login.scope !== scope || Date.now() >= relay.expiresAt || relay.login.stopping || !relay.login.assistantDownloadUrl) {
+    throw new LibTVPhoneAuthorizationError('本机授权助手已失效，请返回设置重新连接。', 410)
+  }
+  return libtvWebAssistant({ state, expiresAt: relay.expiresAt,
+    callbackUrl: new URL('/api/v1/libtv/auth/callback', relay.login.assistantDownloadUrl).href })
+}
+
+/** Receive the official website redirect and deliver it only to the CLI that issued this challenge. */
+export async function completeLibTVWebAuthorization(state: string, token: string) {
+  const relay = webRelays.get(state)
+  if (!relay || Date.now() >= relay.expiresAt || relay.login.stopping) {
+    if (relay) webRelays.delete(state)
+    return { ok: false, message: 'LibTV 网页授权已过期或已使用，请返回设置重新连接。' }
+  }
+  if (!token || token.length > 16_384 || /[\u0000-\u0020\u007f]/u.test(token)) {
+    return { ok: false, message: 'LibTV 没有返回有效授权信息，请返回设置重新连接。' }
+  }
+  // Consume before network I/O: duplicate redirects cannot replay credentials or switch accounts.
+  webRelays.delete(state)
+  try {
+    const callback = new URL(relay.callback)
+    callback.searchParams.set('token', token)
+    const response = await fetch(callback, { redirect: 'error', signal: AbortSignal.timeout(22_000) })
+    await response.body?.cancel()
+    if (!response.ok) return { ok: false, message: 'LibTV 未接受本次网页登录，请返回设置查看原因并重新连接。' }
+    return { ok: true, message: 'LibTV 授权已完成，请返回应用，账号和画布会自动刷新。' }
+  } catch {
+    return { ok: false, message: '无法完成 LibTV 网页授权回调，请返回设置重新连接。' }
+  }
 }
 
 function loginFailureMessage(line: string) {
@@ -158,14 +237,20 @@ function loginFailureMessage(line: string) {
   if (/\b(?:AbortError|TimeoutError|ETIMEDOUT|ECONNREFUSED|ECONNRESET|ENOTFOUND)\b|fetch failed/u.test(line)) {
     return 'LibTV 登录校验时连接失败，请稍后重新发起授权。'
   }
+  const fallback = 'LibTV 网页授权未完成，请重新发起授权'
+  const detail = videoCliFailure('libtv', line, fallback)
+  if (detail !== fallback) return detail
 }
 
 async function inspectAuthenticatedAccount() {
+  const profileId = currentProfileId()
   const account = await runLibTVCli(['account', 'info'], false, ACCOUNT_TIMEOUT_MS)
   const accountId = libtvAccountIdentifier(account)
   if (!accountId) throw new LibTVCliError('LibTV 未返回可识别的账号信息，请确认使用官方 CLI 或重新登录')
   const nickname = asObject(account.user)?.nickname
   const username = typeof nickname === 'string' && nickname.trim() ? nickname.trim().slice(0, 120) : undefined
+  session().authenticated = true
+  updateVideoCliAccountNameFromPlatform('libtv', profileId, username)
   return { accountId, username }
 }
 
@@ -174,85 +259,92 @@ export async function getLibTVAuthenticatedAccountId(): Promise<string> {
 }
 
 async function probeLibTVAccount(): Promise<LibTVAccount> {
+  const state = session()
   try {
     const { accountId, username } = await inspectAuthenticatedAccount()
-    lastLoginFailure = undefined
+    state.lastLoginFailure = undefined
     return { available: true, authenticated: true, accountId, username, status: 'authenticated', canvas_ready: false }
   } catch (error) {
     if (!(error instanceof LibTVCliError)) return loginError('failed', '无法检查 LibTV 登录状态')
     if (error.reason === 'auth_required') {
-      return lastLoginFailure ? loginError(lastLoginFailure.status, lastLoginFailure.message)
+      return state.lastLoginFailure ? loginError(state.lastLoginFailure.status, state.lastLoginFailure.message)
         : { available: true, authenticated: false, status: 'unauthenticated', canvas_ready: false }
     }
     return loginError(error.reason === 'unavailable' ? 'unavailable' : 'failed',
-      error.terminal ? '无法检查 LibTV 登录状态' : error.message)
+      error.message)
   }
 }
 
 function readLibTVAccount(): Promise<LibTVAccount> {
-  accountProbe ??= probeLibTVAccount().finally(() => { accountProbe = undefined })
-  return accountProbe
+  const state = session()
+  state.accountProbe ??= probeLibTVAccount().finally(() => { state.accountProbe = undefined })
+  return state.accountProbe
 }
 
 async function checkAccountCanvas(account: LibTVAccount, provision: boolean): Promise<LibTVAccount> {
+  const state = session()
   if (!account.accountId) return account
   try {
     const canvas = provision ? await ensureLibTVCanvas(account.accountId, runLibTVCli)
       : activeLibTVCanvas(account.accountId)
-    if (!canvas) return { ...account, message: canvasSetupFailure?.accountId === account.accountId
-      ? canvasSetupFailure.message : 'LibTV 已授权，请在设置中准备视频画布' }
+    if (!canvas) return { ...account, message: state.canvasSetupFailure?.accountId === account.accountId
+      ? state.canvasSetupFailure.message : 'LibTV 已授权，请在设置中准备视频画布' }
     const summary = await runLibTVCli(['project', canvas.id], false, ACCOUNT_TIMEOUT_MS)
     const name = canvas.name ?? summary.name ?? summary.projectName ?? summary.title
-    if (canvasSetupFailure?.accountId === account.accountId) canvasSetupFailure = undefined
+    if (state.canvasSetupFailure?.accountId === account.accountId) state.canvasSetupFailure = undefined
     return { ...account, canvas_ready: true,
       ...(typeof name === 'string' && name.trim() && { canvas_name: name.trim().slice(0, 120) }) }
   } catch (error) {
-    const message = error instanceof LibTVCliError && !error.terminal
+    const message = error instanceof LibTVCliError
       ? error.message : '无法准备 LibTV 画布，请检查服务器配置后重试'
-    if (provision) canvasSetupFailure = { accountId: account.accountId, message }
+    if (provision) state.canvasSetupFailure = { accountId: account.accountId, message }
     return { ...account, message }
   }
 }
 
-function pendingCanvasSetup(setup: NonNullable<typeof canvasSetup>): LibTVAccount {
+function pendingCanvasSetup(setup: { expiresAt: number }): LibTVAccount {
   return { available: true, authenticated: false, status: 'pending', canvas_ready: false, canvas_preparing: true,
     expires_at: setup.expiresAt, message: '正在准备 LibTV 画布…' }
 }
 
 function startCanvasSetup(account?: LibTVAccount): LibTVAccount {
-  if (canvasSetup) return pendingCanvasSetup(canvasSetup)
+  const state = session()
+  if (state.canvasSetup) return pendingCanvasSetup(state.canvasSetup)
   const setup = { expiresAt: Date.now() + 150_000 }
-  canvasSetup = setup
+  state.canvasSetup = setup
   void (async () => checkAccountCanvas(account ?? await readLibTVAccount(), true))()
-    .finally(() => { if (canvasSetup === setup) canvasSetup = undefined })
+    .finally(() => { if (state.canvasSetup === setup) state.canvasSetup = undefined })
   return pendingCanvasSetup(setup)
 }
 
-export async function getLibTVAccount(includeVerification = false): Promise<LibTVAccount> {
-  if (disconnectRequest) await disconnectRequest.catch(() => {})
-  if (localLogin && !localLogin.stopping) return pendingAccount(localLogin, includeVerification)
-  if (canvasSetup) return pendingCanvasSetup(canvasSetup)
+export async function getLibTVAccount(includeVerification = false, scope = 'local'): Promise<LibTVAccount> {
+  const state = session()
+  if (state.disconnectRequest) await state.disconnectRequest.catch(() => {})
+  if (state.localLogin && !state.localLogin.stopping) return pendingAccount(state.localLogin, state.localLogin.scope === scope && (includeVerification || !!state.localLogin.assistantDownloadUrl))
+  if (state.canvasSetup) return pendingCanvasSetup(state.canvasSetup)
   return checkAccountCanvas(await readLibTVAccount(), false)
 }
 
-function launchLocalLibTVLogin(): Promise<LibTVAccount> {
+function launchLocalLibTVLogin(authorization: AuthorizationOptions): Promise<LibTVAccount> {
+  const state = session()
   const { executable, options } = libtvRuntime()
   return new Promise(resolve => {
     const child = spawn(executable, ['login', 'web'], { ...options, stdio: ['ignore', 'ignore', 'pipe'] })
     let closed!: () => void
     const login: LocalLogin = {
       expiresAt: Date.now() + LOGIN_LIFETIME_MS,
+      scope: authorization.scope ?? 'local',
       closed: new Promise<void>(resolve => { closed = resolve }),
       cancel: () => stop('failed', 'LibTV 授权已取消'),
     }
-    localLogin = login
+    state.localLogin = login
     let forceKill: ReturnType<typeof setTimeout> | undefined
     let buffer = ''
     let failureMessage: string | undefined
     const startTimer = setTimeout(() => stop('failed', 'LibTV 未及时返回有效的官方网页授权链接，请重试'), LOGIN_START_MS)
     const expiryTimer = setTimeout(() => stop('expired', 'LibTV 授权已过期，请重新发起授权'), LOGIN_LIFETIME_MS)
     function finish(status: LoginFailure['status'], message: string) {
-      lastLoginFailure = { status, message }
+      state.lastLoginFailure = { status, message }
       resolve(loginError(status, message))
     }
     function stop(status: LoginFailure['status'], message: string) {
@@ -260,6 +352,7 @@ function launchLocalLibTVLogin(): Promise<LibTVAccount> {
       login.stopping = true
       clearTimeout(startTimer)
       clearTimeout(expiryTimer)
+      if (login.relayState) webRelays.delete(login.relayState)
       child.kill('SIGTERM')
       forceKill = setTimeout(() => child.kill('SIGKILL'), 1_000)
       finish(status, message)
@@ -270,13 +363,13 @@ function launchLocalLibTVLogin(): Promise<LibTVAccount> {
       const lines = (buffer + chunk).split(/\r?\n/u)
       buffer = lines.pop()!.slice(-8_192)
       for (const line of lines) {
-        if (login.verification) {
-          failureMessage ??= loginFailureMessage(line)
+        failureMessage ??= loginFailureMessage(line)
+        if (login.verification || login.assistantDownloadUrl) {
           continue
         }
-        const verification = localVerificationUrl(line, login.expiresAt)
+        const verification = localVerificationUrl(line, login, authorization)
         if (!verification) continue
-        login.verification = verification
+        if (!login.assistantDownloadUrl) login.verification = verification
         clearTimeout(startTimer)
         resolve(pendingAccount(login, true))
       }
@@ -288,11 +381,12 @@ function launchLocalLibTVLogin(): Promise<LibTVAccount> {
       clearTimeout(startTimer)
       clearTimeout(expiryTimer)
       clearTimeout(forceKill)
-      if (localLogin === login) localLogin = undefined
+      if (login.relayState) webRelays.delete(login.relayState)
+      if (state.localLogin === login) state.localLogin = undefined
       closed()
-      if (login.stopping || disconnectRequest) return
+      if (login.stopping || state.disconnectRequest) return
       if (code === 0) {
-        lastLoginFailure = undefined
+        state.lastLoginFailure = undefined
         resolve(startCanvasSetup())
       } else {
         finish('failed', failureMessage ?? loginFailureMessage(buffer) ?? 'LibTV 网页授权未完成，请重新发起授权')
@@ -301,49 +395,85 @@ function launchLocalLibTVLogin(): Promise<LibTVAccount> {
   })
 }
 
-export function startLibTVAuthorization(): Promise<LibTVAccount> {
-  if (disconnectRequest) return Promise.resolve(loginError('failed', 'LibTV 正在断开账号，请稍后重试'))
-  if (authStart) return authStart
-  if (localLogin?.verification && !localLogin.stopping) return Promise.resolve(pendingAccount(localLogin, true))
-  if (canvasSetup) return Promise.resolve(pendingCanvasSetup(canvasSetup))
-  if (phoneStepInFlight || phoneChallenge) {
+export function startLibTVAuthorization(authorization: AuthorizationOptions = {}): Promise<LibTVAccount> {
+  const state = session()
+  if (state.disconnectRequest) return Promise.resolve(loginError('failed', 'LibTV 正在断开账号，请稍后重试'))
+  if (state.localLogin && !state.localLogin.stopping && state.localLogin.scope !== (authorization.scope ?? 'local')) {
+    return Promise.resolve(loginError('failed', '另一浏览器正在连接此 LibTV 账号，请等待完成或添加其他账号。'))
+  }
+  if (state.authStart) return state.authStartScope === (authorization.scope ?? 'local') ? state.authStart
+    : Promise.resolve(loginError('failed', '另一浏览器正在连接此 LibTV 账号，请等待完成或添加其他账号。'))
+  if ((state.localLogin?.verification || state.localLogin?.assistantDownloadUrl) && !state.localLogin.stopping) return Promise.resolve(pendingAccount(state.localLogin, true))
+  if (state.canvasSetup) return Promise.resolve(pendingCanvasSetup(state.canvasSetup))
+  if (state.phoneStepInFlight || state.phoneChallenge) {
     return Promise.resolve(loginError('failed', '服务器正在进行 LibTV 手机号授权，请等待授权结束后再试。'))
   }
-  authStart = (async () => {
-    if (localLogin?.stopping) await localLogin.closed
+  state.authStartScope = authorization.scope ?? 'local'
+  state.authStart = (async () => {
+    if (state.localLogin?.stopping) await state.localLogin.closed
     const account = await getLibTVAccount()
     if (!account.available || account.canvas_ready || account.status === 'pending') return account
     if (account.authenticated) return startCanvasSetup(account)
-    lastLoginFailure = undefined
-    return launchLocalLibTVLogin()
-  })().finally(() => { authStart = undefined })
-  return authStart
+    state.lastLoginFailure = undefined
+    return launchLocalLibTVLogin(authorization)
+  })().finally(() => { state.authStart = undefined; state.authStartScope = undefined })
+  return state.authStart
 }
 
 export async function startLibTVCanvasPreparation() {
+  const state = session()
   const account = await getLibTVAccount()
-  return !disconnectRequest && account.authenticated && !account.canvas_ready ? startCanvasSetup(account) : account
+  return !state.disconnectRequest && account.authenticated && !account.canvas_ready ? startCanvasSetup(account) : account
 }
 
-export function disconnectLibTVAccount(): Promise<void> {
-  if (disconnectRequest) return disconnectRequest
-  if (phoneStepInFlight || canvasSetup || authStart) {
+async function removableUnauthenticatedLibTVAccount(state: AccountSession): Promise<boolean> {
+  try { await inspectAuthenticatedAccount(); return false } catch (error) {
+    if (!(error instanceof LibTVCliError)) throw error
+    if (error.reason === 'auth_required') { state.authenticated = false; return true }
+    if (error.reason !== 'unavailable' || state.authenticated === true) throw error
+    const id = currentProfileId()
+    if (id === 'default') {
+      const directory = process.env.LIBTV_CONFIG_DIR || path.join(homedir(), '.libtv')
+      const credentials = await stat(path.join(directory, 'credentials.json')).catch((failure: NodeJS.ErrnoException) => {
+        if (failure.code === 'ENOENT') return undefined
+        throw failure
+      })
+      if (credentials) throw error
+    } else {
+      const { readdir } = await import('node:fs/promises')
+      const entries = await readdir(videoCliAccountDirectory('libtv', id)!)
+      if (entries.length) throw error
+    }
+    return true
+  }
+}
+export function disconnectLibTVAccount(options: { removeIfUnauthenticated?: boolean } = {}): Promise<void> {
+  const state = session()
+  if (state.disconnectRequest) return state.disconnectRequest
+  if (state.phoneStepInFlight || state.canvasSetup || state.authStart) {
     return Promise.reject(new LibTVCliError('LibTV 正在处理授权或准备画布，请稍后重试', false, 'account_busy'))
   }
   const busy = new LibTVCliError('LibTV 还有视频任务在提交或运行，请等任务结束后再断开账号', false, 'account_busy')
-  disconnectRequest = whileVideoCliDisconnecting('libtv', busy, async () => {
-    const login = localLogin
+  state.disconnectRequest = whileVideoCliDisconnecting('libtv', busy, async () => {
+    const login = state.localLogin
     if (login) {
       login.cancel()
       await login.closed
     }
-    phoneChallenge = undefined
-    await accountProbe
-    const result = await runLibTVCli(['logout'], false, 15_000)
-    if (result.loggedOut !== true) throw new LibTVCliError('LibTV 未确认账号已断开，请稍后重试')
-    lastLoginFailure = undefined
-  }).finally(() => { disconnectRequest = undefined })
-  return disconnectRequest
+    state.phoneChallenge = undefined
+    await state.accountProbe
+    if (!options.removeIfUnauthenticated || !await removableUnauthenticatedLibTVAccount(state)) {
+      try {
+        const result = await runLibTVCli(['logout'], false, 15_000)
+        if (result.loggedOut !== true) throw new LibTVCliError('LibTV 未确认账号已断开，请稍后重试')
+      } catch (error) {
+        if (!options.removeIfUnauthenticated || !(error instanceof LibTVCliError) || error.reason !== 'auth_required') throw error
+      }
+    }
+    state.authenticated = false
+    state.lastLoginFailure = undefined
+  }, currentProfileId()).finally(() => { state.disconnectRequest = undefined })
+  return state.disconnectRequest
 }
 
 export class LibTVPhoneAuthorizationError extends Error {
@@ -367,68 +497,74 @@ function runLibTVPhoneLogin(phone: string, code?: string): Promise<void> {
       if (error.killed || /\b(?:AbortError|TimeoutError|ETIMEDOUT|ECONNREFUSED|ECONNRESET|ENOTFOUND)\b|fetch failed/u.test(stderr)) {
         return reject(new LibTVPhoneAuthorizationError('连接 LibTV 手机号授权服务失败，请稍后重试。', 503))
       }
-      // Never expose raw stderr, command arguments, or child-process errors.
-      return reject(new LibTVPhoneAuthorizationError(code === undefined
+      const phoneReason = /验证码.*(?:错误|无效|过期)|(?:错误|无效|过期).*验证码/u.test(stderr)
+        ? '短信验证码错误或已过期，请重新获取验证码。'
+        : /频繁|频控|次数|限流|429/u.test(stderr) ? 'LibTV 短信请求过于频繁，请稍后重试。'
+        : /封禁|禁用|冻结/u.test(stderr) ? 'LibTV 账号已被限制，请到官网检查账号状态。' : undefined
+      if (phoneReason) return reject(new LibTVPhoneAuthorizationError(phoneReason, 400))
+      return reject(new LibTVPhoneAuthorizationError(videoCliFailure('libtv', stderr, code === undefined
         ? 'LibTV 未确认验证码已发送。请核对手机号，稍后再试。'
-        : 'LibTV 未完成授权，请核对验证码和有效期后重试。', 400))
+        : 'LibTV 未完成授权，请核对验证码和有效期后重试。'), 400))
     })
     child.stdin?.end()
   })
 }
 
 export async function sendLibTVPhoneCode(scope: string, phone: string) {
-  if (disconnectRequest || phoneStepInFlight || authStart || localLogin || canvasSetup) {
+  const state = session()
+  if (state.disconnectRequest || state.phoneStepInFlight || state.authStart || state.localLogin || state.canvasSetup) {
     throw new LibTVPhoneAuthorizationError('LibTV 正在处理另一项授权请求，请稍后重试。', 409)
   }
-  if (phoneChallenge && Date.now() < phoneChallenge.expiresAt && scope !== phoneChallenge.scope) {
+  if (state.phoneChallenge && Date.now() < state.phoneChallenge.expiresAt && scope !== state.phoneChallenge.scope) {
     throw new LibTVPhoneAuthorizationError('LibTV 正在等候另一位用户完成授权，请稍后重试。', 409)
   }
-  if (Date.now() < nextPhoneSendAt) throw new LibTVPhoneAuthorizationError('发送过于频繁，请在 60 秒后重试。', 429)
-  phoneStepInFlight = true
+  if (Date.now() < state.nextPhoneSendAt) throw new LibTVPhoneAuthorizationError('发送过于频繁，请在 60 秒后重试。', 429)
+  state.phoneStepInFlight = true
   try {
     const account = await readLibTVAccount()
     if (account.authenticated) throw new LibTVPhoneAuthorizationError('LibTV 已授权，请刷新账号状态。', 409)
     if (!account.available) throw new LibTVPhoneAuthorizationError('服务端尚未安装可执行的 LibTV 官方 CLI。', 503)
 
-    nextPhoneSendAt = Date.now() + SMS_COOLDOWN_MS
+    state.nextPhoneSendAt = Date.now() + SMS_COOLDOWN_MS
     await runLibTVPhoneLogin(phone)
     const id = randomUUID()
     const expiresAt = Date.now() + LOGIN_LIFETIME_MS
-    phoneChallenge = { id, scope, phone, expiresAt, attempts: 0 }
+    state.phoneChallenge = { id, scope, phone, expiresAt, attempts: 0 }
     setTimeout(() => {
-      if (phoneChallenge?.id === id) phoneChallenge = undefined
+      if (state.phoneChallenge?.id === id) state.phoneChallenge = undefined
     }, LOGIN_LIFETIME_MS).unref()
     return { challenge_id: id, expires_at: expiresAt }
   } finally {
-    phoneStepInFlight = false
+    state.phoneStepInFlight = false
   }
 }
 
 export async function verifyLibTVPhoneCode(scope: string, challengeId: string, code: string): Promise<LibTVAccount> {
-  if (disconnectRequest || phoneStepInFlight || authStart || localLogin) {
+  const state = session()
+  if (state.disconnectRequest || state.phoneStepInFlight || state.authStart || state.localLogin) {
     throw new LibTVPhoneAuthorizationError('LibTV 正在处理另一项授权请求，请稍后重试。', 409)
   }
-  const challenge = phoneChallenge
+  const challenge = state.phoneChallenge
   if (!challenge || challenge.id !== challengeId || challenge.scope !== scope || Date.now() >= challenge.expiresAt) {
     throw new LibTVPhoneAuthorizationError('本次短信授权已失效，请重新获取验证码。', 410)
   }
-  phoneStepInFlight = true
+  state.phoneStepInFlight = true
   try {
     const existing = await readLibTVAccount()
     if (existing.authenticated) {
-      phoneChallenge = undefined
+      state.phoneChallenge = undefined
       return startCanvasSetup(existing)
     }
     challenge.attempts++
     await runLibTVPhoneLogin(challenge.phone, code)
-    phoneChallenge = undefined
-    lastLoginFailure = undefined
+    state.phoneChallenge = undefined
+    state.lastLoginFailure = undefined
     // Probe fresh credentials, even if a status request started before login completed.
     const account = await probeLibTVAccount()
     return account.authenticated ? startCanvasSetup(account) : account
   } finally {
-    if (challenge.attempts >= SMS_ATTEMPT_LIMIT && phoneChallenge === challenge) phoneChallenge = undefined
-    phoneStepInFlight = false
+    if (challenge.attempts >= SMS_ATTEMPT_LIMIT && state.phoneChallenge === challenge) state.phoneChallenge = undefined
+    state.phoneStepInFlight = false
   }
 }
 
@@ -509,7 +645,7 @@ export function bindLibTVPrompt(prompt: string, media: { kind: MediaKind; key: s
   })
 }
 
-export interface LibTVNode { projectId: string; nodeKey: string }
+export interface LibTVNode { projectId: string; nodeKey: string; profileId?: string }
 
 function assertNode(node: LibTVNode) {
   if (!availableProject.test(node.projectId) || !usableNodeKey.test(node.nodeKey)) {
@@ -535,7 +671,7 @@ export async function createLibTVVideoNode(params: GenerateVideoParams, taskId: 
     ...media.flatMap(({ key }) => ['--left', key]),
     `--prompt=${bindLibTVPrompt(input.prompt, media)}`,
   ])
-  return { projectId: project, nodeKey: returnedNode(output) }
+  return { projectId: project, nodeKey: returnedNode(output), profileId: currentProfileId() }
 }
 
 function videoUrl(source: unknown) {
@@ -550,26 +686,35 @@ function videoUrl(source: unknown) {
   }
 }
 
-export async function runLibTVVideo(node: LibTVNode) {
+export async function runLibTVVideo(node: LibTVNode): Promise<string | undefined> {
+  if ((node.profileId ?? 'default') !== currentProfileId()) return withLibTVAccount(node.profileId ?? 'default', () => runLibTVVideo(node))
   assertNode(node)
   const result = await runLibTVCli(['node', node.nodeKey, '--project', node.projectId, '--run'], true)
   if (Number(result.status) !== 2 && result.ok !== true) return undefined
   return videoUrl(result.url)
 }
 
-export async function inspectLibTVVideo(node: LibTVNode) {
+export async function inspectLibTVVideo(node: LibTVNode): Promise<string | undefined> {
+  if ((node.profileId ?? 'default') !== currentProfileId()) return withLibTVAccount(node.profileId ?? 'default', () => inspectLibTVVideo(node))
   assertNode(node)
   const output = await runLibTVCli(['node', node.nodeKey, '--project', node.projectId])
   const focus = asObject(output.node) || asObject(output.focus) || output
   const data = asObject(focus.data)
   if (data?.type !== 'video') return undefined
+  const task = asObject(data.taskInfo)
+  if ([3, 4].includes(Number(task?.status ?? data.status))) {
+    throw new LibTVCliError(videoCliFailure('libtv', { ...data, ...task }, 'LibTV 已确认视频任务失败'), true)
+  }
   return videoUrl(data.url)
 }
 
 // A node command saves canvas revisions. Avoid interleaving mutations and terminal writeback in one canvas.
-let canvasTail: Promise<unknown> = Promise.resolve()
-export function withLibTVCanvas<T>(update: () => Promise<T>): Promise<T> {
-  const result = canvasTail.then(update)
-  canvasTail = result.catch(() => {})
+const canvasTails = new Map<string, Promise<unknown>>()
+export async function withLibTVCanvas<T>(update: () => Promise<T>): Promise<T> {
+  const canvasId = await libtvProjectId()
+  const result = (canvasTails.get(canvasId) ?? Promise.resolve()).then(update)
+  const tail = result.catch(() => {})
+  canvasTails.set(canvasId, tail)
+  void tail.finally(() => { if (canvasTails.get(canvasId) === tail) canvasTails.delete(canvasId) })
   return result
 }

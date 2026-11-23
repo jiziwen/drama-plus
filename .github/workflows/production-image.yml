@@ -16,7 +16,7 @@ jobs:
   image:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 75
     env:
       REGISTRY_IMAGE: ccr.ccs.tencentyun.com/shuiqing-fabu/drama-plus
     steps:
@@ -41,18 +41,71 @@ jobs:
           npm run typecheck
           node --import tsx --test tests/video-cli-config-bindings.test.ts tests/jimeng-multi-account.test.ts tests/libtv-multi-account-web.test.ts tests/script-video-store.test.ts
           git show HEAD:backend/package-lock.json > package-lock.json
-      - name: Build the production image
+      - name: Sign in to the private registry
+        env:
+          TCR_USERNAME: ${{ secrets.FABU_TCR_USERNAME }}
+          TCR_PASSWORD: ${{ secrets.FABU_TCR_PASSWORD }}
+        run: printf '%s' "$TCR_PASSWORD" | docker login ccr.ccs.tencentyun.com --username "$TCR_USERNAME" --password-stdin
+      - name: Resolve compatible runtime layers
+        id: runtime
+        run: |
+          tools="$RUNNER_TEMP/fabu-bin"
+          mkdir -p "$tools"
+          GOBIN="$tools" go install github.com/google/go-containerregistry/cmd/crane@v0.20.6
+          printf '%s\n' "$tools" >> "$GITHUB_PATH"
+          key=$(git ls-tree -r HEAD -- Dockerfile .dockerignore docker backend/package.json backend/package-lock.json | sha256sum | cut -d' ' -f1)
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+          seed="$REGISTRY_IMAGE@sha256:bb17f8e0847720e606916356f11762c69480d8dc05ace5a0482c751d3a52d3ac"
+          if digest=$("$tools/crane" digest "$REGISTRY_IMAGE:runtime-$key"); then
+            base="$REGISTRY_IMAGE@$digest"
+            "$tools/crane" config "$base" | jq -e --arg key "$key"               '.os == "linux" and .architecture == "amd64" and .config.Labels["io.fabu.runtime-inputs"] == $key' > /dev/null
+          elif [[ "$key" == 0580e99cc1ce9ffe169774e3d31d4dbca88ed46fce9aa196c0266ff15f4a7603 ]] && "$tools/crane" manifest "$seed" >/dev/null; then
+            base="$seed"
+          else
+            base=''
+          fi
+          printf 'base=%s\n' "$base" >> "$GITHUB_OUTPUT"
+      - name: Generate static frontend assets
+        if: steps.runtime.outputs.base != ''
+        working-directory: frontend
+        run: |
+          node -e 'const fs = require("node:fs"); const lock = require("./package-lock.json"); for (const item of Object.values(lock.packages || {})) delete item.resolved; fs.writeFileSync("package-lock.json", JSON.stringify(lock))'
+          npm ci --no-audit --no-fund --registry=https://registry.npmjs.org
+          npm run generate
+          test -f .output/public/site-login/index.html || test -f .output/public/site-login.html
+      - name: Publish the updated application layer
+        if: steps.runtime.outputs.base != ''
+        env:
+          RUNTIME_BASE: ${{ steps.runtime.outputs.base }}
+          RUNTIME_KEY: ${{ steps.runtime.outputs.key }}
+        run: |
+          layer=$(mktemp -d "$RUNNER_TEMP/fabu-layer.XXXXXXXX")
+          install -d "$layer/app/backend/src" "$layer/app/frontend-dist" "$layer/app/workspace-template"
+          cp -a backend/src/. "$layer/app/backend/src/"
+          cp -a frontend/.output/public/. "$layer/app/frontend-dist/"
+          cp -a backend/workspace/. "$layer/app/workspace-template/"
+          # OCI opaque markers replace the old directories, including files deleted by this revision.
+          touch "$layer/app/backend/src/.wh..wh..opq" "$layer/app/frontend-dist/.wh..wh..opq" "$layer/app/workspace-template/.wh..wh..opq"
+          tar --format=posix --numeric-owner --owner=0 --group=0 -C "$layer" -cf "$RUNNER_TEMP/fabu-layer.tar" app
+          crane mutate "$RUNTIME_BASE" --append "$RUNNER_TEMP/fabu-layer.tar"             --env "HUOBAO_VERSION=fabu-${GITHUB_SHA:0:12}"             --label "io.fabu.runtime-inputs=$RUNTIME_KEY"             --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"             --label "org.opencontainers.image.revision=$GITHUB_SHA"             --tag "$REGISTRY_IMAGE:$GITHUB_SHA"
+          crane config "$REGISTRY_IMAGE:$GITHUB_SHA" | jq -e --arg sha "$GITHUB_SHA" --arg version "HUOBAO_VERSION=fabu-${GITHUB_SHA:0:12}"             '.os == "linux" and .architecture == "amd64" and .config.Labels["org.opencontainers.image.revision"] == $sha and (.config.Env | index($version) != null)' > /dev/null
+      - name: Build the production image when runtime inputs change
+        if: steps.runtime.outputs.base == ''
+        env:
+          RUNTIME_KEY: ${{ steps.runtime.outputs.key }}
         run: |
           version="fabu-${GITHUB_SHA:0:12}"
           docker build --platform linux/amd64 --progress plain \
             --build-arg "HUOBAO_VERSION=$version" \
             --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --label "io.fabu.runtime-inputs=$RUNTIME_KEY" \
             --tag "drama-plus-app:$GITHUB_SHA" .
           docker build --platform linux/amd64 --progress plain \
             --build-arg "DRAMA_PLUS_BASE_IMAGE=drama-plus-app:$GITHUB_SHA" \
             --file docker/Dockerfile.jimeng --tag "$REGISTRY_IMAGE:$GITHUB_SHA" .
-      - name: Check the image in an isolated container
+      - name: Check the full runtime image in an isolated container
+        if: steps.runtime.outputs.base == ''
         run: |
           trap 'docker rm -f -v release-smoke >/dev/null 2>&1 || true' EXIT
           docker run -d --network none --name release-smoke "$REGISTRY_IMAGE:$GITHUB_SHA"
@@ -74,10 +127,10 @@ jobs:
           done
           docker logs --tail 80 release-smoke
           exit 1
-      - name: Publish the exact tested image to the private registry
+      - name: Publish the full image and record the verified runtime
+        if: steps.runtime.outputs.base == ''
         env:
-          TCR_USERNAME: ${{ secrets.FABU_TCR_USERNAME }}
-          TCR_PASSWORD: ${{ secrets.FABU_TCR_PASSWORD }}
+          RUNTIME_KEY: ${{ steps.runtime.outputs.key }}
         run: |
-          printf '%s' "$TCR_PASSWORD" | docker login ccr.ccs.tencentyun.com --username "$TCR_USERNAME" --password-stdin
           docker push "$REGISTRY_IMAGE:$GITHUB_SHA"
+          crane tag "$REGISTRY_IMAGE:$GITHUB_SHA" "runtime-$RUNTIME_KEY"

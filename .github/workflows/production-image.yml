@@ -1,0 +1,83 @@
+name: Build production image
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: production-image-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      REGISTRY_IMAGE: ghcr.io/jiziwen/drama-plus
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+      - name: Check the backend
+        working-directory: backend
+        env:
+          FFMPEG_BIN: /usr/bin/ffmpeg
+          FFPROBE_BIN: /usr/bin/ffprobe
+        run: |
+          if [[ ! -x "$FFMPEG_BIN" || ! -x "$FFPROBE_BIN" ]]; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends ffmpeg
+          fi
+          node -e 'const fs = require("node:fs"); const lock = require("./package-lock.json"); for (const item of Object.values(lock.packages || {})) delete item.resolved; fs.writeFileSync("package-lock.json", JSON.stringify(lock))'
+          npm ci --no-audit --no-fund --registry=https://registry.npmjs.org
+          npm run typecheck
+          node --import tsx --test tests/video-cli-config-bindings.test.ts tests/jimeng-multi-account.test.ts tests/libtv-multi-account-web.test.ts tests/script-video-store.test.ts
+          git show HEAD:backend/package-lock.json > package-lock.json
+      - name: Build the production image
+        run: |
+          version="fabu-${GITHUB_SHA:0:12}"
+          docker build --platform linux/amd64 --progress plain \
+            --build-arg "HUOBAO_VERSION=$version" \
+            --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --tag "drama-plus-app:$GITHUB_SHA" .
+          docker build --platform linux/amd64 --progress plain \
+            --build-arg "DRAMA_PLUS_BASE_IMAGE=drama-plus-app:$GITHUB_SHA" \
+            --file docker/Dockerfile.jimeng --tag "$REGISTRY_IMAGE:$GITHUB_SHA" .
+      - name: Check the image in an isolated container
+        run: |
+          trap 'docker rm -f -v release-smoke >/dev/null 2>&1 || true' EXIT
+          docker run -d --network none --name release-smoke "$REGISTRY_IMAGE:$GITHUB_SHA"
+          for attempt in {1..20}; do
+            if docker exec -i release-smoke node --input-type=module - "fabu-${GITHUB_SHA:0:12}" <<'JS'
+          const get = (path) => fetch(`http://127.0.0.1:5679${path}`, { signal: AbortSignal.timeout(3000) });
+          const health = await (await get('/api/v1/health')).json();
+          if (health.status !== 'ok' || health.version !== process.argv[2]) process.exit(1);
+          const login = await get('/site-login');
+          const asset = (await login.text()).match(/\/_nuxt\/[^"'\s<>]+\.js/)?.[0];
+          if (!login.ok || !asset || !(await get(asset)).ok) process.exit(1);
+          JS
+            then
+              docker exec release-smoke /usr/bin/ffmpeg -version >/dev/null
+              docker exec release-smoke test -x /usr/local/bin/dreamina-canvas
+              exit 0
+            fi
+            sleep 3
+          done
+          docker logs --tail 80 release-smoke
+          exit 1
+      - name: Publish the exact tested image
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker push "$REGISTRY_IMAGE:$GITHUB_SHA"

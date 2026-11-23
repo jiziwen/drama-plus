@@ -98,6 +98,7 @@
             :model-value="promptVoiceView.text"
             :options="mentionOptions"
             searchable
+            manage-history
             :preview-on-hover="true"
             :resolve-preview-ranges="previewRanges"
             :rows="12"
@@ -108,6 +109,7 @@
             @compositionstart="compositionProjection = promptProjection"
             @compositionend="compositionProjection = undefined"
             @update:model-value="editPrompt"
+            @history="movePromptHistory"
             @commit="finishPromptEdit"
           />
         </Teleport>
@@ -419,7 +421,8 @@ import MentionTextarea from './MentionTextarea.vue'
 import type { useScriptVideoReferenceFrames } from '~/composables/useScriptVideoReferenceFrames'
 import { getPreviewMaterialUse, inspectPreviewCardAssets, validatePreviewCards } from '~/utils/scriptVideoPreviewValidation'
 import { editScriptVideoPromptVoiceView, scriptVideoPromptVoiceView } from '~/utils/scriptVideoPromptVoiceView'
-import { getScriptVideoPromptVoices } from '../../../backend/src/services/script-video-delivery'
+import { getScriptVideoPromptVoices, type ScriptVideoPromptMode } from '../../../backend/src/services/script-video-delivery'
+import { scriptVideoAudioReferences } from '../../../backend/src/services/script-video-mentions'
 import { splitScriptVideoPromptStyle } from '../../../backend/src/services/script-video-style'
 import { officialScriptVideoUrl } from '../../../backend/src/services/script-video-versions'
 import type { ScriptVideoRevisionCandidate } from '~/utils/scriptVideoClient'
@@ -444,6 +447,7 @@ const props = withDefaults(
     stylePreset?: PreviewProduction['stylePreset']
     videoProvider?: string
     videoModel?: string
+    promptMode?: ScriptVideoPromptMode
     episodeNumber?: number
     segmentNumber?: number
     segmentCount?: number
@@ -604,23 +608,40 @@ function clearMediaPreview() {
   modalAudio.value?.pause()
   previewedMedia.value = null
 }
+const segmentReferenceGroup = '本片段参考素材'
+const segmentAssetIds = computed(() => new Set(selectedAssets.value.map(asset => asset.id)))
 const mentionOptions = computed(() => {
-  const selectedIds = new Set(selectedAssets.value.map(asset => asset.id))
-  const options = [...selectedAssets.value, ...props.assets.filter(asset => !selectedIds.has(asset.id))].map((asset) => ({
-    id: asset.id,
-    label: asset.name,
-    value: asset.name,
-    kind: asset.kind,
-    group: kindLabel(asset.kind),
-    audioUrl: asset.kind === 'audio' ? asset.voiceAudio?.url : undefined,
-    image: asset.image.startsWith('/script-video-preview/')
-      ? undefined
-      : asset.image || undefined,
-  }))
-  return [...options, ...promptVoices.value.map(({ asset, roles }, i) => ({
+  const selectedIds = segmentAssetIds.value
+  const images = [...selectedAssets.value, ...props.assets.filter(asset => !selectedIds.has(asset.id))]
+    .filter(asset => asset.kind !== 'audio').map(asset => ({
+      id: asset.id,
+      label: asset.name,
+      value: asset.name,
+      kind: asset.kind,
+      group: kindLabel(asset.kind),
+      menuGroup: selectedIds.has(asset.id) && asset.image ? segmentReferenceGroup : undefined,
+      image: asset.image.startsWith('/script-video-preview/') ? undefined : asset.image || undefined,
+    }))
+  const currentAudio = [], libraryAudio = []
+  const references = [...scriptVideoAudioReferences(props.assets)]
+  for (const [name, asset] of [...references.filter(([, asset]) => selectedIds.has(asset.id)),
+    ...references.filter(([, asset]) => !selectedIds.has(asset.id))]) {
+    const audioUrl = asset.voiceAudio?.url
+    const selected = selectedIds.has(asset.id)
+    if (!audioUrl || asset.kind === 'character' && !selected) continue
+    const roleVoice = asset.kind === 'character'
+    const option = { id: roleVoice ? `audio-choice-${asset.id}` : asset.id, label: asset.name, value: name, kind: 'audio',
+      group: roleVoice ? '角色音色' : '音频', audioUrl,
+      image: roleVoice && !asset.image.startsWith('/script-video-preview/') ? asset.image || undefined : undefined,
+      menuGroup: selected ? segmentReferenceGroup : undefined }
+    if (selected) currentAudio.push(option)
+    else libraryAudio.push(option)
+  }
+  const numberedPreviews = promptVoices.value.map(({ asset, roles }, i) => ({
     id: `voice-${i + 1}`, label: `音频${i + 1}`, value: `音频${i + 1}`,
     kind: 'audio', group: roles.map(role => role.name).join('、'), previewOnly: true, audioUrl: asset.voiceAudio?.url,
-  }))]
+  }))
+  return [...currentAudio, ...images.filter(option => option.menuGroup), ...images.filter(option => !option.menuGroup), ...libraryAudio, ...numberedPreviews]
 })
 const analyzePrompt = (prompt: string) =>
   inspectPreviewCardAssets({ ...props.card, prompt }, props.assets, assetContext.value)
@@ -648,7 +669,7 @@ function projectPrompt(card: PreviewCard) {
   // Spoken names remain literal, and need no display-only @ marker.
   const analyzed = source === authored ? references : inspectPreviewCardAssets(editable, props.assets, context)
   const voices = getScriptVideoPromptVoices(editable, props.assets, {
-    ...context, provider: props.videoProvider, model: props.videoModel,
+    ...context, provider: props.videoProvider, model: props.videoModel, promptMode: props.promptMode,
   })
   const indices = new Map(voices.flatMap(({ roles }, i) => roles.map(role => [role.id, i + 1] as const)))
   const mentions = offsetMentions(analyzed.mentions, prefix.length)
@@ -657,7 +678,7 @@ function projectPrompt(card: PreviewCard) {
     const absolute = authoredPrefix + position
     let delta = 0
     for (const hit of references.mentions) {
-      if (hit.literal) continue
+      if (hit.literal || hit.usage === 'audio') continue
       if (absolute <= hit.start) break
       const length = hit.name.length + 1
       if (absolute < hit.end) {
@@ -734,13 +755,55 @@ function previewRanges(text: string) {
     return offsetMentions(analyzePrompt(full).mentions, full.length - text.length)
   }
   return [
-    ...mentions.map(hit => ({
+    ...mentions.filter(hit => hit.usage !== 'audio').map(hit => ({
       ...hit, start: view.displayOffset(hit.start), end: view.displayOffset(hit.end, true),
     })),
     ...view.cues.map(cue => ({ id: `voice-${cue.index}`, start: cue.tokenStart, end: cue.tokenEnd })),
   ].sort((a, b) => a.start - b.start)
 }
 let lastEdit: { display: string; source: string; changed: boolean } | undefined
+type PromptSelection = Pick<HTMLTextAreaElement, 'selectionStart' | 'selectionEnd' | 'selectionDirection'>
+type PromptView = ReturnType<typeof scriptVideoPromptVoiceView>
+type PromptSnapshot = ReturnType<typeof promptSnapshot>
+// Replacing the textarea to refresh resolved references clears its native undo stack.
+// Keep snapshots of the authored text so undo does not depend on attachment numbers.
+const undoEdits: PromptSnapshot[] = [], redoEdits: PromptSnapshot[] = []
+let historySource: string | undefined
+
+function promptSnapshot(view: PromptView, selection?: PromptSelection) {
+  function offset(position = view.text.length) {
+    return {
+      source: view.sourceOffset(position),
+      beforeCue: view.cues.some(cue => cue.sourceStart === cue.sourceEnd && cue.start === position),
+    }
+  }
+  return { source: view.source, start: offset(selection?.selectionStart), end: offset(selection?.selectionEnd),
+    direction: selection?.selectionDirection }
+}
+function resetPromptHistory() {
+  historySource = undefined
+  undoEdits.length = 0
+  redoEdits.length = 0
+}
+function movePromptHistory(action: 'undo' | 'redo') {
+  const { view, prefix } = activePrompt.value
+  if (historySource !== view.source) {
+    resetPromptHistory()
+    return
+  }
+  const from = action === 'undo' ? undoEdits : redoEdits
+  const to = action === 'undo' ? redoEdits : undoEdits
+  const snapshot = from.pop()
+  if (!snapshot) return
+  to.push(promptSnapshot(view, promptInput.value?.editingPosition()))
+  promptDraft.value = updatePrompt(joinPrompt(prefix, snapshot.source))
+  const { view: updated, normalizedOffset: normalize } = activePrompt.value
+  historySource = updated.source
+  lastEdit = { display: updated.text, source: updated.source, changed: true }
+  promptInput.value?.syncDisplay(updated.text, updated.displayOffset(normalize(snapshot.start.source), snapshot.start.beforeCue),
+    updated.displayOffset(normalize(snapshot.end.source), snapshot.end.beforeCue), snapshot.direction)
+}
+
 function beginPromptEdit() {
   if (promptDraft.value?.id === props.card.id) return
   promptDraft.value = { ...props.card }
@@ -753,18 +816,26 @@ function clearPromptEdit() {
 watch([() => props.card.id, tab], () => {
   if (promptDialog.value?.open) promptDialog.value.close()
   clearPromptEdit()
+  resetPromptHistory()
 })
 
-function editPrompt(display: string, input: HTMLTextAreaElement) {
+function editPrompt(display: string, input: HTMLTextAreaElement, previousSelection?: PromptSelection) {
   const cardId = props.card.id
   const { view, prefix } = promptProjection.value
-  const edit = editScriptVideoPromptVoiceView(view, display, input.selectionStart, input.selectionEnd)
+  const edit = editScriptVideoPromptVoiceView(view, display, input.selectionStart, input.selectionEnd, previousSelection)
   const direction = input.selectionDirection
   const changed = edit.text !== view.source
   lastEdit = { display, source: edit.text, changed: changed || lastEdit?.changed === true }
   // Save authored edits as usual. A save acknowledgement may normalize the
   // stored prompt, but should not replace the active textarea under its caret.
-  if (changed) promptDraft.value = updatePrompt(joinPrompt(prefix, edit.text))
+  if (changed) {
+    if (historySource !== view.source) resetPromptHistory()
+    undoEdits.push(promptSnapshot(view, previousSelection))
+    if (undoEdits.length > 100) undoEdits.shift()
+    redoEdits.length = 0
+    promptDraft.value = updatePrompt(joinPrompt(prefix, edit.text))
+    historySource = activePrompt.value.view.source
+  }
   else if (promptDraft.value?.id !== cardId) promptDraft.value = { ...props.card }
   const { view: updated, normalizedOffset: normalize } = activePrompt.value
   // Write the normalized display and selection together before Vue updates the native field.

@@ -23,6 +23,22 @@ export type AssetMention = {
   vocalization?: true
   manualAudioId?: string
 }
+
+/** Named audio cues are saved with the prompt. Attachment numbers are assigned at delivery. */
+export function scriptVideoAudioReferences<A extends MentionAsset>(assets: readonly A[], prompt?: string) {
+  const names = new Map(assets.filter(asset => asset.kind === 'audio').map(asset => [asset.name, asset]))
+  if (prompt !== undefined && !prompt.includes('@音色[')) return names
+  const used = new Set(assets.map(asset => asset.name))
+  for (const asset of assets) {
+    if (asset.kind !== 'character') continue
+    const base = `音色[${asset.name}]`
+    let name = base
+    for (let suffix = 2; used.has(name); suffix++) name = `${base}-${suffix}`
+    used.add(name)
+    if (prompt === undefined || prompt.includes('@' + name)) names.set(name, asset)
+  }
+  return names
+}
 export type ScriptVideoReferenceProblem = { type: 'unknown' | 'ambiguous'; name: string; start: number; candidates?: string[] }
 type CardReferences = {
   openingAssetIds?: readonly string[]
@@ -358,7 +374,8 @@ export function annotateScriptVideoAssets(
   const servants = boundCrowds.filter(asset => scriptVideoCharacterBase(asset).endsWith('家丁/群体'))
   const speakerNames = servants.length && !byName.has('家丁') ? new Map(byName).set('家丁', servants) : byName
   const quoted = quotedRanges(text)
-  const audioNames = new Map(assets.filter(asset => asset.kind === 'audio').map(asset => [asset.name, asset]))
+  const audioNames = scriptVideoAudioReferences(assets, text)
+  for (const [name, asset] of audioNames) if (asset.kind === 'character') register(name, asset)
   const audioPattern = scriptVideoNamedAudioCue([...audioNames.keys()])
   const audioAt = new Map<number, MentionAsset>()
   // Ignore an adjacent hand-picked sound when parsing the speaker, but keep
@@ -455,12 +472,12 @@ export function annotateScriptVideoAssets(
       continue
     }
     const audio = explicit ? audioAt.get(start) : undefined
-    if (audio?.name === name) {
-      mentions.push({ id: audio.id, name: audio.name, start, end, explicit, spoken: false, literal: false, usage: 'audio' })
+    if (audio && audioNames.get(name) === audio) {
+      mentions.push({ id: audio.id, name, start, end, explicit, spoken: false, literal: false, usage: 'audio' })
       assetIds.add(audio.id)
       continue
     }
-    const visualCandidates = namedCandidates.filter(asset => asset.kind !== 'audio')
+    const visualCandidates = namedCandidates.filter(asset => asset.kind !== 'audio' && audioNames.get(name) !== asset)
     if (!visualCandidates.length) continue
     if (!explicit && /[A-Za-z0-9_-]/u.test(text[start - 1] || '') && /^[A-Za-z0-9_-]/u.test(name)) continue
     // An unbound Q figure must never fall back to the live character's name.

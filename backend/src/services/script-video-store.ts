@@ -10,7 +10,7 @@ import { isDeepStrictEqual } from 'node:util'
 import 'dotenv/config'
 import { scriptVideoPromptStylePrefix, isScriptVideoStylePreset, styleVisualSpecs, type ScriptVideoStylePreset } from './script-video-style.js'
 import { getCurrentScriptVideoStyleRevision, resolveBuiltinStyleSnapshot } from './script-video-style-source.js'
-import { annotateScriptVideoAssets, scriptVideoMaterialIds, type MentionAsset } from './script-video-mentions.js'
+import { annotateScriptVideoAssets, scriptVideoAudioReferences, scriptVideoMaterialIds, type MentionAsset } from './script-video-mentions.js'
 import { annotateScriptVideoInnerOs } from './script-video-inner-os.js'
 import { hasScriptVideoShotHeadings } from './script-video-asset-scope.js'
 import { replaceScriptVideoPromptStyle } from './script-video-format.js'
@@ -253,7 +253,6 @@ function missingExplicitCardAssets(card: ScriptVideoDeliveryCard, prompt: string
 // binding. Expose the same effective bindings to reads and edits.
 function restoreSavedPromptReferences(project: ScriptVideoProject, episodes = project.episodes) {
   const characters = new Map(project.assets.filter(asset => asset.kind === 'character').map(asset => [asset.id, asset]))
-  const referenceAudioNames = project.assets.filter(asset => asset.kind === 'audio').map(asset => asset.name)
   for (const episode of episodes) {
     const style = episode.production?.stylePreset || project.settings?.stylePreset
     const prefix = validStyle(style) ? scriptVideoPromptStylePrefix(style) : undefined
@@ -261,6 +260,7 @@ function restoreSavedPromptReferences(project: ScriptVideoProject, episodes = pr
     for (const card of episode.cards || []) {
       const { prompt: savedPrompt, assetIds } = card
       if (typeof savedPrompt !== 'string' || !savedPrompt.trim()) continue
+      const referenceAudioNames = [...scriptVideoAudioReferences(project.assets, savedPrompt).keys()]
       const prompt = annotateScriptVideoInnerOs(savedPrompt, { protectedPrefix: prefix, speakers, referenceAudioNames, preserveExplicitInnerOs: true })
       card.prompt = prompt
       if (!project.assets.length || !Array.isArray(assetIds)) continue
@@ -289,7 +289,7 @@ function cardReferences(card: any, assets: MentionAsset[], production: any, styl
   const prompt = annotateScriptVideoInnerOs(card.prompt, {
     protectedPrefix,
     preserveExplicitInnerOs: true,
-    referenceAudioNames: assets.filter(asset => asset.kind === 'audio').map(asset => asset.name),
+    referenceAudioNames: [...scriptVideoAudioReferences(assets, card.prompt).keys()],
     speakers: [...assets.filter(asset => asset.kind === 'character').map(asset => asset.name),
       ...(production?.characters?.map((role: { name: string }) => role.name) ?? [])],
   })
@@ -520,24 +520,36 @@ function propagateSharedEdits(before: ScriptVideoProject, after: ScriptVideoProj
     if (!next) removed.add(asset.id)
     else if (next.name !== asset.name) renamed.set(asset.id, next.name)
   }
+  const voiceNames = (assets: MentionAsset[]) => new Map([...scriptVideoAudioReferences(assets)]
+    .filter(([, asset]) => asset.kind === 'character').map(([name, asset]) => [asset.id, name]))
+  const nextVoices = voiceNames(after.assets)
+  const changedVoices = new Map([...voiceNames(before.assets)].flatMap(([id, name]) => {
+    const next = nextVoices.get(id)
+    return name === next ? [] : [[id, next ?? null] as const]
+  }))
   const style = after.settings?.stylePreset
   const applyStyle = validStyle(style) && (reapplyStyle || !isDeepStrictEqual(style, before.settings?.stylePreset))
-  if (!renamed.size && !removed.size && !applyStyle) return
+  const rewriteMentions = renamed.size || removed.size || changedVoices.size
+  if (!rewriteMentions && !applyStyle) return
   for (const episode of after.episodes) {
     const oldStyle = episode.production?.stylePreset || before.settings?.stylePreset
     const styleChanged = applyStyle && !isDeepStrictEqual(style, oldStyle)
     for (const card of episode.cards) {
       const ids: string[] = card.assetIds || []
       const rewrite = (value: unknown, dialogue = false) => {
-        if (typeof value !== 'string' || !value.includes('@') || !(renamed.size || removed.size)) return value
+        if (typeof value !== 'string' || !value.includes('@') || !rewriteMentions) return value
         const { mentions } = annotateScriptVideoAssets(value, before.assets, ids, {
           dialogue, cast: episode.production?.characters, characters: card.characters,
           protectedPrefix: oldStyle && scriptVideoPromptStylePrefix(oldStyle), excludedIds: card.excludedAssetIds,
         })
         let result = '', last = 0
         for (const mention of mentions) {
-          if (!mention.explicit || mention.spoken || (!renamed.has(mention.id) && !removed.has(mention.id))) continue
-          result += value.slice(last, mention.start) + (removed.has(mention.id) ? mention.name : '@' + renamed.get(mention.id))
+          if (!mention.explicit || mention.spoken) continue
+          const voice = mention.usage === 'audio' ? changedVoices.get(mention.id) : undefined
+          const name = renamed.get(mention.id)
+          if (voice === undefined && !name && !removed.has(mention.id)) continue
+          const replacement = voice === null ? '' : voice !== undefined ? '@' + voice : name ? '@' + name : mention.name
+          result += value.slice(last, mention.start) + replacement
           last = mention.end
         }
         return result + value.slice(last)

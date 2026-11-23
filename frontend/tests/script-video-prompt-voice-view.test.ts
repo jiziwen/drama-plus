@@ -23,9 +23,10 @@ test('audio cue projection follows each speaker reference while preserving actio
   assert.equal(view.text, '🎬 画面：@阿梨抬手。\n对白：@阿梨 @音频2（低声）：“阿梨回来了。”\n心声：@阿梨 @音频2：“终于。”')
   for (const cue of view.cues) {
     assert.equal(view.text.slice(cue.tokenStart, cue.tokenEnd), '@音频2')
-    assert.equal(view.displayOffset(cue.sourceOffset, true), cue.start)
-    assert.equal(view.displayOffset(cue.sourceOffset), cue.end)
-    assert.equal(view.sourceOffset(cue.tokenStart), cue.sourceOffset)
+    assert.equal(cue.sourceStart, cue.sourceEnd)
+    assert.equal(view.displayOffset(cue.sourceStart, true), cue.start)
+    assert.equal(view.displayOffset(cue.sourceStart), cue.end)
+    assert.equal(view.sourceOffset(cue.tokenStart), cue.sourceStart)
   }
   assert.equal(view.sourceOffset(view.text.length), source.length)
 })
@@ -55,11 +56,26 @@ test('typing or replacing adjacent authored text maps the caret and drops the ge
 test('the displayed audio number is derived and cannot become an authored asset reference', () => {
   const source = '对白：@阿梨：“真的。”'
   const view = scriptVideoPromptVoiceView(source, [mention(source, '@阿梨', 0, 'speaker')], new Map([['lead', 1]]))
-  const { tokenEnd, sourceOffset } = view.cues[0]
+  const { tokenEnd, sourceStart } = view.cues[0]
   const next = view.text.slice(0, tokenEnd - 1) + '9' + view.text.slice(tokenEnd)
   const edit = editScriptVideoPromptVoiceView(view, next, tokenEnd, tokenEnd)
   assert.equal(edit.text, source)
-  assert.equal(edit.selectionStart, sourceOffset)
+  assert.equal(edit.selectionStart, sourceStart)
+})
+
+test('替换选中的手选音频编号时保留新输入的 @，可重新搜索素材', () => {
+  const marker = '@音色[阿梨]'
+  const source = `对白：@阿梨 ${marker}：“真的。”`
+  const audio = mention(source, marker, 0, 'audio')
+  const view = scriptVideoPromptVoiceView(source, [audio], new Map([['lead', 12]]))
+  const { tokenStart, tokenEnd } = view.cues[0]
+  assert.equal(view.sourceOffset(tokenStart), audio.start)
+  assert.equal(view.sourceOffset(tokenEnd), audio.end)
+  const after = view.text.replace('@音频12', '@')
+  const edit = editScriptVideoPromptVoiceView(view, after, tokenStart + 1, tokenStart + 1,
+    { selectionStart: tokenStart, selectionEnd: tokenEnd })
+  assert.equal(edit.text, source.replace(marker, '@'))
+  assert.equal(edit.selectionStart, tokenStart + 1)
 })
 
 test('音效叙述仅为确实发声的角色投射音频，编辑保存仍保留原始文稿', () => {

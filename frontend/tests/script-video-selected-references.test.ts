@@ -9,6 +9,7 @@ import * as preview from '../app/utils/scriptVideoPreview'
 import * as promptVoiceView from '../app/utils/scriptVideoPromptVoiceView'
 import * as validation from '../app/utils/scriptVideoPreviewValidation'
 import { buildScriptVideoDelivery, getScriptVideoPromptVoices } from '../../backend/src/services/script-video-delivery'
+import { scriptVideoAudioReferences } from '../../backend/src/services/script-video-mentions'
 import { getScriptVideoStylePreset, scriptVideoPromptStylePrefix, splitScriptVideoPromptStyle } from '../../backend/src/services/script-video-style'
 
 const filename = 'ScriptVideoPreviewEditor.vue'
@@ -26,6 +27,7 @@ const modules: Record<string, unknown> = {
   '~/utils/scriptVideoPromptVoiceView': promptVoiceView,
   '~/utils/scriptVideoPreviewValidation': validation,
   '../../../backend/src/services/script-video-delivery': { getScriptVideoPromptVoices },
+  '../../../backend/src/services/script-video-mentions': { scriptVideoAudioReferences },
   '../../../backend/src/services/script-video-style': { splitScriptVideoPromptStyle },
 }
 runInNewContext(outputText, {exports: component, require: (id: string) => modules[id]})
@@ -449,6 +451,7 @@ test('上传的项目音频是可选择的 @ 素材，填写后可预览并成�
   const field = () => editor.nodes().find(n => n.type === menu)
   const option = field().props.options.find((item: { id: string }) => item.id === rain.id)
   assert.equal(option.kind, 'audio')
+  assert.equal(option.label, rain.name)
   assert.equal(option.previewOnly, undefined)
   assert.equal(option.audioUrl, rain.voiceAudio!.url)
 
@@ -457,13 +460,138 @@ test('上传的项目音频是可选择的 @ 素材，填写后可预览并成�
   field().props.onCommit(text, true)
   assert.equal(editor.props.card.prompt, text)
   assert.deepEqual(Array.from(editor.props.card.assetIds), [rain.id])
-  const range = field().props['resolve-preview-ranges'](text).find((item: { id: string }) => item.id === rain.id)
-  assert.equal(text.slice(range.start, range.end), `@${rain.name}`)
+  const display = field().props['model-value']
+  const range = field().props['resolve-preview-ranges'](display).find((item: { id: string }) => item.id === 'voice-1')
+  assert.equal(display.slice(range.start, range.end), '@音频1')
 
   const delivery = buildScriptVideoDelivery(editor.props.card, [rain])
   assert.deepEqual(delivery.images, [])
   assert.equal(delivery.voices[0]?.asset.voiceAudio?.url, rain.voiceAudio!.url)
   assert.match(delivery.prompt, /远处渐响 @音频1/u)
+})
+
+test('本片段参考素材优先，手动选角色音色可补正文漏标并进入最终交付', async () => {
+  const lead = { ...assets[0]!, voiceAudio: { url: '/static/uploads/guard.wav', name: '侍卫.wav' } }
+  const setting: preview.PreviewAsset = { id: 'scene', name: '院落', kind: 'scene', image: '/static/court.png' }
+  const rain: preview.PreviewAsset = { id: 'rain', name: '雨声', kind: 'audio', image: '',
+    voiceAudio: { name: '雨声.wav', url: '/static/uploads/rain.wav' } }
+  const assetList = [assets[1]!, setting, lead, rain]
+  const editor = setup([setting.id, lead.id, rain.id], { assetList })
+  const original = '镜头 01（0–3秒）\n画面与动作：@侍卫垂目；对白／音效：@侍卫【暗自心惊】(OS)：“别回头。”'
+  editor.props.card.prompt = original
+  const field = () => editor.nodes().find(n => n.type === menu)
+  const selectable = Array.from(field().props.options).filter((option: any) => !option.previewOnly) as any[]
+  assert.deepEqual(selectable.filter(option => option.menuGroup === '本片段参考素材').map(option => option.value),
+    ['雨声', '音色[侍卫]', '院落', '侍卫'])
+  assert.equal(selectable.at(-1)?.value, '侍卫_夜行')
+  assert.doesNotMatch(field().props['model-value'], /@音频\d+/u)
+
+  const voice = selectable.find(option => option.value === '音色[侍卫]')!
+  assert.equal(voice.label, lead.name)
+  assert.equal(voice.group, '角色音色')
+  assert.equal(voice.image, lead.image)
+  const edited = original.replace('【暗自心惊】', ` @${voice.value} 【暗自心惊】`)
+  await editPrompt(field(), edited)
+  field().props.onCommit(edited, true)
+  assert.equal(editor.props.card.prompt, edited)
+  assert.equal(voice.audioUrl, lead.voiceAudio.url)
+  const display = field().props['model-value']
+  const range = field().props['resolve-preview-ranges'](display).find((item: { id: string }) => item.id === 'voice-1')
+  assert.equal(display.slice(range.start, range.end), '@音频1')
+  assert.doesNotMatch(display, /音色\[侍卫\]/u)
+
+  for (const promptMode of [undefined, 'reference-guide'] as const) {
+    const delivery = buildScriptVideoDelivery(editor.props.card, assetList, { promptMode })
+    assert.equal(delivery.voices.filter(voice => voice.asset.voiceAudio?.url === lead.voiceAudio.url).length, 1)
+    assert.match(delivery.prompt, /@音频\d+[ \t]*【暗自心惊】/u)
+    assert.doesNotMatch(delivery.prompt, /音色\[侍卫\]/u)
+  }
+})
+
+test('菜单按真实名称选音频，编辑器和最终提示词显示两位编号', async () => {
+  const assetList: preview.PreviewAsset[] = Array.from({ length: 12 }, (_, i) => ({
+    id: `audio-${i + 1}`, name: `录音文件-${i + 1}`, kind: 'audio', image: '',
+    voiceAudio: { name: '参考.wav', url: `/static/uploads/recording-${i + 1}.wav` },
+  }))
+  const editor = setup(assetList.map(asset => asset.id), { assetList })
+  const field = () => editor.nodes().find(n => n.type === menu)
+  const original = '对白／音效：' + assetList.map(asset => `〈响起 @${asset.name}〉`).join('；')
+  editor.props.card.prompt = original
+  const display = field().props['model-value'] as string
+  assert.match(display, /@音频11〉；〈响起 @音频12〉$/u)
+  assert.doesNotMatch(display, /录音文件/u)
+  const option = field().props.options.find((item: { id: string }) => item.id === 'audio-12')
+  assert.equal(option.label, '录音文件-12')
+  const delivery = buildScriptVideoDelivery(editor.props.card, assetList)
+  assert.match(delivery.prompt, /@音频11〉；〈响起 @音频12〉$/u)
+  assert.equal(delivery.voices[11]?.asset.id, 'audio-12')
+
+  const edited = display.replace('@音频12〉', '@音频12 渐弱〉')
+  await editPrompt(field(), edited)
+  field().props.onCommit(edited, true)
+  assert.equal(editor.props.card.prompt, original.replace('@录音文件-12〉', '@录音文件-12 渐弱〉'))
+})
+
+test('删除对白中的人物后能撤销并恢复音色与光标，也能重做删除', async () => {
+  const lead = { ...assets[0]!, voiceAudio: { url: '/static/uploads/guard.wav', name: '参考.wav' } }
+  const editor = setup([lead.id], { assetList: [lead] })
+  editor.props.card.prompt = '镜头 01（0–3秒）\n画面与动作：@侍卫在门边。\n对白／音效：@侍卫：“别回头。”'
+  const original = editor.props.card.prompt
+  const field = () => editor.nodes().find(n => n.type === menu)
+  const display = field().props['model-value'] as string
+  const at = display.lastIndexOf('@侍卫')
+  const before = at + '@侍卫'.length
+  const removed = display.slice(0, at) + display.slice(before)
+  const synced: unknown[][] = []
+  field().ref.r.value = { syncDisplay: (...args: unknown[]) => synced.push(args),
+    editingPosition: () => ({ selectionStart: at, selectionEnd: at, selectionDirection: 'none' }) }
+  field().props.onFocus()
+  field().props['onUpdate:modelValue'](removed, { value: removed, selectionStart: at, selectionEnd: at },
+    { selectionStart: before, selectionEnd: before, selectionDirection: 'none' })
+  assert.doesNotMatch(editor.props.card.prompt, /对白／音效：@侍卫/u)
+  assert.doesNotMatch(field().props['model-value'], /@音频1/u)
+
+  field().props.onCommit(field().props['model-value'], true)
+  field().props.onFocus()
+  field().props.onHistory('undo')
+  assert.equal(editor.props.card.prompt, original)
+  assert.equal(field().props['model-value'], display)
+  assert.deepEqual(synced.at(-1)?.slice(0, 3), [display, before, before])
+  field().props.onHistory('redo')
+  assert.doesNotMatch(editor.props.card.prompt, /对白／音效：@侍卫/u)
+})
+
+test('删除手选音频编号会移除整条引用，撤销后仍对应原录音', async () => {
+  const lead = { ...assets[0]!, voiceAudio: { url: '/static/uploads/guard.wav', name: '参考.wav' } }
+  const editor = setup([lead.id], { assetList: [lead] })
+  const field = () => editor.nodes().find(n => n.type === menu)
+  const original = '对白／音效：@侍卫 @音色[侍卫]：“别回头。”'
+  editor.props.card.prompt = original
+  const display = field().props['model-value'] as string
+  assert.equal(display, '对白／音效：@侍卫 @音频1：“别回头。”')
+  await editPrompt(field(), display.replace('音频1', '音频'))
+  assert.doesNotMatch(editor.props.card.prompt, /@音色/u)
+  field().props.onHistory('undo')
+  assert.equal(editor.props.card.prompt, original)
+  assert.equal(buildScriptVideoDelivery(editor.props.card, [lead]).voices[0]?.asset.voiceAudio?.url, lead.voiceAudio.url)
+})
+
+test('手选音色只覆盖这一句，音频跟随素材替换，重复使用时只提交一次', () => {
+  const guard = { ...assets[0]!, voiceAudio: { url: '/static/uploads/guard-new.wav', name: '侍卫.wav' } }
+  const other = { ...assets[2]!, voiceAudio: { url: '/static/uploads/other.wav', name: '第三人.wav' } }
+  const assetList = [guard, other]
+  const { props } = setup([guard.id, other.id], { assetList })
+  props.card.prompt = [
+    '镜头 01（0–3秒）', '画面与动作：@第三人转身。',
+    '对白／音效：@第三人 @音色[侍卫]：“先别走。”；@第三人：“我还有话说。”；@第三人 @音色[侍卫]：“你听。”',
+  ].join('\n')
+
+  const delivery = buildScriptVideoDelivery(props.card, assetList, { promptMode: 'reference-guide' })
+  assert.deepEqual(delivery.voices.map(voice => voice.asset.voiceAudio?.url), [other.voiceAudio.url, guard.voiceAudio.url])
+  assert.match(delivery.prompt, /@音频2 是 @第三人 的配音音色参考/u)
+  assert.match(delivery.prompt, /@第三人 @音频2：\{先别走。\}；@第三人 @音频1：\{我还有话说。\}；@第三人 @音频2：\{你听。\}/u)
+  assert.deepEqual(delivery.images.map(asset => asset.id), [other.id, guard.id], '素材说明置前保留已绑定的图片')
+  assert.deepEqual(buildScriptVideoDelivery(props.card, assetList).images.map(asset => asset.id), [other.id], '借用声音不添加配图')
 })
 
 test('视频提示词在同一行紧接的两段对白各引用一次音频', () => {

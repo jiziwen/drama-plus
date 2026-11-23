@@ -12,6 +12,7 @@
       :value="text"
       :aria-description="hasAudioPreviews ? '在参考音频标记内按 Alt + Enter 打开试听。' : undefined"
       :aria-keyshortcuts="searchable && mention.open ? 'Alt+ArrowDown' : undefined"
+      @beforeinput="onBeforeInput"
       @input="onInput"
       @compositionstart="onCompositionStart"
       @compositionend="onCompositionEnd"
@@ -116,11 +117,12 @@ const props = defineProps({
   searchable: { type: Boolean, default: false },
   previewOnHover: { type: Boolean, default: false },
   popupTarget: { type: Object, default: null },
+  manageHistory: { type: Boolean, default: false },
   // Script-to-video also highlights literal names within spoken lines, without
   // inserting reference syntax into the actor's words or moving the caret.
   resolvePreviewRanges: { type: Function, default: null },
 })
-const emit = defineEmits(['update:modelValue', 'commit', 'focus', 'compositionstart', 'compositionend'])
+const emit = defineEmits(['update:modelValue', 'commit', 'focus', 'compositionstart', 'compositionend', 'history'])
 
 const taEl = ref(null)
 const backdropEl = ref(null)
@@ -128,6 +130,7 @@ const text = ref(props.modelValue)
 let lastEmittedText = props.modelValue
 let hasComposingInput = false
 let commitAfterComposition = false
+let beforeEdit
 const mention = ref({ open: false, start: 0, end: 0, query: '', top: 0, left: 0 })
 const highlightIdx = ref(0)
 const dropdownEl = ref(null)
@@ -400,6 +403,8 @@ function activeMention() {
 function mentionBeforeCaret() {
   const ta = taEl.value
   const pos = ta.selectionStart
+  const parsed = props.resolvePreviewRanges?.(ta.value)
+  if (parsed) return parsed.find(hit => hit.end === pos && ta.value[hit.start] === '@')
   const before = ta.value.slice(0, pos)
   for (const [name] of mentionNames.value) {
     if (before.endsWith(`@${name}`)) return { start: pos - name.length - 1, end: pos }
@@ -409,6 +414,8 @@ function mentionBeforeCaret() {
 function mentionAfterCaret() {
   const ta = taEl.value
   const pos = ta.selectionStart
+  const parsed = props.resolvePreviewRanges?.(ta.value)
+  if (parsed) return parsed.find(hit => hit.start === pos && ta.value[pos] === '@')
   const after = ta.value.slice(pos)
   for (const [name] of mentionNames.value) {
     if (after.startsWith(`@${name}`)) return { start: pos, end: pos + name.length + 1 }
@@ -426,7 +433,7 @@ const filteredOptions = computed(() => {
 const groupedFiltered = computed(() => {
   const groups = []
   for (const opt of filteredOptions.value) {
-    const name = opt.group || t('components.mention.fallbackGroup')
+    const name = opt.menuGroup || opt.group || t('components.mention.fallbackGroup')
     const g = groups.find(item => item.group === name)
     if (g) g.options.push(opt)
     else groups.push({ group: name, options: [opt] })
@@ -479,12 +486,14 @@ function getCaretCoordinates(textarea, position) {
 function updateMentionState(resetSelection = true) {
   const active = activeMention()
   if (!active) { dismissMention(); return }
+  const ta = taEl.value
   // @后文本已精确等于某个完整引用名时不再弹列表（如删除引用尾部空格后光标落在完整引用上）
-  if (mentionNames.value.some(([name]) => name === active.query)) {
+  const numbered = /^音频\d+$/u.test(active.query) &&
+    props.resolvePreviewRanges?.(ta.value)?.some(hit => hit.start === active.start && hit.end === active.end)
+  if (numbered || mentionNames.value.some(([name]) => name === active.query)) {
     dismissMention()
     return
   }
-  const ta = taEl.value
   const caret = getCaretCoordinates(ta, ta.selectionStart)
   const rect = ta.getBoundingClientRect()
   const width = Math.min(DROPDOWN_WIDTH, window.innerWidth - 16)
@@ -538,6 +547,7 @@ function dismissMention() {
 
 function setText(next, caret) {
   const ta = taEl.value
+  const previous = props.manageHistory ? editingPosition() : undefined
   if (ta) {
     ta.focus({ preventScroll: true })
     replaceTextareaText(ta, next, caret, caret)
@@ -546,8 +556,25 @@ function setText(next, caret) {
   lastEmittedText = next
   closeMention()
   closePreview()
-  emit('update:modelValue', next, ta)
+  emitEdit(next, ta, previous)
   emit('commit', next)
+}
+
+function emitEdit(value, target, previous) {
+  if (props.manageHistory) emit('update:modelValue', value, target, previous)
+  else emit('update:modelValue', value, target)
+}
+
+function onBeforeInput(event) {
+  if (!props.manageHistory) return
+  if (event.inputType === 'historyUndo' || event.inputType === 'historyRedo') {
+    if (event.cancelable) {
+      event.preventDefault()
+      emit('history', event.inputType === 'historyUndo' ? 'undo' : 'redo')
+    }
+    return
+  }
+  if (!hasComposingInput) beforeEdit = editingPosition()
 }
 
 function onInput(e) {
@@ -557,12 +584,14 @@ function onInput(e) {
   if (hasComposingInput) return
   if (text.value !== lastEmittedText) {
     lastEmittedText = text.value
-    emit('update:modelValue', text.value, e.target)
+    emitEdit(text.value, e.target, beforeEdit)
   }
+  beforeEdit = undefined
   if (document.activeElement === e.target) updateMentionState()
 }
 
 function onCompositionStart() {
+  if (props.manageHistory) beforeEdit = editingPosition()
   hasComposingInput = true
   commitAfterComposition = false
   closeMention()
@@ -596,6 +625,14 @@ function onScroll() {
 
 function onKeydown(e) {
   if (e.isComposing || e.keyCode === 229) return
+  if (props.manageHistory && (e.ctrlKey || e.metaKey) && !e.altKey) {
+    const key = e.key.toLowerCase()
+    if (key === 'z' || key === 'y') {
+      e.preventDefault()
+      emit('history', key === 'y' || e.shiftKey ? 'redo' : 'undo')
+      return
+    }
+  }
   if (e.altKey && e.key === 'Enter' && previewAudioAtCaret()) {
     e.preventDefault()
     return

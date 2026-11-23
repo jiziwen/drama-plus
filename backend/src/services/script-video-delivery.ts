@@ -2,7 +2,7 @@ import { omitScriptVideoRecapQuotes, replaceScriptVideoPromptStyle } from './scr
 import type { ScriptVideoReferenceSettings } from './script-video-reference-settings.js'
 import { annotateScriptVideoInnerOs, hasExplicitScriptVideoInnerOs, hasScriptVideoInnerOs, SCRIPT_VIDEO_INNER_OS_DIRECTION } from './script-video-inner-os.js'
 import { mapScriptVideoSoundLine, speechClosers, unquotedSpeaker, withoutScriptVideoVoiceCues } from './script-video-foley.js'
-import { annotateScriptVideoAssets, describeScriptVideoReferenceProblem, scriptVideoMaterialEvidenceText, scriptVideoMaterialIds, type AssetMention } from './script-video-mentions.js'
+import { annotateScriptVideoAssets, describeScriptVideoReferenceProblem, scriptVideoAudioReferences, scriptVideoMaterialEvidenceText, scriptVideoMaterialIds, type AssetMention } from './script-video-mentions.js'
 import { scriptVideoShotHeadings, splitScriptVideoHandoff } from './script-video-asset-scope.js'
 import { declaredScriptVideoSceneName } from './script-video-scene-continuity.js'
 import { bindScriptVideoLighting, sceneGradedStyle, type ScriptVideoLightingRange, type ScriptVideoReferenceLimits } from './script-video-lighting-delivery.js'
@@ -299,7 +299,7 @@ function inspectScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(
   if (legend && body.split(/\r?\n/u, 1)[0] === legend) body = body.slice(legend.length).replace(/^\r?\n/u, '')
   body = annotateScriptVideoInnerOs(omitScriptVideoRecapQuotes(body, card.shots || []), {
     preserveExplicitInnerOs: true,
-    referenceAudioNames: assets.filter(asset => asset.kind === 'audio').map(asset => asset.name),
+    referenceAudioNames: [...scriptVideoAudioReferences(assets, body).keys()],
     speakers: [...assets.filter(asset => asset.kind === 'character').map(asset => asset.name),
       ...(options.cast?.map(role => role.name) ?? [])],
   })
@@ -316,7 +316,7 @@ function inspectScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(
   // attaching the image does not turn a contextual name into an on-camera role.
   const excluded = new Set(card.excludedAssetIds)
   const referenceGuide = options.promptMode === 'reference-guide'
-  const characterReferences = evidence.mentions.filter(hit => !hit.literal &&
+  const characterReferences = evidence.mentions.filter(hit => !hit.literal && hit.usage !== 'audio' &&
     byId.get(hit.id)?.kind === 'character' && !excluded.has(hit.id))
   const selectedImages = referenceGuide ? assetIds.filter(id => !excluded.has(id) && byId.get(id)?.kind !== 'audio') : []
   const imageIds = [...new Set([...selectedImages, ...materials.imageIds, ...characterReferences.map(hit => hit.id)])]
@@ -431,7 +431,7 @@ function groupReferenceVoices<A extends ScriptVideoDeliveryAsset>(
   referenceOnlyImages: ReadonlySet<string>,
 ) {
   const groups = new Map<string, { asset: A; roles: A[] }>()
-  for (const id of [...voiceAssetIds(card, body, automatic, talking, orderedIds, seedance25, referenceOnlyImages), ...audioIds]) {
+  for (const id of new Set([...voiceAssetIds(card, body, automatic, talking, orderedIds, seedance25, referenceOnlyImages), ...audioIds])) {
     const asset = byId.get(id)
     const url = voiceReferenceUrl(asset)
     if (!asset || !url) continue
@@ -499,6 +499,9 @@ export function buildScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(
       unavailable.add(id)
       activeImages.delete(id)
     }
+  }
+  for (const id of audioIds) {
+    if (!voiceReferenceUrl(byId.get(id))) referenceIssue('找不到分镜绑定的音频：' + (byId.get(id)?.name || id))
   }
   const visual = scan.mentions.filter(mention => mention.usage === 'visual' && activeImages.has(mention.id))
   const orderedIds = orderedVisualIds(card, body, visual, activeImages, seedance25)
@@ -596,22 +599,26 @@ export function buildScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(
     const index = indexByImage.get(asset.image)
     return index ? imageTag(index) + asset.name : asset.name
   }
-  const referenceVoiceText = referenceGuide ? voices.map(({ roles }, i) => {
-    const pickedAudioIds = new Set(roles.filter(asset => asset.kind === 'audio').map(asset => asset.id))
-    const pickedSpeakers = scan.mentions.filter(mention => mention.usage === 'speaker' &&
-      mention.manualAudioId && pickedAudioIds.has(mention.manualAudioId)).flatMap(mention => {
+  function voiceSpeakers(roles: A[]) {
+    const ids = new Set(roles.map(asset => asset.id))
+    const picks = scan.mentions.filter(mention => mention.usage === 'speaker' && mention.manualAudioId && ids.has(mention.manualAudioId))
+    const picked = picks.flatMap(mention => {
       const asset = byId.get(mention.id)
       return asset?.kind === 'character' ? [asset] : []
     })
-    const speakers = [...new Map([...roles.filter(asset => asset.kind === 'character'), ...pickedSpeakers]
-      .map(asset => [asset.id, asset])).values()]
+    const owners = roles.filter(asset => asset.kind === 'character' &&
+      (automatic.has(asset.id) || !picks.some(mention => mention.manualAudioId === asset.id)))
+    return [...new Map([...owners, ...picked].map(asset => [asset.id, asset])).values()]
+  }
+  const referenceVoiceText = referenceGuide ? voices.map(({ roles }, i) => {
+    const speakers = voiceSpeakers(roles)
     const names = (speakers.length ? speakers : roles).map(asset => '@' + asset.name).join('、')
-    const pickedNames = speakers.length && pickedAudioIds.size
-      ? '（声音素材：' + roles.filter(asset => asset.kind === 'audio').map(asset => '@' + asset.name).join('、') + '）' : ''
+    const pickedAudioNames = roles.filter(asset => asset.kind === 'audio').map(asset => '@' + asset.name)
+    const pickedNames = speakers.length && pickedAudioNames.length ? '（声音素材：' + pickedAudioNames.join('、') + '）' : ''
     return speakers.length
       ? `${audioTag(i + 1)} 是 ${names} 的配音音色参考${pickedNames}，只参考音色，不照搬音频中的内容。`
       : `${audioTag(i + 1)} 是 ${names} 的声音参考，按本段标注使用。`
-  }) : voices.flatMap(({ roles }, i) => roles.filter(asset => asset.kind === 'character').map(asset =>
+  }) : voices.flatMap(({ roles }, i) => voiceSpeakers(roles).map(asset =>
     `${voiceLabel(asset)}的${hasInnerVoice || vocalizingRoles.has(asset.id) ? '角色' : '对白'}音色参考${audioTag(i + 1)}，只参考音色，不照搬音频中的内容。`,
   ))
   const modelVoiceText: string[] = []

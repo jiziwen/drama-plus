@@ -317,6 +317,28 @@ function voiceCard(id: string, asset: { id: string; name: string }, dialogue: st
     shots: [{ id: `${id}-shot`, duration: 5, camera: '中景', action, dialogue }] }
 }
 
+test('手选音色在录音替换、角色改名和同名音频加入后仍对应原角色', async () => fixture(async store => {
+  const project = await store.create('手选音色')
+  const lead = voiceAsset('lead', '阿宁')
+  const episodeId = project.episodeId
+  project.assets = [lead]
+  project.episodes[0].cards = [voiceCard('cut', lead, '@阿宁 @音色[阿宁]：“听我说。”')]
+  await store.update(project.id, project, project.revision)
+
+  await store.applyChanges(project.id, { clientId: randomUUID(), sequence: 1, changes: [
+    { target: 'asset', id: lead.id, fields: { name: '阿宁_礼服', voiceAudio: { url: '/static/uploads/new-voice.wav', name: '新录音.wav' } } },
+    { target: 'asset', id: 'collision', value: { id: 'collision', kind: 'audio', name: '音色[阿宁_礼服]', image: '',
+      voiceAudio: { url: '/static/uploads/unused.wav', name: '音效.wav' } } },
+  ] })
+  const saved = await store.get(project.id)
+  const card = saved.episodes.find(episode => episode.id === episodeId)!.cards[0]
+  assert.match(card.prompt, /@阿宁_礼服 @音色\[阿宁_礼服\]-2/u)
+  assert.match(card.shots[0].dialogue, /@阿宁_礼服 @音色\[阿宁_礼服\]-2/u)
+  const delivery = buildScriptVideoDelivery(card, saved.assets)
+  assert.deepEqual(delivery.voices.map(voice => voice.asset.voiceAudio?.url), ['/static/uploads/new-voice.wav'])
+  assert.match(delivery.prompt, /@音频1/u)
+}))
+
 test('更新角色声音设置只让实际声音来源变动的未出片分镜升版', async () => fixture(async store => {
   const project = await store.create('只更新受影响的分镜')
   const lead = voiceAsset('lead', '阿宁')

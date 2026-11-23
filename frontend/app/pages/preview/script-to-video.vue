@@ -418,6 +418,7 @@
             :style-preset="currentProject.settings?.stylePreset"
             :video-provider="currentEpisode.modelProvider"
             :video-model="currentEpisode.modelName"
+            :prompt-mode="videoPromptMode"
             :episode-number="currentEpisode.number"
             :segment-number="cards.findIndex((item) => item.id === selectedCard?.id) + 1"
             :segment-count="cards.length"

@@ -260,7 +260,8 @@ export function rebindCardAssets(
   let last = 0, prompt = ''
   for (const hit of previous.mentions) {
     if (!hit.explicit || hit.usage === 'context' && hit.literal || !excluded.has(hit.id)) continue
-    prompt += body.slice(last, hit.start) + body.slice(hit.start + 1, hit.end)
+    const roleVoice = hit.usage === 'audio' && assets.some(asset => asset.id === hit.id && asset.kind === 'character')
+    prompt += body.slice(last, hit.start) + (roleVoice ? '' : body.slice(hit.start + 1, hit.end))
     last = hit.end
   }
   next.prompt = prompt + body.slice(last)

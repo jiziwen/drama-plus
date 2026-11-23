@@ -23,7 +23,7 @@ function controller(overrides = {}) {
     addEventListener: (type, callback) => listeners.set(type, callback),
     removeEventListener: (type, callback) => { if (listeners.get(type) === callback) listeners.delete(type) },
   }
-  const value = runInNewContext(script + '\n;({ text, mention, taEl, backdropEl, dropdownEl, searchEl, searchQuery, flatList, preview, previewStyle, previewImageFailed, highlightedHtml, onPreviewMove, enterPreview, leavePreview, onTouchPreview, closePreview, onScroll, onInput, onBlur, onDropdownFocusOut, onCompositionStart, onCompositionEnd, onKeydown, onMentionKeydown, syncDisplay })', {
+  const value = runInNewContext(script + '\n;({ text, mention, taEl, backdropEl, dropdownEl, searchEl, searchQuery, groupedFiltered, flatList, preview, previewStyle, previewImageFailed, highlightedHtml, onPreviewMove, enterPreview, leavePreview, onTouchPreview, closePreview, onScroll, onBeforeInput, onInput, onBlur, onDropdownFocusOut, onCompositionStart, onCompositionEnd, onKeydown, onMentionKeydown, syncDisplay })', {
     ref, computed, watch, nextTick, window, document,
     setTimeout: callback => { const id = ++nextTimer; timers.set(id, callback); return id },
     clearTimeout: id => timers.delete(id),
@@ -195,6 +195,43 @@ test('在有源音频的引用上等待试听，进入播放器不关闭，触�
   assert.equal(app.preview.value.option.audioUrl, '/reference.wav')
   assert.ok(!app.audio.includes('start'))
   assert.deepEqual(app.events, [])
+  app.dispose()
+})
+
+test('本段参考素材保持在搜索首组，筛选后仍可选择项目中的其它素材', () => {
+  const segment = '本片段参考素材'
+  const app = controller({ options: [
+    { ...role('音色[侍卫]'), kind: 'audio', group: '角色音色', menuGroup: segment },
+    { ...role('院落'), kind: 'scene', group: '背景', menuGroup: segment },
+    role('侍卫_夜行'),
+    { ...role('音频1'), kind: 'audio', previewOnly: true },
+  ] })
+  assert.deepEqual(Array.from(app.groupedFiltered.value, group => group.group), [segment, '角色'])
+  assert.equal(app.groupedFiltered.value[0].options.length, 2)
+  assert.deepEqual(Array.from(app.flatList.value, option => option.value), ['音色[侍卫]', '院落', '侍卫_夜行'])
+  app.searchQuery.value = '侍卫'
+  assert.deepEqual(Array.from(app.flatList.value, option => option.value), ['音色[侍卫]', '侍卫_夜行'])
+  app.dispose()
+})
+
+test('提示词键盘删除引用时记录删除前的位置，并将 Ctrl+Z 和 Cmd+Shift+Z 交给提示词历史', () => {
+  const modelValue = '对白：@侍卫 @音频12：“别回头。”'
+  const start = modelValue.indexOf('@侍卫'), end = start + '@侍卫'.length
+  const app = controller({ modelValue, manageHistory: true,
+    resolvePreviewRanges: () => [{ start, end }] })
+  const ta = app.taEl.value
+  Object.assign(ta, { value: modelValue, selectionStart: end, selectionEnd: end, selectionDirection: 'none',
+    focus() {}, setSelectionRange(from, to) { ta.selectionStart = from; ta.selectionEnd = to } })
+  let prevented = 0
+  const preventDefault = () => { prevented++ }
+  app.onKeydown({ key: 'Backspace', preventDefault })
+  assert.equal(ta.value, '对白： @音频12：“别回头。”')
+  assert.equal(app.events[0][3].selectionStart, end)
+  app.onKeydown({ key: 'z', ctrlKey: true, preventDefault })
+  app.onKeydown({ key: 'Z', metaKey: true, shiftKey: true, preventDefault })
+  app.onBeforeInput({ inputType: 'historyUndo', cancelable: true, preventDefault })
+  assert.deepEqual(app.events.slice(2), [['history', 'undo'], ['history', 'redo'], ['history', 'undo']])
+  assert.equal(prevented, 4)
   app.dispose()
 })
 

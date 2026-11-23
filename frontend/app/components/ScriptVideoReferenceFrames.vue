@@ -19,13 +19,13 @@
         <button v-if="row.mode !== 'off' && (row.state !== 'missing' || row.mode === 'manual')" type="button" class="btn btn-sm btn-ghost" :aria-label="`移除${label(row)}`" :disabled="busy" @click="change(row, 'off')">移除</button>
         <button v-if="row.mode !== 'auto'" type="button" class="btn btn-sm btn-ghost" :aria-label="`恢复${label(row)}自动选帧`" :disabled="busy" @click="change(row, 'auto')">恢复自动</button>
       </div>
-      <div v-if="pickedKey === keyOf(row) && pickedSource" class="sv-frame-picker">
+      <div v-if="pickedKey === keyOf(row)" class="sv-frame-picker">
         <div v-if="sourceOptions.length" class="sv-frame-source">
           <span>来源成片（全部分集）</span>
           <BaseSelect aria-label="选帧来源成片" :model-value="sourceKey(pickedSource, pickedSourceCardId, pickedSourceEpisodeId)" :options="sourceOptions"
-            searchable :disabled="busy" @update:model-value="changeSource" />
+            :open-highlight-value="previousSourceKey" placeholder="选择来源成片" searchable :disabled="busy" @update:model-value="changeSource" />
         </div>
-        <video ref="videos" :key="sourceKey(pickedSource, pickedSourceCardId, pickedSourceEpisodeId)" :src="pickedSource" controls playsinline preload="metadata"
+        <video v-if="pickedSource" ref="videos" :key="sourceKey(pickedSource, pickedSourceCardId, pickedSourceEpisodeId)" :src="pickedSource" controls playsinline preload="metadata"
           :aria-label="`${label(row)}来源成片`" @loadedmetadata="metadata($event, row)"
           @timeupdate="readTime" @seeked="readTime" @error="playbackError = '来源成片暂时无法播放。'" />
         <span v-if="playbackError" role="alert">{{ playbackError }}</span>
@@ -65,6 +65,10 @@ const manualSources = computed(() => props.frames?.projectSources ?? props.frame
 const pickerRow = computed(() => rows.value.find(row => keyOf(row) === pickedKey.value))
 const sourceKey = (videoUrl: string, cardId?: string, sourceEpisodeId?: string) =>
   JSON.stringify(sourceEpisodeId ? [sourceEpisodeId, cardId, videoUrl] : [cardId, videoUrl])
+const previousSourceKey = computed(() => {
+  const source = props.frames?.previousPlayableSource
+  return source ? sourceKey(source.videoUrl, source.cardId, source.sourceEpisodeId) : props.frames?.projectSources && ''
+})
 function sourceChoices(row: Row) {
   const choices = manualSources.value
   if (!choices.length || !row.videoUrl || !row.sourceCardId ||
@@ -99,7 +103,7 @@ function frameStatus(row: Row) {
 }
 const sourceAvailable = computed(() => pickedSourceCardId.value ? !!selectedSource.value :
   !!pickedSource.value && pickerRow.value?.videoUrl === pickedSource.value)
-watch(sourceAvailable, available => { if (pickedKey.value && !available) pickedKey.value = '' })
+watch(sourceAvailable, available => { if (pickedKey.value && pickedSource.value && !available) pickedKey.value = '' })
 function showSource(videoUrl: string, cardId?: string, sourceEpisodeId?: string) {
   ready.value = false
   seconds.value = undefined
@@ -110,6 +114,12 @@ function showSource(videoUrl: string, cardId?: string, sourceEpisodeId?: string)
 }
 function openPicker(row: Row) {
   if (pickedKey.value === keyOf(row)) return
+  if (props.frames?.projectSources) {
+    const source = props.frames.previousPlayableSource
+    showSource(source?.videoUrl ?? '', source?.cardId, source?.sourceEpisodeId)
+    pickedKey.value = keyOf(row)
+    return
+  }
   const choices = sourceChoices(row)
   const saved = choices.find(source => source.videoUrl === row.videoUrl && (!row.sourceCardId || source.cardId === row.sourceCardId) &&
     (!row.sourceEpisodeId || source.sourceEpisodeId === row.sourceEpisodeId))

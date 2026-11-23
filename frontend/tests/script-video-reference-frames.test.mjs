@@ -224,7 +224,7 @@ function framePlayer(t, frames, calls, choose = async () => true) {
     choose: (...params) => { calls.push(params); return choose(...params) } }
   const scope = effectScope()
   t.after(() => scope.stop())
-  return scope.run(() => runInNewContext(script + '\n;({ openPicker, metadata, useFrame, videos, canPick, pickedSource, sourceOptions, changeSource, ready, seconds })', {
+  return scope.run(() => runInNewContext(script + '\n;({ openPicker, metadata, useFrame, videos, canPick, pickedKey, pickedSource, sourceOptions, changeSource, previousSourceKey, ready, seconds })', {
     URL, computed, ref, watch, defineProps: () => props, defineEmits: () => () => {},
   }))
 }
@@ -330,17 +330,24 @@ test('上一集尾段没有成片时仍可打开选帧，切到其他段会重�
   assert.deepEqual(calls, [[row, 'manual', 2, first]])
 })
 
-test('项目来源扩大后打开选帧仍先显示原自动来源，不提前修改默认选择', t => {
+test('两个选帧都默认定位上一段，即使已经保存了其他来源', t => {
   const adjacent = { cardId: 'prior', sourceEpisodeId: 'episode-25', videoUrl: clip, sourceLabel: '第25集 · 第1段' }
   const future = { cardId: 'future', sourceEpisodeId: 'episode-99', videoUrl: '/static/videos/future.mp4', sourceLabel: '第99集 · 第3段' }
-  const frames = { ...rows(), projectSources: [adjacent, future] }
+  const frames = { ...rows(), projectSources: [adjacent, future], previousPlayableSource: adjacent }
+  for (const row of [frames.tail, frames.lighting[0]]) {
+    Object.assign(row, { mode: 'manual', sourceCardId: future.cardId, sourceEpisodeId: future.sourceEpisodeId, videoUrl: future.videoUrl })
+  }
   const calls = [], picker = framePlayer(t, frames, calls)
+  picker.openPicker(frames.lighting[0])
+  assert.equal(picker.pickedSource.value, clip)
   picker.openPicker(frames.tail)
   assert.equal(picker.pickedSource.value, clip)
   assert.equal(picker.sourceOptions.value.length, 2)
+  assert.equal(picker.previousSourceKey.value, picker.sourceOptions.value[0].value)
   assert.deepEqual(calls, [])
   picker.changeSource(picker.sourceOptions.value[1].value)
   assert.equal(picker.pickedSource.value, future.videoUrl)
+  assert.equal(picker.previousSourceKey.value, picker.sourceOptions.value[0].value, '改选后重开菜单仍定位上一段')
   assert.deepEqual(calls, [], '浏览其他分集的成片不应保存设置')
   const video = { currentSrc: 'https://test.invalid' + future.videoUrl, baseURI: 'https://test.invalid/', duration: 5, currentTime: 1, pause() {} }
   picker.videos.value = [video]
@@ -349,12 +356,18 @@ test('项目来源扩大后打开选帧仍先显示原自动来源，不提前�
   assert.deepEqual(calls, [[frames.tail, 'manual', 1, future]])
 })
 
-test('自动来源的旧成片不在全项目目录时仍优先播放原来源', t => {
+test('前面没有成片时，打开菜单不默认选中当前段或之后的成片', async t => {
+  const self = { cardId: 'self', sourceEpisodeId: 'episode-1', videoUrl: clip, sourceLabel: '第1集 · 第1段' }
   const future = { cardId: 'future', sourceEpisodeId: 'episode-99', videoUrl: '/static/videos/future.mp4', sourceLabel: '第99集 · 第3段' }
-  const frames = { ...rows(), projectSources: [future] }
+  const frames = { ...rows(), projectSources: [self, future] }
   const picker = framePlayer(t, frames, [])
   picker.openPicker(frames.tail)
-  assert.equal(picker.pickedSource.value, clip)
+  await nextTick()
+  assert.equal(picker.pickedKey.value, 'tail')
+  assert.equal(picker.pickedSource.value, '')
+  assert.equal(picker.previousSourceKey.value, '')
+  picker.changeSource(picker.sourceOptions.value[1].value)
+  assert.equal(picker.pickedSource.value, future.videoUrl)
 })
 
 test('应用旧的AI正文或历史文本时沿用当前片段的参考帧设置', () => {

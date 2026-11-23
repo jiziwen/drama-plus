@@ -34,6 +34,7 @@ export type ScriptVideoReferenceFrames = {
   lighting: ScriptVideoReferenceFrameRow[]
   previousEpisodeSources?: ScriptVideoReferenceFrameSource[]
   projectSources?: ScriptVideoReferenceFrameSource[]
+  previousPlayableSource?: ScriptVideoReferenceFrameSource
   candidate?: { imageUrl: string; videoUrl: string; seconds: number; sourceCardId?: string; sourceEpisodeId?: string }
 }
 

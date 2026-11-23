@@ -50,12 +50,16 @@ test('任意片段手选全项目各集成片，自动来源仍限原相邻片�
       { ...card('before', url('before')), ending: '小旗半抬右手扶住门闩。下一段从本段尾帧继续。' },
       { ...card('target', url('self')), opening: '同一镜头续接上一段尾帧，小旗半抬右手扶住门闩。' },
       card('same-episode-history'),
+      card('unrendered'),
+      card('after-gap'),
     ] }
     current.tasks = [{ id: 'historical', cardId: 'same-episode-history', cardVersion: 1, status: 'completed',
       staleResult: true, videoUrl: url('historical'), duration: 2 }]
     const future = { ...structuredClone(template), id: 'future-episode', number: 3, title: '第三集',
       cards: [card('future-source', url('future')), card('missing-source', url('missing'))], tasks: [] }
-    record.project.episodes.push(current, future)
+    const empty = { ...structuredClone(template), id: 'empty-episode', number: 4, cards: [] }
+    const later = { ...structuredClone(template), id: 'later-episode', number: 5, cards: [card('later-target')] }
+    record.project.episodes.push(current, future, empty, later)
     return { documentChanged: true, result: { episodeId: current.id, oldId: template.id, futureId: future.id } }
   })
   const foreignProject = await store.create('外部项目不可作来源')
@@ -83,11 +87,12 @@ test('任意片段手选全项目各集成片，自动来源仍限原相邻片�
           manualSeconds: source.manualSeconds, mode: 'reference', imageUrl } }
     },
   })
-  const base = `/projects/${id}/episodes/${episodeId}`
   const headers = { 'Content-Type': 'application/json', 'X-Script-Video-Session': '12345678-1234-4567-8234-123456789012' }
-  const post = (route: string, body: object = {}) => app.request(base + route, { method: 'POST', headers, body: JSON.stringify(body) })
-  const read = async (route: string, body: object = {}) => {
-    const response = await post(route, body)
+  const post = (route: string, body: object = {}, ep = episodeId) => app.request(`/projects/${id}/episodes/${ep}${route}`, {
+    method: 'POST', headers, body: JSON.stringify(body),
+  })
+  const read = async (route: string, body: object = {}, ep = episodeId) => {
+    const response = await post(route, body, ep)
     assert.equal(response.status, 200, await response.clone().text())
     return (await response.json()).data
   }
@@ -97,6 +102,13 @@ test('任意片段手选全项目各集成片，自动来源仍限原相邻片�
     [oldId, 'old-source'], [episodeId, 'before'], [episodeId, 'target'],
     [episodeId, 'same-episode-history'], [futureId, 'future-source'],
   ])
+  assert.deepEqual(initial.previousPlayableSource, initial.projectSources[1])
+  const afterGap = await read('/cards/after-gap/reference-frames')
+  assert.deepEqual(afterGap.previousPlayableSource, initial.projectSources[3], '跳过未出片的上一段，也能定位到有历史成片的段')
+  const later = await read('/cards/later-target/reference-frames', {}, 'later-episode')
+  assert.deepEqual(later.previousPlayableSource, initial.projectSources[4], '上一集为空时继续跨集回退，并跳过不可读的成片')
+  const first = await read('/cards/old-source/reference-frames', {}, oldId)
+  assert.equal(first.previousPlayableSource, undefined, '开篇无上一段时不定位自己的成片或后续分集')
   assert.match(initial.projectSources[0].sourceLabel, /第\s*1\s*集.*第\s*1\s*段.*old-source/u)
   assert.equal(initial.tail.videoUrl, url('before'))
   assert.equal(initial.tail.sourceCardId, 'before')
@@ -151,6 +163,7 @@ test('任意片段手选全项目各集成片，自动来源仍限原相邻片�
     ] }) })
   assert.equal(patched.status, 200, await patched.clone().text())
   const manual = await read(framesRoute)
+  assert.deepEqual(manual.previousPlayableSource, initial.previousPlayableSource)
   assert.equal(manual.tail.imageUrl, tail.imageUrl)
   assert.equal(manual.tail.sourceEpisodeId, futureId)
   assert.match(manual.tail.sourceLabel, /第\s*3\s*集/u)

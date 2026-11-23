@@ -24,7 +24,7 @@
       </div>
 
       <!-- Options -->
-      <div ref="optionsEl" class="base-select-options" :class="{ 'base-select-options-inspector': variant === 'inspector' }" @keydown="onOptionsKeydown">
+      <div ref="optionsEl" class="base-select-options" :class="{ 'base-select-options-inspector': variant === 'inspector', 'base-select-options-scroll': openHighlightValue !== undefined }" @keydown="onOptionsKeydown">
         <template v-if="flatOptions.length">
           <template v-for="(group, gi) in filteredGroups" :key="gi">
             <div v-if="group.label" class="app-menu-group-label">{{ group.label }}</div>
@@ -62,6 +62,7 @@ import { Check, ChevronDown, Search } from 'lucide-vue-next'
 
 const props = defineProps({
   modelValue: { type: [String, Number], default: '' },
+  openHighlightValue: { type: [String, Number], default: undefined },
   options: { type: Array, default: () => [] }, // [{ label, value, group? }, ...] or [{ label, group, options: [] }]
   placeholder: { type: String, default: '' },  // 缺省回退 t('components.baseSelect.placeholder')
   searchable: { type: Boolean, default: true },
@@ -184,12 +185,18 @@ watch(isOpen, async (val) => {
     emit('open')
     searchQuery.value = ''
     await nextTick()
-    highlightedIdx.value = flatOptions.value.findIndex(o => o.value === props.modelValue && !o.disabled)
-    if (props.searchable) searchInputEl.value?.focus()
+    const openingValue = props.openHighlightValue ?? props.modelValue
+    highlightedIdx.value = flatOptions.value.findIndex(o => o.value === openingValue && !o.disabled)
+    if (props.searchable) searchInputEl.value?.focus({ preventScroll: props.openHighlightValue !== undefined })
     else {
       if (highlightedIdx.value < 0) highlightedIdx.value = flatOptions.value.findIndex(option => !option.disabled)
       await nextTick()
       focusOption()
+    }
+    if (props.openHighlightValue !== undefined) {
+      const options = optionsEl.value
+      const option = options?.querySelectorAll('[role="menuitem"], [role="menuitemradio"]')[highlightedIdx.value]
+      if (option) options.scrollTop = option.offsetTop - (options.clientHeight - option.offsetHeight) / 2
     }
   } else {
     searchQuery.value = ''
@@ -312,6 +319,12 @@ function onSearchKeydown(e) {
   min-height: 31px;
   padding: 6px 8px;
   font-size: 12px;
+}
+
+.base-select-options-scroll {
+  position: relative;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .base-select-options-inspector .app-menu-item.selected {

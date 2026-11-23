@@ -822,6 +822,8 @@ export function createScriptVideoRoutes(
           videoUrl: info.videoUrl, sourceLabel: sourceLabel(source) }
       }))
       result.projectSources = projectSources.filter(source => source !== undefined)
+      const currentIndex = sourceCards.findIndex(source => source.episode.id === episodeId && source.card.id === cardId)
+      result.previousPlayableSource = projectSources.slice(0, currentIndex).reverse().find(source => source !== undefined)
       if (previousEpisode) {
         const sources = await Promise.all(previousEpisode.cards.map(async (card: ScriptVideoCard) => {
           const entry = sourceCards.find(source => source.episode.id === previousEpisode.id && source.card.id === card.id)!

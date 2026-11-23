@@ -4,27 +4,21 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      import_verified_bootstrap_image:
-        description: Copy the checked initial release image into the dedicated package
-        type: boolean
-        default: false
 
 permissions:
   contents: read
-  packages: write
 
 concurrency:
-  group: production-image-${{ github.sha }}-${{ inputs.import_verified_bootstrap_image && 'bootstrap' || 'main' }}
+  group: production-image-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
   image:
-    if: github.ref == 'refs/heads/main' && !inputs.import_verified_bootstrap_image
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     env:
-      REGISTRY_IMAGE: ghcr.io/jiziwen/fabu-drama-plus
+      REGISTRY_IMAGE: ccr.ccs.tencentyun.com/shuiqing-fabu/drama-plus
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -80,26 +74,10 @@ jobs:
           done
           docker logs --tail 80 release-smoke
           exit 1
-      - name: Publish the exact tested image
+      - name: Publish the exact tested image to the private registry
         env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TCR_USERNAME: ${{ secrets.FABU_TCR_USERNAME }}
+          TCR_PASSWORD: ${{ secrets.FABU_TCR_PASSWORD }}
         run: |
-          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          printf '%s' "$TCR_PASSWORD" | docker login ccr.ccs.tencentyun.com --username "$TCR_USERNAME" --password-stdin
           docker push "$REGISTRY_IMAGE:$GITHUB_SHA"
-
-  import-bootstrap:
-    if: github.ref == 'refs/heads/main' && inputs.import_verified_bootstrap_image
-    runs-on: ubuntu-24.04
-    timeout-minutes: 12
-    steps:
-      - name: Copy the previously tested image by its exact digest
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SOURCE_IMAGE: ghcr.io/jiziwen/drama-plus@sha256:bb17f8e0847720e606916356f11762c69480d8dc05ace5a0482c751d3a52d3ac
-          DESTINATION_IMAGE: ghcr.io/jiziwen/fabu-drama-plus:2a2ad11e9c02549c3c40b6f5101e43418aa2d675
-        run: |
-          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
-          docker pull --platform linux/amd64 "$SOURCE_IMAGE"
-          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$SOURCE_IMAGE")" = "${DESTINATION_IMAGE##*:}"
-          docker tag "$SOURCE_IMAGE" "$DESTINATION_IMAGE"
-          docker push "$DESTINATION_IMAGE"

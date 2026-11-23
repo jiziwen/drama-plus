@@ -16,56 +16,70 @@ export function useScriptVideoReferenceFrames(
   let reader: AbortController | undefined, writer: AbortController | undefined
   let timer: ReturnType<typeof setTimeout> | undefined
   let sourceVersion = 0
+  let refreshQueued = false
   const path = computed(() => {
     const scope = current()
     return scope ? `/projects/${scope.projectId}/episodes/${scope.episodeId}/cards/${scope.card.id}/reference-frames` : ''
   })
 
   async function load(saveFirst: boolean, keepError = false) {
-    clearTimeout(timer)
-    reader?.abort()
     const scope = current(), endpoint = path.value
-    if (!scope || changing.value) return
+    if (!scope) return
+    cancelRead()
+    refreshQueued = false
     const controller = reader = new AbortController()
-    loading.value = true
+    // Keep the current rows and player usable while newer results are fetched.
+    const initial = !frames.value
+    loading.value = initial
     if (!keepError) error.value = ''
     try {
       if (saveFirst) await save(scope.projectId)
       if (controller.signal.aborted) return
       const result = await request(endpoint, {}, controller.signal)
-      if (!controller.signal.aborted) frames.value = result
+      if (!controller.signal.aborted) {
+        if (initial) error.value = ''
+        frames.value = result
+      }
     } catch (cause) {
-      if (!controller.signal.aborted) error.value = cause instanceof Error ? cause.message : '参考帧读取失败'
+      if (!controller.signal.aborted && (!keepError || initial))
+        error.value = cause instanceof Error ? cause.message : '参考帧读取失败'
     } finally {
-      if (reader === controller) loading.value = false
+      if (reader === controller) {
+        reader = undefined
+        loading.value = false
+        if (refreshQueued) queueRefresh()
+      }
     }
   }
-  const refresh = () => load(true)
+  const refresh = async () => { if (!changing.value) await load(true) }
 
-  function invalidateRead() {
+  function queueRefresh() {
+    refreshQueued = true
+    if (timer || reader || changing.value) return
+    timer = setTimeout(() => { void load(true, true) }, 500)
+  }
+  function cancelRead() {
     clearTimeout(timer)
+    timer = undefined
     reader?.abort()
     reader = undefined
-    frames.value = undefined
     loading.value = false
   }
   function reset() {
-    invalidateRead()
+    cancelRead()
+    refreshQueued = false
+    frames.value = undefined
     writer?.abort()
     writer = undefined
     changing.value = false
     error.value = ''
   }
   watch(path, reset, { flush: 'sync' })
-  watch(sourceRevision, () => {
-    sourceVersion++
-    invalidateRead()
-  }, { flush: 'sync' })
+  watch(sourceRevision, () => { sourceVersion++ }, { flush: 'sync' })
   watch([path, sourceRevision, () => current()?.card.version, () => JSON.stringify(current()?.card.referenceFrameSettings)], ([next], [prior]) => {
-    if (!next || changing.value) return
+    if (!next) return
     if (next !== prior) { void refresh(); return }
-    clearTimeout(timer)
-    timer = setTimeout(refresh, 500)
+    queueRefresh()
   }, { immediate: true })
   onScopeDispose(reset)
 
@@ -89,6 +103,8 @@ export function useScriptVideoReferenceFrames(
     const original = row.kind === 'tail' ? scope.card.referenceFrameSettings?.tail : scope.card.referenceFrameSettings?.lighting?.[String(row.startShot)]
     const originalChoice = JSON.stringify(original)
     changing.value = true
+    if (reader || timer) refreshQueued = true
+    cancelRead()
     error.value = ''
     let saved = false
     try {
@@ -105,11 +121,10 @@ export function useScriptVideoReferenceFrames(
             !validScriptVideoFrameTime(frame.seconds))
           throw new Error('来源成片已变化，请刷新后重新选帧。')
         if (sourceVersion !== version) {
-          const rechecking = sourceVersion
           const latest = await request(endpoint, {}, controller.signal)
           if (controller.signal.aborted) return false
           const latestRow = selectedRow(latest)
-          if (sourceVersion !== rechecking || (source ? !matchesSource(latest, latestRow, source) : latestRow?.videoUrl !== videoUrl))
+          if (!latestRow || (source ? !matchesSource(latest, latestRow, source) : latestRow.videoUrl !== videoUrl))
             throw new Error('来源成片已变化，请重新选帧。')
         }
         choice = { mode, videoUrl: frame.videoUrl, seconds: frame.seconds, ...(frame.sourceCardId && { sourceCardId: frame.sourceCardId }),
@@ -128,10 +143,11 @@ export function useScriptVideoReferenceFrames(
     } catch (cause) {
       if (!controller.signal.aborted) error.value = cause instanceof Error ? cause.message : '参考帧设置失败'
     } finally {
+      if (controller === writer && (saved || sourceVersion !== version)) await load(false, !saved)
       if (controller === writer) {
         changing.value = false
         writer = undefined
-        if (saved || sourceVersion !== version) await load(false, !saved)
+        if (refreshQueued) queueRefresh()
       }
     }
     return saved

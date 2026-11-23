@@ -42,7 +42,7 @@ test('定位时准备一次，重复相同上游状态不额外请求；切卡�
   assert.equal(calls.length, 3)
 })
 
-test('同一片段的上一段成片消失时，立即清掉参考行并忽略迟到的旧读取', async t => {
+test('同一片段的来源状态变化时，保留旧参考行直到确认成片消失', async t => {
   const previous = Promise.withResolvers()
   const empty = { tail: { kind: 'tail', mode: 'auto', state: 'missing' }, lighting: [] }
   let reads = 0
@@ -55,13 +55,14 @@ test('同一片段的上一段成片消失时，立即清掉参考行并忽略�
   const interrupted = calls.at(-1)
   assert.equal(app.frames.value.tail.videoUrl, clip)
   revision.value = '2'
-  assert.equal(app.frames.value, undefined)
-  assert.equal(interrupted.signal.aborted, true)
+  await nextTick()
+  assert.equal(app.frames.value.tail.videoUrl, clip)
+  assert.equal(interrupted.signal.aborted, false)
 
   previous.resolve(rows())
   await refreshing
-  assert.equal(app.frames.value, undefined)
-  await app.refresh()
+  await new Promise(resolve => setTimeout(resolve, 560))
+  assert.equal(calls.length, 3)
   assert.deepEqual(app.frames.value, empty)
 })
 
@@ -120,6 +121,23 @@ test('跨集截帧期间所选早段成片发生变化，拒绝保存已失效�
   assert.equal(selected.value.card.referenceFrameSettings, undefined)
 })
 
+test('截帧校验不因其它分集继续同步而拒绝仍可用的来源', async t => {
+  const capture = Promise.withResolvers(), recheck = Promise.withResolvers()
+  let reads = 0
+  const { app, selected, revision } = await setup(t, () => capture.promise, () => ++reads === 2 ? recheck.promise : rows())
+  const applying = app.choose(app.frames.value.tail, 'manual', 1.125)
+  revision.value = '2'
+  await nextTick()
+  capture.resolve({ ...rows(), candidate: { imageUrl: '/static/picked.jpg', videoUrl: clip, seconds: 1.125 } })
+  await next()
+  assert.equal(reads, 2)
+  revision.value = '3'
+  await nextTick()
+  recheck.resolve(rows())
+  assert.equal(await applying, true)
+  assert.deepEqual(selected.value.card.referenceFrameSettings?.tail, { mode: 'manual', videoUrl: clip, seconds: 1.125 })
+})
+
 test('中间片段可从项目任意集为尾帧和风格帧手选来源，保存分集归属', async t => {
   const future = { cardId: 'future-part', sourceEpisodeId: 'episode-99', videoUrl: '/static/videos/future.mp4', sourceLabel: '第99集 · 第2段 · 雨夜' }
   const state = () => ({ ...rows(), projectSources: [future], previousEpisodeSources: [] })
@@ -172,7 +190,7 @@ test('截帧期间上一段视频失效，保留错误并刷新成空槽', async
   const applying = app.choose(app.frames.value.tail, 'manual', 1)
   revision.value = '2'
   await nextTick()
-  assert.equal(app.frames.value, undefined)
+  assert.equal(app.frames.value.tail.videoUrl, clip)
 
   pending.reject(new Error('来源成片已更新'))
   assert.equal(await applying, false)
@@ -198,17 +216,57 @@ test('截帧中切换片段，迟到的结果与原片段按钮无法修改新�
   assert.equal(selected.value.card.referenceFrameSettings, undefined)
 })
 
-function framePlayer(t, frames, calls) {
+function framePlayer(t, frames, calls, choose = async () => true) {
   const component = readFileSync(new URL('../app/components/ScriptVideoReferenceFrames.vue', import.meta.url), 'utf8')
   const body = component.split('<script setup lang="ts">')[1].split('</script>')[0].replace(/^import .*$/gm, '')
   const script = ts.transpileModule(body, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
-  const props = { frames, choose: async (...params) => { calls.push(params); return true } }
+  const props = { get frames() { return typeof frames === 'function' ? frames() : frames },
+    choose: (...params) => { calls.push(params); return choose(...params) } }
   const scope = effectScope()
   t.after(() => scope.stop())
   return scope.run(() => runInNewContext(script + '\n;({ openPicker, metadata, useFrame, videos, canPick, pickedSource, sourceOptions, changeSource, ready, seconds })', {
     URL, computed, ref, watch, defineProps: () => props, defineEmits: () => () => {},
   }))
 }
+
+test('后台慢刷新和连续状态同步期间可保留并保存当前帧', async t => {
+  const pending = Promise.withResolvers()
+  let reads = 0
+  const { app, revision, selected } = await setup(t, body => ({
+    ...rows(), candidate: { imageUrl: '/static/picked.jpg', videoUrl: clip, seconds: body.seconds },
+  }), () => ++reads === 2 ? pending.promise : rows())
+  let applying
+  const calls = [], picker = framePlayer(t, () => app.frames.value, calls, (...params) => {
+    applying = app.choose(...params)
+    return applying
+  })
+  const row = app.frames.value.tail
+  picker.openPicker(row)
+  picker.videos.value = [{ currentSrc: 'https://test.invalid' + clip, baseURI: 'https://test.invalid/', duration: 5,
+    currentTime: 2.875, pause() {} }]
+  const video = picker.videos.value[0]
+  picker.metadata({ currentTarget: video }, row)
+  await nextTick()
+
+  const refreshing = app.refresh()
+  await next()
+  for (const update of ['2', '3', '4']) {
+    revision.value = update
+    await nextTick()
+  }
+  assert.equal(app.loading.value, false)
+  assert.equal(picker.ready.value, true)
+  assert.equal(picker.seconds.value, 2.875)
+  assert.equal(reads, 2)
+  assert.equal(app.frames.value.tail, row)
+  picker.useFrame(row)
+  assert.deepEqual(calls, [[row, 'manual', 2.875]])
+  assert.equal(await applying, true)
+  assert.deepEqual(selected.value.card.referenceFrameSettings?.tail, { mode: 'manual', videoUrl: clip, seconds: 2.875 })
+
+  pending.resolve(rows())
+  await refreshing
+})
 
 test('播放器用当前停帧的时间提交，另一视频元素的时间不会套用到新行', async t => {
   const frames = rows(), calls = []

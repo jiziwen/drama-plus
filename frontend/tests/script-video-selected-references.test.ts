@@ -508,6 +508,38 @@ test('本片段参考素材优先，手动选角色音色可补正文漏标并�
   }
 })
 
+test('本段实际使用的音频按编号在首屏，项目其余角色音色也可以选', async () => {
+  const roleWithVoice = (id: string, name: string) => ({
+    ...makeAsset(id, name), voiceAudio: { name: name + '.wav', url: '/static/uploads/' + id + '.wav' },
+  })
+  const candidates = Array.from({ length: 7 }, (_, i) => roleWithVoice('crowd-' + i, '候选角色' + i))
+  const first = roleWithVoice('first', '赵峰')
+  const second = roleWithVoice('second', '吴磊')
+  const library = roleWithVoice('library', '其他分集角色')
+  const rain: preview.PreviewAsset = { id: 'rain', name: '雨声', kind: 'audio', image: '',
+    voiceAudio: { name: '雨声.wav', url: '/static/uploads/rain.wav' } }
+  const assetList = [...candidates, library, first, second, rain]
+  const editor = setup([...candidates.map(asset => asset.id), first.id, second.id], { assetList })
+  const field = () => editor.nodes().find(n => n.type === menu)
+  editor.props.card.prompt = '镜头 01（0–3秒）\n画面与动作：@赵峰 与 @吴磊站在门边。\n对白／音效：@赵峰：“起来。”；@吴磊：“遵命。”'
+  const options = Array.from(field().props.options as {
+    id: string; label: string; value: string; kind: string; audioNumber?: number; menuGroup?: string; previewOnly?: boolean
+  }[]).filter(option => !option.previewOnly)
+  assert.deepEqual(options.slice(0, 2).map(option => [option.label, option.audioNumber]), [['赵峰', 1], ['吴磊', 2]])
+  const local = options.filter(option => option.menuGroup === '本片段参考素材')
+  assert.equal(local.length, 2 * (candidates.length + 2))
+  assert.ok(options.slice(0, local.length).every(option => option.menuGroup === '本片段参考素材'))
+  const project = options.filter(option => option.menuGroup === '全项目音频')
+  assert.deepEqual(project.map(option => option.label), ['雨声', '其他分集角色'])
+  assert.equal(options.filter(option => option.id === 'audio-choice-second').length, 1)
+
+  const voice = project.find(option => option.label === library.name)!
+  const text = field().props['model-value'].replace('@吴磊 @音频2：', `@吴磊 @音频2 @${voice.value}：`)
+  await editPrompt(field(), text)
+  assert.match(field().props['model-value'], /@吴磊 @音频2：“遵命。”/u)
+  assert.equal(buildScriptVideoDelivery(editor.props.card, assetList).voices[1]?.asset.id, library.id)
+})
+
 test('菜单按真实名称选音频，编辑器和最终提示词显示两位编号', async () => {
   const assetList: preview.PreviewAsset[] = Array.from({ length: 12 }, (_, i) => ({
     id: `audio-${i + 1}`, name: `录音文件-${i + 1}`, kind: 'audio', image: '',

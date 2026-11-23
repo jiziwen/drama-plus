@@ -31,7 +31,7 @@ export function validateReferenceImages(value: unknown, required = false): strin
   })
 }
 
-export function assertImageMode(config: AIConfig, mode: 'text' | 'reference') {
+export function assertImageMode(config: Pick<AIConfig, 'provider' | 'model' | 'comfyui'>, mode: 'text' | 'reference') {
   if (config.provider === 'comfyui') {
     if (config.comfyui?.workflow) {
       if (mode === 'reference' && (!config.comfyui.referenceNode || !config.comfyui.referencePrefix || config.comfyui.maxReferences === 0)) throw new Error('所选自定义工作流未配置参考图输入')

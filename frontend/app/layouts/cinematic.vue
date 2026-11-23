@@ -11,8 +11,9 @@
         <NuxtLink :to="interfaceLink('/')" :class="{ selected: route.path === '/' && route.query.view !== 'library' }"><span>01</span>创作空间</NuxtLink>
         <NuxtLink :to="interfaceLink('/?view=library')" :class="{ selected: route.query.view === 'library' || route.path.startsWith('/drama/') }"><span>02</span>故事档案</NuxtLink>
         <NuxtLink :to="interfaceLink('/assets')" :class="{ selected: route.path === '/assets' }"><span>03</span>资产画廊</NuxtLink>
-        <NuxtLink :to="interfaceLink('/script-to-video')" :class="{ selected: route.path.includes('script-to-video') }" title="剧本转视频"><span>04</span>剧本转视频</NuxtLink>
-        <NuxtLink :to="interfaceLink('/settings')" :class="{ selected: route.path === '/settings' }"><span>05</span>工作室</NuxtLink>
+        <NuxtLink :to="interfaceLink('/novel-to-script')" :class="{ selected: route.path === '/novel-to-script' }"><span>04</span>小说转剧本</NuxtLink>
+        <NuxtLink :to="interfaceLink('/script-to-video')" :class="{ selected: route.path.includes('script-to-video') }" title="剧本转视频"><span>05</span>剧本转视频</NuxtLink>
+        <NuxtLink :to="interfaceLink('/downmarket-drama')" :class="{ selected: route.path === '/downmarket-drama' }"><span>06</span>一键下沉</NuxtLink>
       </nav>
       <div class="cine-header-actions">
         <ReleaseNotesBell />

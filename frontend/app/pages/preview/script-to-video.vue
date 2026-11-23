@@ -2288,7 +2288,12 @@ function saveViewOnPageHide() { keepViewPosition(true) }
 watch([selectedProjectId, selectedEpisodeId, selectingEpisode, stage, () => selectedCard.value?.id, editorTab],
   () => keepViewPosition(), { flush: 'post' })
 onMounted(async () => {
-  lastViewPosition = readScriptVideoViewPosition()
+  const route = useRoute()
+  const requestedProject = typeof route.query.project === 'string' ? route.query.project : undefined
+  const requestedEpisode = typeof route.query.episode === 'string' ? route.query.episode : undefined
+  lastViewPosition = requestedProject
+    ? { projectId: requestedProject, episodeId: requestedEpisode }
+    : readScriptVideoViewPosition()
   window.addEventListener('pagehide', saveViewOnPageHide, true)
   window.addEventListener('online', reconnect)
   try {

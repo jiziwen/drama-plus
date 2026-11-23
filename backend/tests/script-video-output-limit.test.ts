@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { resolveScriptVideoOutputLimit } from '../src/services/script-video-output-limit.js'
+import { resolveScriptVideoOutputLimit, resolveTextModelLimits } from '../src/services/script-video-output-limit.js'
 
 const base = { provider: 'openai', baseURL: 'https://gateway.example/v1', model: 'fictional', apiKey: 'test-one' }
 
@@ -101,4 +101,18 @@ test('uses OpenRouter catalog metadata without sending credentials to a differen
     ] })
   })
   assert.equal(result, 131072)
+})
+
+test('uses gateway input and context limits separately from the public model fallback', async () => {
+  const config = { ...base, model: 'gpt-6.2-sol', apiKey: 'metadata-fixture' }
+  const limits = await resolveTextModelLimits(config, async url => {
+    if (String(url).endsWith('/gpt-6.2-sol')) return Response.json({
+      id: config.model, max_input_tokens: 475000, context_window: 500000,
+    })
+    return Response.json({ data: [{ id: config.model, max_output_tokens: 20000 }] })
+  })
+  assert.deepEqual(limits, { maxInputTokens: 475000, contextWindow: 500000, maxOutputTokens: 20000 })
+  const fallback = await resolveTextModelLimits({ ...config, apiKey: 'no-metadata-fixture' },
+    async () => new Response(null, { status: 403 }))
+  assert.equal(fallback.maxInputTokens, 922000)
 })

@@ -85,7 +85,7 @@
                 <component v-else :is="groupIcon(opt.kind)" :size="12" :stroke-width="2" />
               </span>
               <span class="mention-name">@{{ opt.label }}</span>
-              <span class="mention-type">{{ opt.group }}</span>
+              <span class="mention-type">{{ optionType(opt) }}</span>
             </button>
           </template>
         </template>
@@ -423,10 +423,12 @@ function mentionAfterCaret() {
   return null
 }
 
+const optionType = opt => opt.audioNumber ? `音频${opt.audioNumber}` : opt.group
 const filteredOptions = computed(() => {
   const q = searchQuery.value.trim().toLowerCase()
   return props.options.filter(o => !o.previewOnly &&
-    (!q || String(o.value).toLowerCase().includes(q) || String(o.label || '').toLowerCase().includes(q)),
+    (!q || String(o.value).toLowerCase().includes(q) || String(o.label || '').toLowerCase().includes(q) ||
+      String(optionType(o) || '').toLowerCase().includes(q)),
   )
 })
 

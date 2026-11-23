@@ -25,7 +25,9 @@ import settings from './routes/settings.js'
 import storage from './routes/storage.js'
 import apiCallLogs from './routes/apiCallLogs.js'
 import localRuntime from './routes/localRuntime.js'
-import scriptVideo from './routes/script-video.js'
+import scriptVideo, { scriptVideoStore } from './routes/script-video.js'
+import { createDownmarketDramaRoutes } from './routes/downmarket-drama.js'
+import { createNovelStoryboardRoutes } from './routes/novel-storyboard.js'
 import jimeng from './routes/jimeng.js'
 import libtv, { libtvCallbackRoutes } from './routes/libtv.js'
 import siteSession, { requireLocalSiteSession } from './routes/site-session.js'
@@ -86,6 +88,8 @@ api.route('/settings', settings)
 api.route('/api-call-logs', apiCallLogs)
 api.route('/local-runtime', localRuntime)
 api.route('/script-video', scriptVideo)
+api.route('/downmarket-drama', createDownmarketDramaRoutes(scriptVideoStore))
+api.route('/novel-storyboard', createNovelStoryboardRoutes())
 api.route('/jimeng', jimeng)
 api.route('/libtv', libtv)
 

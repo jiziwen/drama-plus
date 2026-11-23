@@ -1,4 +1,7 @@
 import type { ScriptVideoPromptMode } from '../../../backend/src/services/video-prompt-mode'
+import type { DownmarketDrama, DownmarketDramaListItem, DownmarketDramaProgress, DramaCommand, DramaModelOption } from '../../../backend/src/services/downmarket-drama-types'
+import type { NovelChapter, NovelCommand, NovelPace, NovelProject, NovelProjectSummary } from '../../../backend/src/services/novel-storyboard-types'
+import type { ProjectModelOption } from '../../../backend/src/services/project-model-options'
 
 const BASE = '/api/v1'
 
@@ -11,7 +14,7 @@ export function apiErrorMessage(payload: unknown, status: number): string {
 }
 
 async function req<T = any>(method: string, path: string, body?: any, logBody = true): Promise<T> {
-  const opts: RequestInit = body instanceof FormData
+  const opts: RequestInit = typeof FormData !== 'undefined' && body instanceof FormData
     ? { method, body }
     : { method, headers: { 'Content-Type': 'application/json' }, ...(body && { body: JSON.stringify(body) }) }
 
@@ -44,6 +47,42 @@ export const api = {
   post: <T = any>(p: string, b?: any) => req<T>('POST', p, b),
   put: <T = any>(p: string, b?: any) => req<T>('PUT', p, b),
   del: <T = any>(p: string) => req<T>('DELETE', p),
+}
+
+export const downmarketDramaAPI = {
+  list: () => api.get<DownmarketDramaListItem[]>('/downmarket-drama'),
+  models: () => api.get<DramaModelOption[]>('/downmarket-drama/models'),
+  get: (id: string) => api.get<DownmarketDrama>('/downmarket-drama/' + encodeURIComponent(id)),
+  delete: (id: string) => api.del<{ id: string }>('/downmarket-drama/' + encodeURIComponent(id)),
+  progress: (id: string, revision: number) =>
+    req<DownmarketDramaProgress>('GET', '/downmarket-drama/' + encodeURIComponent(id) + '/progress?revision=' + revision, undefined, false),
+  create: (title: string) => req<DownmarketDrama>('POST', '/downmarket-drama', { title }, false),
+  importReference: (id: string, revision: number, file: File) => {
+    const form = new FormData()
+    form.set('file', file)
+    form.set('revision', String(revision))
+    return req<DownmarketDrama>('PUT', '/downmarket-drama/' + encodeURIComponent(id) + '/reference', form, false)
+  },
+  command: (id: string, revision: number, command: DramaCommand) =>
+    req<DownmarketDrama>('POST', '/downmarket-drama/' + encodeURIComponent(id) + '/commands', { revision, command }, false),
+}
+
+export const novelStoryboardAPI = {
+  list: () => api.get<NovelProjectSummary[]>('/novel-storyboard'),
+  models: () => api.get<ProjectModelOption[]>('/novel-storyboard/models'),
+  get: (id: string) => api.get<NovelProject>('/novel-storyboard/' + encodeURIComponent(id)),
+  delete: (id: string) => api.del<{ id: string }>('/novel-storyboard/' + encodeURIComponent(id)),
+  chapter: (id: string, number: number) =>
+    api.get<NovelChapter>('/novel-storyboard/' + encodeURIComponent(id) + '/chapters/' + number),
+  import: (file: File, pace: NovelPace, adaptationNotes: string) => {
+    const form = new FormData()
+    form.set('file', file)
+    form.set('pace', pace)
+    if (adaptationNotes.trim()) form.set('adaptationNotes', adaptationNotes.trim())
+    return req<NovelProject>('POST', '/novel-storyboard', form, false)
+  },
+  command: (id: string, revision: number, command: NovelCommand) =>
+    req<NovelProject>('POST', '/novel-storyboard/' + encodeURIComponent(id) + '/commands', { revision, command }, false),
 }
 
 export const promptModeAPI = {

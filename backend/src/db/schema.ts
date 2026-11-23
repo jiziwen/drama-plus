@@ -368,3 +368,38 @@ export const appSettings = sqliteTable('app_settings', {
   value: text('value').notNull(),
   updatedAt: text('updated_at').notNull(),
 })
+
+export const downmarketDramas = sqliteTable('downmarket_dramas', {
+  id: text('id').primaryKey(),
+  title: text('title').notNull(),
+  revision: integer('revision').notNull(),
+  document: text('document').notNull(),
+  leaseUntil: integer('lease_until').notNull().default(0),
+  updatedAt: text('updated_at').notNull(),
+})
+
+export const downmarketDramaReferences = sqliteTable('downmarket_drama_references', {
+  dramaId: text('drama_id').primaryKey().references(() => downmarketDramas.id, { onDelete: 'cascade' }),
+  source: text('source').notNull(),
+})
+
+export const novelProjects = sqliteTable('novel_projects', {
+  id: text('id').primaryKey(),
+  title: text('title').notNull(),
+  fileName: text('file_name').notNull(),
+  revision: integer('revision').notNull(),
+  document: text('document').notNull(),
+  leaseUntil: integer('lease_until').notNull().default(0),
+  updatedAt: text('updated_at').notNull(),
+})
+
+export const novelChapters = sqliteTable('novel_chapters', {
+  projectId: text('project_id').notNull().references(() => novelProjects.id, { onDelete: 'cascade' }),
+  number: integer('number').notNull(),
+  title: text('title').notNull(),
+  source: text('source').notNull(),
+  version: integer('version').notNull().default(0),
+  segmentCount: integer('segment_count').notNull().default(0),
+  storyboard: text('storyboard'),
+  assets: text('assets'),
+}, table => [primaryKey({ columns: [table.projectId, table.number] })])

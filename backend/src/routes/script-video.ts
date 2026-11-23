@@ -1986,4 +1986,5 @@ export function createScriptVideoRoutes(
   return app
 }
 
-export default createScriptVideoRoutes()
+export const scriptVideoStore = new ScriptVideoStore()
+export default createScriptVideoRoutes(scriptVideoStore)

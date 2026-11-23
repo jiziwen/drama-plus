@@ -25,6 +25,7 @@ import { resolvePublicMediaUrl, resolvePublicMediaUrls } from './public-media.js
 import { isPreTlsConnectionReset } from '../utils/network-error.js'
 import { mkdir, mkdtemp, rename, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
+import sharp from 'sharp'
 import { STORAGE_ROOT } from '../utils/paths.js'
 import { downloadJimengVideo, inspectJimengVideo, JimengCliError, runJimengVideo, withJimengAccount, type JimengVideoRunInput } from './jimeng-cli.js'
 import { prepareJimengVideo, validateJimengVideo } from './jimeng-video.js'
@@ -64,6 +65,7 @@ interface GenerateImageParams {
   prompt: string
   model?: string
   size?: string
+  requireLandscape16x9?: boolean
   referenceImages?: string[]
   frameType?: string
   configId?: number
@@ -119,6 +121,7 @@ async function enqueueImage(params: GenerateImageParams): Promise<number> {
     model: params.model || config.model,
   }, {
     size: params.size || (config.provider === 'comfyui' ? undefined : '1920x1080'),
+    ...(params.requireLandscape16x9 && { requireLandscape16x9: true }),
     frameType: params.frameType,
     referenceImages,
   })
@@ -794,6 +797,7 @@ async function pollComfyTask(record: SysTaskRecord, config: AIConfig, taskId: st
 
 async function handleImageComplete(record: SysTaskRecord, imageUrl: string, headers?: Record<string, string>) {
   const localPath = await downloadFile(imageUrl, 'images', headers)
+  if (!await validateGeneratedImageAspect(record, localPath)) return
   // 列表页缩略图（前端按命名约定推导地址，失败不影响主流程）
   await generateImageThumb(localPath)
 
@@ -809,6 +813,7 @@ async function handleImageComplete(record: SysTaskRecord, imageUrl: string, head
 
 async function handleImageCompleteBase64(record: SysTaskRecord, base64Data: string, mimeType: string) {
   const localPath = await saveBase64Image(base64Data, mimeType, 'images')
+  if (!await validateGeneratedImageAspect(record, localPath)) return
   await generateImageThumb(localPath)
 
   await db.update(schema.sysTask)
@@ -819,6 +824,20 @@ async function handleImageCompleteBase64(record: SysTaskRecord, base64Data: stri
 
   await writeBackImageAssets(record, localPath)
   scheduleRetiredUploadCleanup()
+}
+
+async function validateGeneratedImageAspect(record: SysTaskRecord, localPath: string) {
+  if (!parseTaskParams(record.params).requireLandscape16x9) return true
+  const absolute = getAbsolutePath(localPath)
+  const metadata = await sharp(absolute).metadata().catch(() => undefined)
+  const { width, height } = metadata?.autoOrient ?? metadata ?? {}
+  if (width && height && Math.abs(height - width * 9 / 16) <= 1) return true
+  await rm(absolute, { force: true }).catch(() => {})
+  const message = width && height
+    ? `图片为 ${width}×${height}，比例不符。请在右上角设置启用支持 16:9 横图的图片模型。`
+    : '图片服务返回的文件无法读取，请重试或切换图片模型。'
+  await failTask(record.id, message, 'image_aspect_invalid')
+  return false
 }
 
 // 图片完成后回写业务表：分镜(按 frameType)、角色、场景、道具

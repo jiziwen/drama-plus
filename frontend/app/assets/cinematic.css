@@ -223,6 +223,11 @@ html:root[data-studio-preview="cinematic"] body .cine-content > .page.cine-home-
   .cine-gallery-pagination > span { font-size: 10px; }
   .cine-gallery-pagination i { margin-left: 3px; font-size: 8px; }
 }
+
+@media(max-width:480px) {
+  .cine-navigation { justify-content: flex-start; overflow-x: auto; }
+  .cine-navigation a { flex: none; }
+}
 @media(max-height:720px) and (min-width:761px) { .cine-gallery-intro { top: 20px; } .cine-gallery-intro h1 { font-size: 28px; margin-top: 8px; } .cine-gallery-bottom { bottom: 75px; } .cine-selected-story h2 { font-size: 31px; } .cine-gallery-footer { bottom: 15px; } }
 @media(max-width:400px) {
   .cine-header { padding-inline: 16px; column-gap: 8px; }

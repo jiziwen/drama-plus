@@ -935,6 +935,27 @@ export class ScriptVideoStore {
     await this.exclusive(id, async () => this.writeRecord({ project, jobs: [] }))
     return project
   }
+  /** Import an immutable source snapshot in one transaction. Repeating the same import opens the existing project. */
+  async importScriptSnapshot(id: string, input: {
+    title: string
+    episodes: { title: string; script: string }[]
+    assets: Pick<ScriptVideoDeliveryAsset, 'id' | 'kind' | 'name' | 'image'>[]
+    stylePreset: ScriptVideoStylePreset
+  }): Promise<ScriptVideoProject> {
+    assertId(id)
+    return this.exclusive(id, async () => this.catalog.db.transaction(() => {
+      if (this.catalog.project(id)) return this.readProject(id)
+      const episodes = input.episodes.map(({ title, script }, index) => ({
+        ...makeEpisode(), number: index + 1, title, script,
+      }))
+      const project = sanitizeProject({
+        id, title: input.title, revision: 1, assets: input.assets, episodes,
+        episodeId: episodes[0]?.id || '', settings: { stylePreset: input.stylePreset },
+      })
+      this.writeRecord({ project, jobs: [] })
+      return project
+    }).immediate())
+  }
   async get(id: string): Promise<ScriptVideoProject> {
     await this.init
     return this.catalog.db.transaction(() => this.readProject(id))()

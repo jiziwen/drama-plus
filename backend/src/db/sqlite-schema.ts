@@ -323,6 +323,38 @@ export const sqliteSchemaStatements = [
     value TEXT NOT NULL,
     updated_at TEXT NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS downmarket_dramas (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    document TEXT NOT NULL,
+    lease_until INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS downmarket_drama_references (
+    drama_id TEXT PRIMARY KEY REFERENCES downmarket_dramas(id) ON DELETE CASCADE,
+    source TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS novel_projects (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    file_name TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    document TEXT NOT NULL,
+    lease_until INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS novel_chapters (
+    project_id TEXT NOT NULL REFERENCES novel_projects(id) ON DELETE CASCADE,
+    number INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    source TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 0,
+    segment_count INTEGER NOT NULL DEFAULT 0,
+    storyboard TEXT,
+    assets TEXT,
+    PRIMARY KEY (project_id, number)
+  )`,
 ]
 
 /**

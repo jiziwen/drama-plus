@@ -623,20 +623,21 @@ const mentionOptions = computed(() => {
       image: asset.image.startsWith('/script-video-preview/') ? undefined : asset.image || undefined,
     }))
   const currentAudio = [], libraryAudio = []
-  const references = [...scriptVideoAudioReferences(props.assets)]
-  for (const [name, asset] of [...references.filter(([, asset]) => selectedIds.has(asset.id)),
-    ...references.filter(([, asset]) => !selectedIds.has(asset.id))]) {
+  const audioNumbers = new Map(promptVoices.value.flatMap(({ roles }, i) => roles.map(role => [role.id, i + 1] as const)))
+  for (const [name, asset] of scriptVideoAudioReferences(props.assets)) {
     const audioUrl = asset.voiceAudio?.url
-    const selected = selectedIds.has(asset.id)
-    if (!audioUrl || asset.kind === 'character' && !selected) continue
+    if (!audioUrl) continue
+    const audioNumber = audioNumbers.get(asset.id)
+    const selected = audioNumber !== undefined || selectedIds.has(asset.id)
     const roleVoice = asset.kind === 'character'
     const option = { id: roleVoice ? `audio-choice-${asset.id}` : asset.id, label: asset.name, value: name, kind: 'audio',
-      group: roleVoice ? '角色音色' : '音频', audioUrl,
+      group: roleVoice ? '角色音色' : '音频', audioUrl, audioNumber,
       image: roleVoice && !asset.image.startsWith('/script-video-preview/') ? asset.image || undefined : undefined,
-      menuGroup: selected ? segmentReferenceGroup : undefined }
+      menuGroup: selected ? segmentReferenceGroup : '全项目音频' }
     if (selected) currentAudio.push(option)
     else libraryAudio.push(option)
   }
+  currentAudio.sort((a, b) => (a.audioNumber ?? Number.MAX_SAFE_INTEGER) - (b.audioNumber ?? Number.MAX_SAFE_INTEGER))
   const numberedPreviews = promptVoices.value.map(({ asset, roles }, i) => ({
     id: `voice-${i + 1}`, label: `音频${i + 1}`, value: `音频${i + 1}`,
     kind: 'audio', group: roles.map(role => role.name).join('、'), previewOnly: true, audioUrl: asset.voiceAudio?.url,

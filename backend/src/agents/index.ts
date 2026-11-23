@@ -15,7 +15,7 @@ import { createOpenAI } from '@ai-sdk/openai'
 import { Agent as HttpAgent, EnvHttpProxyAgent } from 'undici'
 import { adaptAicostTextFetch, adaptOfficialOpenAIFetch, isAicostHaiku55, selectAgentOpenAIModel } from './openai-model.js'
 import { getTextConfig, getTextProviderBaseUrl, getConfigById } from '../services/ai.js'
-import { resolveScriptVideoOutputLimit } from '../services/script-video-output-limit.js'
+import { resolveTextModelLimits } from '../services/script-video-output-limit.js'
 import { SCRIPT_VIDEO_TEXT_TIMEOUT_MS } from '../services/script-video-text-timeout.js'
 import { logTaskProgress } from '../utils/task-logger.js'
 import { scriptTools } from './tools/script-tools.js'
@@ -346,9 +346,9 @@ async function getModel(fileModel: string | undefined, modelOverride?: string, t
   const fetchImpl = standardParameters || isOfficialOpenAIHost(resolvedBaseURL)
     ? tempFetch
     : createMaxTokensFetch(providerName, tempFetch)
-  const maxOutputTokens = standardParameters
-    ? await resolveScriptVideoOutputLimit({ provider: providerName, baseURL: resolvedBaseURL, model: modelName, apiKey: textConfig.apiKey })
-    : undefined
+  const limits = standardParameters
+    ? await resolveTextModelLimits({ provider: providerName, baseURL: resolvedBaseURL, model: modelName, apiKey: textConfig.apiKey })
+    : {}
   const transport = retryTls ? retryBeforeTlsHandshake(fetchImpl) : fetchImpl
 
   if (providerName === 'gemini') {
@@ -357,7 +357,7 @@ async function getModel(fileModel: string | undefined, modelOverride?: string, t
       baseURL: resolvedBaseURL,
       fetch: bindApiCallFetch({ provider: providerName, model: modelName, category: 'text' }, isOfficialOpenAIHost(resolvedBaseURL) ? adaptOfficialOpenAIFetch(transport) : transport),
     })
-    return { model: googleProvider(modelName), maxOutputTokens }
+    return { model: googleProvider(modelName), ...limits, aicostHaiku55: false }
   }
 
   const provider = createOpenAI({
@@ -365,7 +365,7 @@ async function getModel(fileModel: string | undefined, modelOverride?: string, t
     apiKey: textConfig.apiKey,
     fetch: bindApiCallFetch({ provider: providerName, model: modelName, category: 'text' }, isOfficialOpenAIHost(resolvedBaseURL) ? adaptOfficialOpenAIFetch(transport) : transport),
   } as any)
-  return { model: selectAgentOpenAIModel(provider, modelName, resolvedBaseURL), maxOutputTokens, aicostHaiku55 }
+  return { model: selectAgentOpenAIModel(provider, modelName, resolvedBaseURL), ...limits, aicostHaiku55 }
 }
 
 /** Resolve the actual configuration and model before choosing its output budget. */

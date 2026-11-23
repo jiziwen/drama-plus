@@ -58,6 +58,35 @@ test('逐处引用模式保留原来的图片和声音插入方式，切换不�
   assert.deepEqual(guide.missingVoices, inline.missingVoices)
 })
 
+test('最终提示词和提交保留续接对白手改的内心 OS，沿用心声与音色归属', () => {
+  const providerOptions = [options,
+    { provider: 'libtv', model: 'star-video2.5' },
+    { provider: 'aicost', model: 'seedance2.5-ae-480p' },
+    { provider: 'volcengine', model: 'doubao-seedance-2-5-260628' },
+    { provider: 'aicost', model: 'seedance2.0-720p' },
+    { provider: 'minimax', model: 'wf-minimax-h3' },
+  ]
+  const acting = '（内心OS、续）【焦躁／紧凑】'
+  const direct = '先等等。'
+  for (const marker of ['(内心OS)', '(内心 OS)', '（内心 OS）', '内心 (OS)']) {
+    const edited = { ...card, prompt: card.prompt.replace('(OS)：“先等等。”', `${acting} ${marker}：“${direct}”`) }
+    for (const provider of providerOptions) for (const promptMode of ['reference-guide', 'inline'] as const) {
+      const request = { ...provider, promptMode }
+      const delivery = buildScriptVideoDelivery(edited, assets, request)
+      const preview = buildScriptVideoDelivery(edited, assets, { ...request, preview: true })
+      assert.equal(preview.prompt, delivery.prompt)
+      const dialogue = delivery.prompt.split('\n').find(line => line.includes(direct)) || ''
+      const authored = `${acting} ${marker}`
+      assert.ok(dialogue.includes(authored), `${provider.provider}/${promptMode}: ${dialogue}`)
+      assert.match(dialogue, /萧天策_将军盔甲 (?:@?音频2|<Audio 2>)/u)
+      assert.match(dialogue.slice(dialogue.indexOf(authored) + authored.length), /^[ \t]*：“先等等。”$/u)
+      assert.doesNotMatch(delivery.prompt, /萧天策_将军盔甲保持对应参考图的造型，是本镜画内发声者/u)
+      assert.deepEqual(delivery.voices.map(group => group.asset.id), ['gu', 'xiao'])
+      assert.deepEqual(getScriptVideoVoiceInputs(edited, assets, request), getScriptVideoVoiceInputs(card, assets, request))
+    }
+  }
+})
+
 test('续接和光线帧编号与专用语义集中在正文前，语音和素材附件顺序仍相同', () => {
   const frameOptions = {
     ...options, stylePreset,

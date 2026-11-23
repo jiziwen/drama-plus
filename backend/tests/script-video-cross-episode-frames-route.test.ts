@@ -459,13 +459,19 @@ test('下一集首段在选帧、预览、导出和视频提交中承接上一�
     const seek = { kind: 'tail', seconds: 0.25, sourceCardId: 'previous-first', expectedVideoUrl: videoUrl }
     for (const [route, candidate] of [
       [firstRoute, { ...seek, expectedVideoUrl: historicalUrl }],
-      [firstRoute, { ...seek, sourceCardId: 'older-clip', expectedVideoUrl: archivedUrl }],
       [firstRoute, { ...seek, sourceCardId: 'previous-last' }],
-      [secondRoute, seek],
     ] as const) {
       const rejected = await request(route, candidate)
       assert.equal(rejected.status, 409, await rejected.clone().text())
       assert.equal((await rejected.json()).errorCode, 'REFERENCE_FRAME_SOURCE_CHANGED')
+    }
+    for (const [route, candidate] of [
+      [firstRoute, { ...seek, sourceCardId: 'older-clip', expectedVideoUrl: archivedUrl }],
+      [secondRoute, seek],
+    ] as const) {
+      const selected = await wholeRead(route, candidate)
+      assert.ok(selected.candidate.imageUrl, '任意片段可明确选择当前项目其它集的成片')
+      assert.equal(selected.candidate.sourceCardId, candidate.sourceCardId)
     }
     const tail = (await wholeRead(firstRoute, seek)).candidate
     const light = (await wholeRead(firstRoute, { kind: 'lighting', startShot: 1, seconds: 0.5,

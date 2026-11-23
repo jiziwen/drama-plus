@@ -1400,6 +1400,29 @@ test('保存旧长 OS 时只保留短 OS，原有音频与表演提示及对白�
   assert.equal((await store.get(project.id)).episodes[0].cards[0].prompt, card.prompt)
 }))
 
+test('手工编辑的简短内心 OS 标注在自动保存、后台读取和重开后保持原样', async () => fixture(async (store, directory) => {
+  const project = await store.create('手工心声编辑')
+  project.assets = [{ id: 'lead', name: '魏忠国', kind: 'character', image: '/static/uploads/lead.png' }]
+  const [episode] = project.episodes
+  const continued = '对白／音效：@魏忠国 @音频1（内心OS、续）【焦躁／紧凑】 '
+  const prompt = [...['(内心OS)', '(内心 OS)', '（内心OS）', '（内心 OS）', '内心 (OS)']
+    .map(cue => `${continued}${cue}：“他说的是内心(OS)。”`),
+    '对白／音效：@魏忠国内心 (OS)：“还是得回去。”'].join('\n')
+  episode.cards = [{ id: 'card', prompt: `${continued}(OS)：“还是得回去。”`, assetIds: ['lead'], shots: [], duration: 3 }]
+  await store.update(project.id, project, project.revision)
+  const saved = await store.applyChanges(project.id, {
+    clientId: 'editor', sequence: 1, changes: [
+      { target: 'card', episodeId: episode.id, id: 'card', fields: { prompt } },
+    ],
+  })
+  assert.equal(saved.episodes[0].cards[0].prompt, prompt)
+  assert.equal((await store.episode(project.id, episode.id)).episode.cards[0].prompt, prompt)
+  const reopened = new ScriptVideoStore(directory)
+  try {
+    assert.equal((await reopened.episode(project.id, episode.id)).episode.cards[0].prompt, prompt)
+  } finally { await reopened.close() }
+}))
+
 test('读取有无素材的旧稿都缩短 OS，保留风格、对白、历史、版本和磁盘原文', async () => fixture(async (store, directory) => {
   const longOs = '（内心 OS，角色闭口，嘴唇不动，不对口型）'
   const style = { id: 'custom' as const, name: '心声格式测试', prefix: `对白／音效：顾凌天${longOs}：“风格原文。”` }

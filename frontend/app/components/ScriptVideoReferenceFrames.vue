@@ -21,11 +21,11 @@
       </div>
       <div v-if="pickedKey === keyOf(row) && pickedSource" class="sv-frame-picker">
         <div v-if="sourceOptions.length" class="sv-frame-source">
-          <span>上集来源片段</span>
-          <BaseSelect aria-label="上集来源片段" :model-value="sourceKey(pickedSource, pickedSourceCardId)" :options="sourceOptions"
-            :searchable="false" :disabled="busy" @update:model-value="changeSource" />
+          <span>来源成片（全部分集）</span>
+          <BaseSelect aria-label="选帧来源成片" :model-value="sourceKey(pickedSource, pickedSourceCardId, pickedSourceEpisodeId)" :options="sourceOptions"
+            searchable :disabled="busy" @update:model-value="changeSource" />
         </div>
-        <video ref="videos" :key="sourceKey(pickedSource, pickedSourceCardId)" :src="pickedSource" controls playsinline preload="metadata"
+        <video ref="videos" :key="sourceKey(pickedSource, pickedSourceCardId, pickedSourceEpisodeId)" :src="pickedSource" controls playsinline preload="metadata"
           :aria-label="`${label(row)}来源成片`" @loadedmetadata="metadata($event, row)"
           @timeupdate="readTime" @seeked="readTime" @error="playbackError = '来源成片暂时无法播放。'" />
         <span v-if="playbackError" role="alert">{{ playbackError }}</span>
@@ -58,28 +58,33 @@ const rows = computed(() => [props.frames?.tail ?? emptyTail, ...(props.frames?.
 const busy = computed(() => props.loading || props.changing)
 const pickedKey = ref(''), pickedSource = ref(''), ready = ref(false), seconds = ref<number>(), playbackError = ref('')
 const pickedSourceCardId = ref<string>()
+const pickedSourceEpisodeId = ref<string>()
 const videos = ref<HTMLVideoElement[]>([])
 const keyOf = (row: Row) => row.kind === 'tail' ? 'tail' : 'lighting-' + row.startShot
-const previousEpisodeSources = computed(() => props.frames?.previousEpisodeSources ?? [])
+const manualSources = computed(() => props.frames?.projectSources ?? props.frames?.previousEpisodeSources ?? [])
 const pickerRow = computed(() => rows.value.find(row => keyOf(row) === pickedKey.value))
-const sourceKey = (videoUrl: string, cardId?: string) => JSON.stringify([cardId, videoUrl])
+const sourceKey = (videoUrl: string, cardId?: string, sourceEpisodeId?: string) =>
+  JSON.stringify(sourceEpisodeId ? [sourceEpisodeId, cardId, videoUrl] : [cardId, videoUrl])
 function sourceChoices(row: Row) {
-  const choices = previousEpisodeSources.value
+  const choices = manualSources.value
   if (!choices.length || !row.videoUrl || !row.sourceCardId ||
-      choices.some(source => source.cardId === row.sourceCardId && source.videoUrl === row.videoUrl)) return choices
-  return [{ cardId: row.sourceCardId, videoUrl: row.videoUrl, sourceLabel: (row.sourceLabel || '当前参考帧') + '（已选版本）' }, ...choices]
+      choices.some(source => source.cardId === row.sourceCardId && source.videoUrl === row.videoUrl &&
+        (!row.sourceEpisodeId || source.sourceEpisodeId === row.sourceEpisodeId))) return choices
+  return [{ cardId: row.sourceCardId, videoUrl: row.videoUrl,
+    ...(row.sourceEpisodeId && { sourceEpisodeId: row.sourceEpisodeId }), sourceLabel: (row.sourceLabel || '当前参考帧') + '（已选版本）' }, ...choices]
 }
 const pickerSources = computed(() => pickerRow.value ? sourceChoices(pickerRow.value) : [])
 const sourceOptions = computed(() => pickerSources.value.map(source => ({
-  value: sourceKey(source.videoUrl, source.cardId), label: source.sourceLabel,
+  value: sourceKey(source.videoUrl, source.cardId, source.sourceEpisodeId), label: source.sourceLabel,
 })))
 const selectedSource = computed(() => pickerSources.value.find(source =>
-  source.cardId === pickedSourceCardId.value && source.videoUrl === pickedSource.value))
+  source.cardId === pickedSourceCardId.value && source.videoUrl === pickedSource.value &&
+  source.sourceEpisodeId === pickedSourceEpisodeId.value))
 function canPick(row: Row) {
-  return !!row.videoUrl || (row.kind === 'tail' || row.startShot !== undefined) && previousEpisodeSources.value.length > 0
+  return !!row.videoUrl || (row.kind === 'tail' || row.startShot !== undefined) && manualSources.value.length > 0
 }
 function label(row: Row) {
-  if (row.kind === 'tail') return previousEpisodeSources.value.length ? '续接参考帧' : '上一段尾帧'
+  if (row.kind === 'tail') return props.frames?.previousEpisodeSources?.length ? '续接参考帧' : '上一段尾帧'
   const span = row.endShot && row.endShot !== row.startShot ? `${row.startShot}–${row.endShot}` : row.startShot
   return ['风格参考', row.sceneName, row.endShot && span && `镜头 ${span}`].filter(Boolean).join(' · ')
 }
@@ -88,39 +93,43 @@ function previewFrame(row: Row) {
 }
 function frameStatus(row: Row) {
   if (row.state === 'off') return '已移除'
-  if (row.state === 'pending') return previousEpisodeSources.value.length ? '等待自动来源成片' : '等待来源成片'
+  if (row.state === 'pending') return props.frames?.previousEpisodeSources?.length ? '等待自动来源成片' : '等待来源成片'
   if (row.state === 'missing') return canPick(row) ? '未选帧' : '暂无可选成片'
   return row.mode === 'manual' ? '手动选帧' : '自动选帧'
 }
 const sourceAvailable = computed(() => pickedSourceCardId.value ? !!selectedSource.value :
   !!pickedSource.value && pickerRow.value?.videoUrl === pickedSource.value)
 watch(sourceAvailable, available => { if (pickedKey.value && !available) pickedKey.value = '' })
-function showSource(videoUrl: string, cardId?: string) {
+function showSource(videoUrl: string, cardId?: string, sourceEpisodeId?: string) {
   ready.value = false
   seconds.value = undefined
   playbackError.value = ''
   pickedSource.value = videoUrl
   pickedSourceCardId.value = cardId
+  pickedSourceEpisodeId.value = sourceEpisodeId
 }
 function openPicker(row: Row) {
   if (pickedKey.value === keyOf(row)) return
   const choices = sourceChoices(row)
-  const saved = choices.find(source => source.videoUrl === row.videoUrl && (!row.sourceCardId || source.cardId === row.sourceCardId))
-  const preferred = saved ?? choices.at(-1)
-  showSource(preferred?.videoUrl ?? row.videoUrl ?? '', preferred?.cardId)
+  const saved = choices.find(source => source.videoUrl === row.videoUrl && (!row.sourceCardId || source.cardId === row.sourceCardId) &&
+    (!row.sourceEpisodeId || source.sourceEpisodeId === row.sourceEpisodeId))
+  const preferred = saved ?? (!row.videoUrl ? choices.at(-1) : undefined)
+  showSource(preferred?.videoUrl ?? row.videoUrl ?? '', preferred?.cardId ?? row.sourceCardId, preferred?.sourceEpisodeId ?? row.sourceEpisodeId)
   pickedKey.value = keyOf(row)
 }
 function changeSource(key: string) {
   if (busy.value) return
-  const source = pickerSources.value.find(item => sourceKey(item.videoUrl, item.cardId) === key)
-  if (!source || (pickedSource.value === source.videoUrl && pickedSourceCardId.value === source.cardId)) return
-  showSource(source.videoUrl, source.cardId)
+  const source = pickerSources.value.find(item => sourceKey(item.videoUrl, item.cardId, item.sourceEpisodeId) === key)
+  if (!source || (pickedSource.value === source.videoUrl && pickedSourceCardId.value === source.cardId &&
+      pickedSourceEpisodeId.value === source.sourceEpisodeId)) return
+  showSource(source.videoUrl, source.cardId, source.sourceEpisodeId)
 }
 function metadata(event: Event, row: Row) {
   const video = event.currentTarget as HTMLVideoElement
   if (video !== videos.value[0] || !pickedSource.value || video.currentSrc !== new URL(pickedSource.value, video.baseURI).href) return
   if (row.seconds !== undefined && row.videoUrl === pickedSource.value &&
-      (!row.sourceCardId || row.sourceCardId === pickedSourceCardId.value))
+      (!row.sourceCardId || row.sourceCardId === pickedSourceCardId.value) &&
+      (!row.sourceEpisodeId || row.sourceEpisodeId === pickedSourceEpisodeId.value))
     video.currentTime = Math.min(row.seconds, video.duration || row.seconds)
   readTime(event)
   ready.value = true
@@ -138,8 +147,7 @@ function useFrame(row: Row) {
   if (!video || !ready.value || !sourceAvailable.value ||
       video.currentSrc !== new URL(pickedSource.value, video.baseURI).href) return
   video.pause()
-  const time = Number.isFinite(video.duration) && video.currentTime >= video.duration
-    ? Math.max(0, video.duration - 0.001) : video.currentTime
+  const time = Number.isFinite(video.duration) ? Math.min(video.currentTime, video.duration) : video.currentTime
   void change(row, 'manual', time, selectedSource.value)
 }
 </script>
@@ -157,6 +165,6 @@ function useFrame(row: Row) {
 .sv-frame-error { color: var(--warning); }
 .sv-frame-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .sv-frame-picker { flex-basis: 100%; display: grid; justify-items: start; gap: 7px; }
-.sv-frame-source { width: min(100%, 360px); display: grid; gap: 4px; }
+.sv-frame-source { width: min(100%, 520px); display: grid; gap: 4px; }
 .sv-frame-picker video { width: min(100%, 520px); max-height: 36vh; background: black; border-radius: 6px; }
 </style>

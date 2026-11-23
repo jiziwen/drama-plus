@@ -120,6 +120,37 @@ test('跨集截帧期间所选早段成片发生变化，拒绝保存已失效�
   assert.equal(selected.value.card.referenceFrameSettings, undefined)
 })
 
+test('中间片段可从项目任意集为尾帧和风格帧手选来源，保存分集归属', async t => {
+  const future = { cardId: 'future-part', sourceEpisodeId: 'episode-99', videoUrl: '/static/videos/future.mp4', sourceLabel: '第99集 · 第2段 · 雨夜' }
+  const state = () => ({ ...rows(), projectSources: [future], previousEpisodeSources: [] })
+  const { app, selected, calls } = await setup(t, body => ({
+    ...state(), candidate: { imageUrl: '/static/picked.jpg', videoUrl: future.videoUrl, seconds: body.seconds,
+      sourceCardId: future.cardId, sourceEpisodeId: future.sourceEpisodeId },
+  }), state)
+  for (const kind of ['tail', 'lighting']) {
+    const row = kind === 'tail' ? app.frames.value.tail : app.frames.value.lighting[0]
+    assert.equal(await app.choose(row, 'manual', 0.75, future), true)
+  }
+  const manual = { mode: 'manual', videoUrl: future.videoUrl, seconds: 0.75,
+    sourceCardId: future.cardId, sourceEpisodeId: future.sourceEpisodeId }
+  assert.deepEqual(selected.value.card.referenceFrameSettings, { tail: manual, lighting: { 2: manual } })
+  assert.equal(calls.filter(call => call.body.sourceEpisodeId === future.sourceEpisodeId).length, 2)
+})
+
+test('同名片段跨集选帧不能接收另一集的候选，空项目目录不会退回旧来源', async t => {
+  const source = { cardId: 'same-part', sourceEpisodeId: 'episode-99', videoUrl: clip, sourceLabel: '第99集 · 第1段' }
+  const { app, selected } = await setup(t, () => ({
+    ...rows(), projectSources: [source], candidate: { imageUrl: '/static/wrong.jpg', videoUrl: clip, seconds: 1,
+      sourceCardId: source.cardId, sourceEpisodeId: 'episode-1' },
+  }), () => ({ ...rows(), projectSources: [source] }))
+  assert.equal(await app.choose(app.frames.value.tail, 'manual', 1, source), false)
+  assert.equal(selected.value.card.referenceFrameSettings, undefined)
+  const empty = await setup(t, () => { throw new Error('不应截帧') }, () => ({
+    ...rows(), projectSources: [], previousEpisodeSources: [source],
+  }))
+  assert.equal(await empty.app.choose(empty.app.frames.value.tail, 'manual', 1, source), false)
+})
+
 test('截帧出错或返回另一条视频时不改参考设置，错误可见', async t => {
   for (const candidate of [
     () => { throw new Error('无法截帧') },
@@ -199,6 +230,17 @@ test('播放器用当前停帧的时间提交，另一视频元素的时间不�
   assert.equal(paused, true)
 })
 
+test('拖到30秒片尾时提交精确结束时间，交由后台截取最后显示的一帧', t => {
+  const frames = rows(), calls = [], picker = framePlayer(t, frames, calls)
+  const row = frames.lighting[0]
+  picker.openPicker(row)
+  picker.videos.value = [{ currentSrc: 'https://test.invalid' + clip, baseURI: 'https://test.invalid/',
+    duration: 30, currentTime: 30, pause() {} }]
+  picker.metadata({ currentTarget: picker.videos.value[0] }, row)
+  picker.useFrame(row)
+  assert.deepEqual(calls, [[row, 'manual', 30]])
+})
+
 test('上一集尾段没有成片时仍可打开选帧，切到其他段会重置播放器', t => {
   const first = { cardId: 'previous-1', videoUrl: '/static/videos/previous-1.mp4', sourceLabel: '第 1 段' }
   const third = { cardId: 'previous-3', videoUrl: '/static/videos/previous-3.mp4', sourceLabel: '第 3 段' }
@@ -228,6 +270,33 @@ test('上一集尾段没有成片时仍可打开选帧，切到其他段会重�
   picker.metadata({ currentTarget: newVideo }, row)
   picker.useFrame(row)
   assert.deepEqual(calls, [[row, 'manual', 2, first]])
+})
+
+test('项目来源扩大后打开选帧仍先显示原自动来源，不提前修改默认选择', t => {
+  const adjacent = { cardId: 'prior', sourceEpisodeId: 'episode-25', videoUrl: clip, sourceLabel: '第25集 · 第1段' }
+  const future = { cardId: 'future', sourceEpisodeId: 'episode-99', videoUrl: '/static/videos/future.mp4', sourceLabel: '第99集 · 第3段' }
+  const frames = { ...rows(), projectSources: [adjacent, future] }
+  const calls = [], picker = framePlayer(t, frames, calls)
+  picker.openPicker(frames.tail)
+  assert.equal(picker.pickedSource.value, clip)
+  assert.equal(picker.sourceOptions.value.length, 2)
+  assert.deepEqual(calls, [])
+  picker.changeSource(picker.sourceOptions.value[1].value)
+  assert.equal(picker.pickedSource.value, future.videoUrl)
+  assert.deepEqual(calls, [], '浏览其他分集的成片不应保存设置')
+  const video = { currentSrc: 'https://test.invalid' + future.videoUrl, baseURI: 'https://test.invalid/', duration: 5, currentTime: 1, pause() {} }
+  picker.videos.value = [video]
+  picker.metadata({ currentTarget: picker.videos.value[0] }, frames.tail)
+  picker.useFrame(frames.tail)
+  assert.deepEqual(calls, [[frames.tail, 'manual', 1, future]])
+})
+
+test('自动来源的旧成片不在全项目目录时仍优先播放原来源', t => {
+  const future = { cardId: 'future', sourceEpisodeId: 'episode-99', videoUrl: '/static/videos/future.mp4', sourceLabel: '第99集 · 第3段' }
+  const frames = { ...rows(), projectSources: [future] }
+  const picker = framePlayer(t, frames, [])
+  picker.openPicker(frames.tail)
+  assert.equal(picker.pickedSource.value, clip)
 })
 
 test('应用旧的AI正文或历史文本时沿用当前片段的参考帧设置', () => {

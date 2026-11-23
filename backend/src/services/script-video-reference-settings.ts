@@ -3,6 +3,7 @@ export type ScriptVideoFrameChoice = { mode: 'off' } | {
   videoUrl: string
   seconds: number
   sourceCardId?: string
+  sourceEpisodeId?: string
 }
 
 export type ScriptVideoReferenceSettings = {
@@ -23,15 +24,17 @@ export type ScriptVideoReferenceFrameRow = {
   seconds?: number
   sourceLabel?: string
   sourceCardId?: string
+  sourceEpisodeId?: string
 }
 
-export type ScriptVideoReferenceFrameSource = { cardId: string; videoUrl: string; sourceLabel: string }
+export type ScriptVideoReferenceFrameSource = { cardId: string; videoUrl: string; sourceLabel: string; sourceEpisodeId?: string }
 
 export type ScriptVideoReferenceFrames = {
   tail?: ScriptVideoReferenceFrameRow
   lighting: ScriptVideoReferenceFrameRow[]
   previousEpisodeSources?: ScriptVideoReferenceFrameSource[]
-  candidate?: { imageUrl: string; videoUrl: string; seconds: number; sourceCardId?: string }
+  projectSources?: ScriptVideoReferenceFrameSource[]
+  candidate?: { imageUrl: string; videoUrl: string; seconds: number; sourceCardId?: string; sourceEpisodeId?: string }
 }
 
 const object = (input: unknown): input is Record<string, unknown> =>
@@ -56,12 +59,14 @@ export function scriptVideoReferenceSettings(input: unknown): ScriptVideoReferen
   const choice = (value: unknown): ScriptVideoFrameChoice => {
     if (!object(value)) return invalid()
     if (value.mode === 'off' && Object.keys(value).length === 1) return { mode: 'off' }
-    if (value.mode === 'manual' && Object.keys(value).every(key => ['mode', 'videoUrl', 'seconds', 'sourceCardId'].includes(key)) &&
+    if (value.mode === 'manual' && Object.keys(value).every(key => ['mode', 'videoUrl', 'seconds', 'sourceCardId', 'sourceEpisodeId'].includes(key)) &&
         validScriptVideoFrameTime(value.seconds)) {
       const videoUrl = scriptVideoReferenceSourceUrl(value.videoUrl)
-      const { sourceCardId } = value
-      if (videoUrl && (sourceCardId === undefined || validScriptVideoReferenceCardId(sourceCardId)))
-        return { mode: 'manual', videoUrl, seconds: Number(value.seconds.toFixed(3)), ...(sourceCardId && { sourceCardId }) }
+      const { sourceCardId, sourceEpisodeId } = value
+      if (videoUrl && (sourceCardId === undefined || validScriptVideoReferenceCardId(sourceCardId)) &&
+          (sourceEpisodeId === undefined || !!sourceCardId && validScriptVideoReferenceCardId(sourceEpisodeId)))
+        return { mode: 'manual', videoUrl, seconds: Number(value.seconds.toFixed(3)), ...(sourceCardId && { sourceCardId }),
+          ...(sourceEpisodeId && { sourceEpisodeId }) }
     }
     return invalid()
   }

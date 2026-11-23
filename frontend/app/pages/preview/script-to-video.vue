@@ -1363,7 +1363,7 @@ import {
   type ScriptVideoJobProgress,
   type ScriptVideoRevisionCandidate,
 } from '~/utils/scriptVideoClient'
-import { diffScriptVideoChanges } from '../../../../backend/src/services/script-video-sync'
+import { applyScriptVideoChanges, diffScriptVideoChanges } from '../../../../backend/src/services/script-video-sync'
 import { readScriptVideoDrafts, writeScriptVideoDraft, type ScriptVideoDraft } from '~/utils/scriptVideoDrafts'
 import { readSiteAccount } from '~/utils/siteSession'
 import { mergeScriptVideoProject } from '~/utils/scriptVideoStateMerge'
@@ -1408,6 +1408,7 @@ type Task = {
 }
 type PreviewEpisode = {
   id: string
+  revision?: number
   _loaded?: boolean
   _episodeRevision?: number
   progress?: ReturnType<typeof scriptVideoEpisodeProgress>
@@ -2070,7 +2071,18 @@ function acceptProject(remote: PreviewProject, submitted?: PreviewProject) {
   const local = localProject(remote.id), base = submitted ?? serverSnapshots.get(remote.id)
   if (!submitted && (serverSnapshots.get(remote.id)?.revision ?? -1) > remote.revision) return
   const actual = (serverSnapshots.get(remote.id)?.revision ?? -1) > remote.revision ? serverSnapshots.get(remote.id)! : remote
-  const installed = local && base ? mergeScriptVideoProject(base, copy(local), actual).project : copy(actual)
+  let mergeBase = base, mergeRemote = actual
+  const pending = !submitted && writers.get(remote.id)?.sending
+  if (base && pending) {
+    // A status refresh can see the write before its acknowledgement. Compare
+    // both snapshots with that batch applied so a later undo stays an edit.
+    try {
+      const optimisticBase = applyScriptVideoChanges(base, pending.changes)
+      mergeRemote = applyScriptVideoChanges(actual, pending.changes)
+      mergeBase = optimisticBase
+    } catch { /* A remote deletion can invalidate the pending batch. Merge the actual snapshots until the write is resolved. */ }
+  }
+  const installed = local && mergeBase ? mergeScriptVideoProject(mergeBase, copy(local), mergeRemote).project : copy(actual)
   serverSnapshots.set(remote.id, copy(actual))
   if (local) {
     for (const key of Object.keys(local)) if (!(key in installed)) Reflect.deleteProperty(local, key)
@@ -4461,18 +4473,17 @@ const frameEditor = useScriptVideoReferenceFrames(
     if (!episodeOpen.value || stage.value !== 'production' || !card) return ''
     const predecessor = previousScriptVideoCard(project, episode.id, card.id)
     const previous = predecessor?.card
-    if (!previous) return ''
-    const sourceEpisode = predecessor!.episode
-    const queued = sourceEpisode.id === episode.id ? queuedCardIds.value :
-      referenceSourceActivity.value.scope === episodeKey.value && referenceSourceActivity.value.episodeId === sourceEpisode.id
+    const sourceEpisode = predecessor?.episode
+    const queued = sourceEpisode?.id === episode.id ? queuedCardIds.value :
+      referenceSourceActivity.value.scope === episodeKey.value && referenceSourceActivity.value.episodeId === sourceEpisode?.id
         ? referenceSourceActivity.value.queuedCardIds : []
-    const sources = sourceEpisode.id === episode.id ? [previous] : sourceEpisode.cards
-    const ids = new Set(sources.map(source => source.id))
     return JSON.stringify([
-      sourceEpisode.id,
-      sources.map(source => [source.id, source.title, source.version, officialScriptVideoUrl(source), source.videoVersions]),
-      sourceEpisode.tasks.filter(task => ids.has(task.cardId)).map(task => [task.cardId, task.id, task.status, task.videoUrl]),
-      queued.filter(id => ids.has(id)),
+      project.episodes.map(source => [source.id, source.number, source.title,
+        source.id === episode.id ? undefined : source.revision,
+        source.cards.map(part => [part.id, part.title, part.version, officialScriptVideoUrl(part), part.videoVersions]),
+        source.tasks.map(task => [task.cardId, task.id, task.status, task.videoUrl]),
+      ]),
+      sourceEpisode?.id, previous?.id, queued,
     ])
   },
   saveProjectNow, async (path, body, signal) => {

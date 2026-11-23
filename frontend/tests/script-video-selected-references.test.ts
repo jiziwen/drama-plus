@@ -17,9 +17,10 @@ const script = compileScript(parse(source, {filename}).descriptor, {id: 'editor'
 const { outputText } = ts.transpileModule(script.content, {compilerOptions: {module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022}})
 const component: any = {}
 const menu = { name: 'MentionTextarea' }
+let nextId = 0
 const modules: Record<string, unknown> = {
-  vue: { ...vue, useId: () => 'editor-validation', resolveComponent: (name: string) => name, withDirectives: (node: unknown) => node },
-  'lucide-vue-next': { Eye: 'Eye', Headphones: 'Headphones', Sparkles: 'Sparkles', Upload: 'Upload', X: 'X' },
+  vue: { ...vue, useId: () => `editor-${++nextId}`, resolveComponent: (name: string) => name, withDirectives: (node: unknown) => node },
+  'lucide-vue-next': { Eye: 'Eye', Headphones: 'Headphones', Maximize2: 'Maximize2', Minimize2: 'Minimize2', Sparkles: 'Sparkles', Upload: 'Upload', X: 'X' },
   './MentionTextarea.vue': { default: menu },
   '~/utils/scriptVideoPreview': preview,
   '~/utils/scriptVideoPromptVoiceView': promptVoiceView,
@@ -358,6 +359,24 @@ test('服务端规范的短 OS 首次显示音频与正确高亮，中文编辑�
   assert.doesNotMatch(editor.props.card.prompt, /@音频\d+/u)
 })
 
+test('编辑续接对白的 OS 标记保留手写的内心字样和原有音色引用', async () => {
+  const lead = { ...assets[0]!, voiceAudio: { url: '/static/uploads/guard.wav', name: '侍卫配音.wav' } }
+  for (const marker of ['(内心OS)', '（内心 OS）', '内心 (OS)']) {
+    const editor = setup(['guard'], { assetList: [lead] })
+    const original = '镜头 01（0–3秒）\n画面与动作：@侍卫 站在门边。\n对白／音效：@侍卫（内心OS、续）【低沉／紧凑】 (OS)：“别回头。”'
+    editor.props.card.prompt = original
+    const field = () => editor.nodes().find(n => n.type === menu)
+    field().props.onFocus()
+    const displayed = field().props['model-value']
+    assert.match(displayed, /@侍卫 @音频1（内心OS、续）/u)
+    const edited = displayed.replace(' (OS)：', ` ${marker}：`)
+    await editPrompt(field(), edited)
+    field().props.onCommit(edited, true)
+    assert.equal(editor.props.card.prompt, original.replace(' (OS)：', ` ${marker}：`))
+    assert.equal(field().props['model-value'], edited)
+  }
+})
+
 test('旧提示词首次打开即显示正式人物引用，预览位置和对白原话保持准确', () => {
   const editor = setup(['night', 'other'])
   const original = [
@@ -386,7 +405,7 @@ test('输入人物名自动补正式引用并映射光标，下一次编辑不�
   const caret = '画面与动作：侍卫'.length
   const synced: unknown[][] = []
   field().ref.r.value = { syncDisplay: (...args: unknown[]) => synced.push(args) }
-  await field().props['onUpdate:modelValue'](input, { value: input, selectionStart: caret, selectionEnd: caret })
+  field().props['onUpdate:modelValue'](input, { value: input, selectionStart: caret, selectionEnd: caret })
   const displayed = field().props['model-value'] as string
   assert.equal(displayed, '画面与动作：@侍卫_夜行推门。')
   assert.deepEqual(synced.at(-1)?.slice(0, 3), [displayed, caret + 4, caret + 4])
@@ -484,6 +503,23 @@ test('自动保存整理的提示词只在结束编辑后回填，编辑中的�
   editorField().props.onCommit(typed, true)
   assert.equal(editorField().props['model-value'], stored)
   assert.equal(editor.props.card.prompt, stored)
+})
+
+test('编辑后失焦时，较早的属性回填不能盖掉刚输入的提示词', async () => {
+  const editor = setup(['guard'])
+  const field = () => editor.nodes().find(n => n.type === menu)
+  const before = { ...editor.props.card, prompt: '镜头 09\n画面与动作：@侍卫 守在门边。' }
+  editor.props.card = before
+  field().props.onFocus()
+  const edited = before.prompt.replace('守在门边', '走向城门')
+  await editPrompt(field(), edited)
+
+  editor.props.card = before
+  await vue.nextTick()
+  assert.equal(field().props['model-value'], edited)
+  field().props.onCommit(edited, true)
+  assert.equal(editor.props.card.prompt, edited)
+  assert.equal(field().props['model-value'], edited)
 })
 
 test('没有待补引用的旧提示词失焦后保留原始换行', () => {

@@ -1,8 +1,13 @@
-import { mapScriptVideoSoundLine, scriptVideoInlineVoiceCue, scriptVideoNamedAudioCue, speechClosers } from './script-video-foley.js'
+import { mapScriptVideoSoundLine, scriptVideoInlineVoiceCue, scriptVideoNamedAudioCue, speechClosers, withoutScriptVideoVoiceCues } from './script-video-foley.js'
 
 export const SCRIPT_VIDEO_INNER_OS_DIRECTION = '(OS)'
 const legacyDirection = '（内心 OS，角色闭口，嘴唇不动，不对口型）'
-type InnerOsOptions = { protectedPrefix?: string; speakers?: readonly string[]; referenceAudioNames?: readonly string[] }
+type InnerOsOptions = {
+  protectedPrefix?: string
+  speakers?: readonly string[]
+  referenceAudioNames?: readonly string[]
+  preserveExplicitInnerOs?: boolean
+}
 const bareOs = /(?:内心(?:独白|声|[ \t]*O\.?S\.?)?|心声|(?:^|[ \t])O\.?S\.?)[ \t]*$/iu
 const cueOs = /(?:^|[ \t，,、；;／/])(?:内心(?:独白|声|[ \t]*O\.?S\.?)?|心声|O\.?S\.?)(?=$|[ \t，,、；;／/])/iu
 const simpleOs = /^(?:内心(?:独白|声|[ \t]*O\.?S\.?)?|心声|O\.?S\.?)$/iu
@@ -23,7 +28,16 @@ export function hasScriptVideoInnerOs(attribution: string): boolean {
     Array.from(label.matchAll(aside)).some(match => cueOs.test(match[0].slice(1, -1)))
 }
 
-function annotateSpeaker(clause: string, knownSpeakers: ReadonlySet<string>, speaker: RegExp, legacy = false): string {
+export function hasExplicitScriptVideoInnerOs(attribution: string): boolean {
+  const label = attribution.normalize('NFKC')
+  const cues = Array.from(label.matchAll(aside), ([cue]) => cue.slice(1, -1).trim())
+  return cues.some(cue => /^内心[ \t]*O\.?S\.?$/iu.test(cue)) ||
+    (cues.some(cue => /^O\.?S\.?$/iu.test(cue)) && /内心[ \t]*$/u.test(withoutScriptVideoVoiceCues(label.replace(aside, ''))))
+}
+
+function annotateSpeaker(
+  clause: string, knownSpeakers: ReadonlySet<string>, speaker: RegExp, legacy: boolean, preserveExplicitInnerOs: boolean,
+): string {
   const match = speaker.exec(clause)
   if (!match) return clause
   const [, label, voice = '', directions] = match
@@ -38,6 +52,8 @@ function annotateSpeaker(clause: string, knownSpeakers: ReadonlySet<string>, spe
   )
   if (!hasScriptVideoInnerOs(directions) &&
       !(removableSuffix && hasScriptVideoInnerOs(label))) return clause
+  if (preserveExplicitInnerOs && (hasExplicitScriptVideoInnerOs(directions) ||
+      removableSuffix && hasExplicitScriptVideoInnerOs(label + directions))) return clause
   const name = (removableSuffix ? baseName : label).trimEnd()
   const cues = directions.replace(aside, cue => {
     const body = cue.slice(1, -1).trim().normalize('NFKC')
@@ -67,7 +83,7 @@ export function legacyScriptVideoInnerOs(prompt: string, options: InnerOsOptions
 function formatInnerOs(
   prompt: string, options: InnerOsOptions, legacy = false,
 ): string {
-  const { protectedPrefix, speakers } = options
+  const { protectedPrefix, speakers, preserveExplicitInnerOs = false } = options
   const audioCue = options.referenceAudioNames?.length ? scriptVideoNamedAudioCue(options.referenceAudioNames) : ''
   const speaker = audioCue ? osSpeaker(audioCue) : defaultSpeaker
   const knownSpeakers = new Set(speakers)
@@ -75,6 +91,7 @@ function formatInnerOs(
     const baseName = name.split('_', 1)[0].trim()
     if (baseName) knownSpeakers.add(baseName)
   }
+  const annotate = (clause: string) => annotateSpeaker(clause, knownSpeakers, speaker, legacy, !legacy && preserveExplicitInnerOs)
   const start = protectedPrefix && prompt.startsWith(protectedPrefix) ? protectedPrefix.length : 0
   return prompt.slice(0, start) + prompt.slice(start).replace(/[^\r\n]+/gu, line => {
     const heading = soundHeading.exec(line)?.[0] || ''
@@ -88,10 +105,10 @@ function formatInnerOs(
         if (token !== '；' && token !== ';' && !(token.length > 1 && speechClosers[token[0]] === token.at(-1))) continue
         const end = match.index + token.length
         const separator = /^[ \t，,。.!！？?]*/u.exec(body.slice(end))![0]
-        result += annotateSpeaker(body.slice(cursor, end), knownSpeakers, speaker, legacy) + separator
+        result += annotate(body.slice(cursor, end)) + separator
         cursor = end + separator.length
       }
-      return result + annotateSpeaker(body.slice(cursor), knownSpeakers, speaker, legacy)
+      return result + annotate(body.slice(cursor))
     })
   })
 }

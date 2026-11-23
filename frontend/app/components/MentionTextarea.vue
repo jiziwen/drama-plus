@@ -24,7 +24,7 @@
       @mouseleave="leavePreview"
       @pointerup="onTouchPreview"
     />
-    <Teleport to="body">
+    <Teleport :to="popupTarget || 'body'">
       <div
         v-if="preview.option"
         ref="previewEl"
@@ -115,11 +115,12 @@ const props = defineProps({
   inputClass: { type: String, default: '' },
   searchable: { type: Boolean, default: false },
   previewOnHover: { type: Boolean, default: false },
+  popupTarget: { type: Object, default: null },
   // Script-to-video also highlights literal names within spoken lines, without
   // inserting reference syntax into the actor's words or moving the caret.
   resolvePreviewRanges: { type: Function, default: null },
 })
-const emit = defineEmits(['update:modelValue', 'commit', 'focus'])
+const emit = defineEmits(['update:modelValue', 'commit', 'focus', 'compositionstart', 'compositionend'])
 
 const taEl = ref(null)
 const backdropEl = ref(null)
@@ -538,9 +539,8 @@ function dismissMention() {
 function setText(next, caret) {
   const ta = taEl.value
   if (ta) {
-    ta.value = next
     ta.focus({ preventScroll: true })
-    if (caret != null) ta.setSelectionRange(caret, caret)
+    replaceTextareaText(ta, next, caret, caret)
   }
   text.value = next
   lastEmittedText = next
@@ -567,23 +567,29 @@ function onCompositionStart() {
   commitAfterComposition = false
   closeMention()
   closePreview()
+  emit('compositionstart')
 }
 
 function onCompositionEnd(event) {
   if (!hasComposingInput) return
   hasComposingInput = false
   onInput(event)
+  emit('compositionend')
   if (commitAfterComposition) {
     commitAfterComposition = false
     emit('commit', text.value, true)
   }
 }
 
-function onScroll() {
+function syncBackdropScroll() {
   if (backdropEl.value && taEl.value) {
     backdropEl.value.scrollTop = taEl.value.scrollTop
     backdropEl.value.scrollLeft = taEl.value.scrollLeft
   }
+}
+
+function onScroll() {
+  syncBackdropScroll()
   if (mention.value.open) updateMentionState(false)
   closePreview()
 }
@@ -671,15 +677,44 @@ function syncDisplay(value, start, end, direction) {
   if (!ta || hasComposingInput || (focus !== ta && !dropdownEl.value?.contains(focus))) return
   text.value = value
   lastEmittedText = value
-  if (ta.value !== value) ta.value = value
-  ta.setSelectionRange(start, end, direction)
+  replaceTextareaText(ta, value, start, end, direction)
   updateMentionState(focus === ta)
+}
+
+function replaceTextareaText(ta, value, start, end, direction) {
+  const { scrollTop, scrollLeft } = ta
+  if (ta.value !== value) ta.value = value
+  if (start != null && end != null) ta.setSelectionRange(start, end, direction)
+  ta.scrollTop = scrollTop
+  ta.scrollLeft = scrollLeft
+  syncBackdropScroll()
 }
 function remapDisplay(previous, value, mapOffset) {
   const ta = taEl.value
   if (ta?.value === previous) syncDisplay(value, mapOffset(ta.selectionStart), mapOffset(ta.selectionEnd), ta.selectionDirection)
 }
-defineExpose({ syncDisplay, remapDisplay })
+
+function editingPosition() {
+  const ta = taEl.value
+  if (!ta) return
+  const { selectionStart, selectionEnd, selectionDirection, scrollTop, scrollLeft } = ta
+  return { selectionStart, selectionEnd, selectionDirection, scrollTop, scrollLeft }
+}
+
+function focusEditor(position) {
+  const ta = taEl.value
+  if (!ta) return
+  ta.focus({ preventScroll: true })
+  if (!position) return
+  const { selectionStart, selectionEnd, selectionDirection, scrollTop, scrollLeft } = position
+  ta.setSelectionRange(selectionStart, selectionEnd, selectionDirection)
+  const caret = getCaretCoordinates(ta, selectionDirection === 'backward' ? selectionStart : selectionEnd)
+  ta.scrollTop = Math.max(caret.top + caret.lineHeight - ta.clientHeight, Math.min(caret.top, scrollTop))
+  ta.scrollLeft = scrollLeft
+  syncBackdropScroll()
+}
+
+defineExpose({ syncDisplay, remapDisplay, editingPosition, focusEditor })
 </script>
 
 <style scoped>

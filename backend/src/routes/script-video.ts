@@ -383,8 +383,9 @@ export function createScriptVideoRoutes(
     const choice = automatic ? undefined : episode.cards[index].referenceFrameSettings?.tail
     if (choice?.mode === 'off') return undefined
     if (choice?.mode === 'manual') {
-      const owner = previousScriptVideoRender(project, episodeId, cardId, choice.videoUrl, choice.sourceCardId)
-      if (owner) return { previousCardId: owner.cardId, previousTaskId: owner.taskId, videoUrl: owner.videoUrl, manualSeconds: choice.seconds }
+      const owner = previousScriptVideoRender(project, episodeId, cardId, choice.videoUrl, choice.sourceCardId, choice.sourceEpisodeId)
+      if (owner) return { previousCardId: owner.cardId, previousTaskId: owner.taskId, videoUrl: owner.videoUrl,
+        ...(owner.sourceEpisodeId && { sourceEpisodeId: owner.sourceEpisodeId }), manualSeconds: choice.seconds }
       if (choice.sourceCardId && !readOnly)
         throw new ScriptVideoStoreError('手选尾帧的来源成片已不可用，请重新选帧。', 422, 'REFERENCE_FRAME_UNAVAILABLE')
       return undefined
@@ -490,15 +491,14 @@ export function createScriptVideoRoutes(
             ...acceptedRenders,
           ])
           const previous = handoff && selected?.get(handoff.previousCardId)
-          const crossEpisode = episode && job.cardId && previousScriptVideoEpisode(record.project, episode.id, job.cardId)
-          const hasManualSource = (sourceCardId: string, videoUrl?: string) => !videoUrl || !!episode && !!job.cardId &&
-            previousScriptVideoRender(record.project, episode.id, job.cardId, videoUrl, crossEpisode ? sourceCardId : undefined)?.cardId === sourceCardId
+          const hasManualSource = (sourceCardId: string, videoUrl?: string, sourceEpisodeId?: string) => !videoUrl || !!episode && !!job.cardId &&
+            previousScriptVideoRender(record.project, episode.id, job.cardId, videoUrl, sourceCardId, sourceEpisodeId)?.cardId === sourceCardId
           const sameTailSource = !handoff || (handoff.manualSeconds !== undefined
-            ? hasManualSource(handoff.previousCardId, handoff.previousVideoUrl)
+            ? hasManualSource(handoff.previousCardId, handoff.previousVideoUrl, handoff.previousEpisodeId)
             : !!previous && (handoff.previousVideoUrl ? previous.videoUrl === handoff.previousVideoUrl : previous.taskId === handoff.previousTaskId))
           const sameLightingSources = (task?.lightingRanges || []).every(({ imageUrl, source }: RenderLightingRange) =>
             !imageUrl || !source || (source.manualSeconds !== undefined
-              ? hasManualSource(source.cardId, source.videoUrl) : selected?.get(source.cardId)?.videoUrl === source.videoUrl))
+              ? hasManualSource(source.cardId, source.videoUrl, source.sourceEpisodeId) : selected?.get(source.cardId)?.videoUrl === source.videoUrl))
           if (card && card.version === job.cardVersion && sameTailSource && sameLightingSources &&
               digest(record.project, job.episodeId, job.videoDigestVersion ? 'video' : 'revisions', job.cardId, job) === job.baseDigest) {
             completedCards.push({ card, version: {
@@ -749,39 +749,50 @@ export function createScriptVideoRoutes(
           (body.expectedVideoUrl !== undefined && typeof body.expectedVideoUrl !== 'string') ||
           (body.sourceCardId !== undefined && (!validScriptVideoReferenceCardId(body.sourceCardId) ||
             !scriptVideoReferenceSourceUrl(body.expectedVideoUrl))) ||
-          Object.keys(body).some(key => !['kind', 'startShot', 'seconds', 'expectedVideoUrl', 'sourceCardId'].includes(key)))) {
+          (body.sourceEpisodeId !== undefined && (!body.sourceCardId || !validScriptVideoReferenceCardId(body.sourceEpisodeId))) ||
+          Object.keys(body).some(key => !['kind', 'startShot', 'seconds', 'expectedVideoUrl', 'sourceCardId', 'sourceEpisodeId'].includes(key)))) {
         throw new ScriptVideoStoreError('无效的参考帧或时间点')
       }
-      const { project, jobs } = await store.episodeSnapshot(id, episodeId, true)
+      // The wider catalogue is only for explicit selection. Automatic plans
+      // still use the same adjacent card and current/previous episode jobs.
+      const [{ jobs }, project] = await Promise.all([store.episodeSnapshot(id, episodeId, true), store.get(id)])
       const episode = episodeOf(project, episodeId)
       const card = episode.cards.find((item: ScriptVideoCard) => item.id === cardId)
       if (!card) throw new ScriptVideoStoreError('分镜不存在', 404, 'NOT_FOUND')
       const adjacent = previousScriptVideoCard(project, episodeId, cardId)
       const previous: ScriptVideoCard | undefined = adjacent?.card
       const previousEpisode = previousScriptVideoEpisode(project, episodeId, cardId)
-      const sourceCards = new Map<string, { card: ScriptVideoCard; index: number }>()
-      if (previousEpisode) previousEpisode.cards.forEach((card: ScriptVideoCard, index: number) => sourceCards.set(card.id, { card, index }))
-      else if (previous) sourceCards.set(previous.id, { card: previous, index: adjacent!.index })
-      const sourceInfo = (id: string | undefined, selectedUrl?: string): Pick<ScriptVideoReferenceFrameRow, 'sourceLabel' | 'videoUrl' | 'sourceCardId'> => {
-        const source = id && sourceCards.get(id)
+      type SourceEntry = { card: ScriptVideoCard; index: number; episode: ScriptVideoProject['episodes'][number]; episodeIndex: number }
+      const sourceCards: SourceEntry[] = project.episodes.flatMap((episode, episodeIndex) =>
+        episode.cards.map((card: ScriptVideoCard, index: number) => ({ card, index, episode, episodeIndex })))
+      const sourceLabel = (source: SourceEntry) => `第 ${source.episode.number ?? source.episodeIndex + 1} 集 · 第 ${source.index + 1} 段` +
+        (source.card.title ? ' · ' + source.card.title : '')
+      const sourceVersions = (source: SourceEntry) => [...new Set([
+        officialScriptVideoUrl(source.card),
+        selectScriptVideoPlayback(source.card, latestScriptVideoTaskUrls(source.episode.tasks).get(source.card.id))?.url,
+        ...listScriptVideoVersions(source.card, source.episode.tasks).reverse().map(version => version.url),
+      ].map(scriptVideoReferenceSourceUrl).filter((url): url is string => !!url))]
+      const sourceInfo = (id: string | undefined, selectedUrl?: string, sourceEpisodeId?: string):
+        Pick<ScriptVideoReferenceFrameRow, 'sourceLabel' | 'videoUrl' | 'sourceCardId' | 'sourceEpisodeId'> => {
+        // Unqualified rows come from the original automatic context. Only
+        // an explicit episode may resolve a source elsewhere in the project.
+        const candidates = sourceCards.filter(source => source.card.id === id && (sourceEpisodeId
+          ? source.episode.id === sourceEpisodeId : source.episode.id === episodeId || source.episode.id === adjacent?.episode.id))
+        const normalizedUrl = scriptVideoReferenceSourceUrl(selectedUrl)
+        const source = normalizedUrl ? candidates.find(source => sourceVersions(source).includes(normalizedUrl)) :
+          candidates.find(source => source.episode.id === adjacent?.episode.id) ?? candidates[0]
         if (!source) return {}
         // While automatic selection waits for a remake, the existing take is
         // still a legitimate source for a new, explicit manual selection.
         const videoUrl = scriptVideoReferenceSourceUrl(selectedUrl ?? officialScriptVideoUrl(source.card))
         const segmentLabel = '第 ' + (source.index + 1) + ' 段'
-        return { sourceLabel: previousEpisode ? '上一集 · ' + segmentLabel : segmentLabel,
-          ...(previousEpisode && { sourceCardId: source.card.id }), ...(videoUrl && { videoUrl }) }
+        const label = sourceEpisodeId || source.episode.id !== episodeId && source.episode.id !== previousEpisode?.id
+          ? sourceLabel(source) : source.episode.id === previousEpisode?.id ? '上一集 · ' + segmentLabel : segmentLabel
+        return { sourceLabel: label, sourceCardId: source.card.id, sourceEpisodeId: source.episode.id, ...(videoUrl && { videoUrl }) }
       }
       // Playback also exposes completed historical renders when the inputs
       // changed during generation. Keep them available for explicit selection
       // without promoting them to the automatic continuation/light source.
-      const previousTasks = adjacent?.episode.tasks || []
-      const latestTaskVideos = latestScriptVideoTaskUrls(previousTasks)
-      const sourceVersions = (source: ScriptVideoCard) => [
-        officialScriptVideoUrl(source),
-        selectScriptVideoPlayback(source, latestTaskVideos.get(source.id))?.url,
-        ...listScriptVideoVersions(source, previousTasks).reverse().map(version => version.url),
-      ].map(scriptVideoReferenceSourceUrl).filter((url): url is string => !!url)
       const readable = new Map<string, ReturnType<typeof resolveStoredVideo>>()
       const playableSource = async (options: ReturnType<typeof sourceInfo>[]) => {
         for (const option of options) {
@@ -795,7 +806,8 @@ export function createScriptVideoRoutes(
           if (await file) return option
         }
       }
-      const previousVersions = previous ? sourceVersions(previous).map(url => sourceInfo(previous.id, url)) : []
+      const previousEntry = adjacent && sourceCards.find(source => source.episode.id === adjacent.episode.id && source.index === adjacent.index)
+      const previousVersions = previousEntry ? sourceVersions(previousEntry).map(url => sourceInfo(previous!.id, url)) : []
       const withManualSource = async (source: ReturnType<typeof sourceInfo>, pending: boolean, exact = false) =>
         await playableSource(exact ? [source] : [source, ...previousVersions]) ?? (pending ? { sourceLabel: source.sourceLabel } : {})
       const queued = queuedReferenceCards(project, episodeId)
@@ -804,9 +816,16 @@ export function createScriptVideoRoutes(
       const tailSource = await continuationSource(project, jobs, episodeId, cardId, queued, true, tailMode === 'off')
       const selectedTail = typeof tailSource === 'object' ? tailSource : undefined
       const result: ScriptVideoReferenceFrames = { lighting: [] }
+      const projectSources = await Promise.all(sourceCards.map(async source => {
+        const info = await playableSource(sourceVersions(source).map(url => sourceInfo(source.card.id, url, source.episode.id)))
+        if (info?.videoUrl) return { cardId: source.card.id, sourceEpisodeId: source.episode.id,
+          videoUrl: info.videoUrl, sourceLabel: sourceLabel(source) }
+      }))
+      result.projectSources = projectSources.filter(source => source !== undefined)
       if (previousEpisode) {
         const sources = await Promise.all(previousEpisode.cards.map(async (card: ScriptVideoCard) => {
-          const info = await playableSource(sourceVersions(card).map(url => sourceInfo(card.id, url)))
+          const entry = sourceCards.find(source => source.episode.id === previousEpisode.id && source.card.id === card.id)!
+          const info = await playableSource(sourceVersions(entry).map(url => sourceInfo(card.id, url)))
           if (info?.videoUrl && info.sourceLabel) return { cardId: card.id, videoUrl: info.videoUrl, sourceLabel: info.sourceLabel }
         }))
         result.previousEpisodeSources = sources.filter(source => source !== undefined)
@@ -823,13 +842,13 @@ export function createScriptVideoRoutes(
         const source = mode === 'off' ? plan.automaticSource : plan.source
         const pendingId = mode === 'off' ? plan.automaticPendingCardId : plan.pendingCardId
         const exact = plan.choice?.mode === 'manual' && !!plan.choice.sourceCardId
-        const info = await withManualSource(sourceInfo(source?.cardId ?? pendingId, source?.videoUrl), !!pendingId, exact)
+        const info = await withManualSource(sourceInfo(source?.cardId ?? pendingId, source?.videoUrl, source?.sourceEpisodeId), !!pendingId, exact)
         result.lighting.push({ kind: 'lighting', startShot, ...(card.shots?.length && { endShot }), sceneName, mode,
           state: mode === 'off' ? 'off' : pendingId ? 'pending' : 'missing',
           ...info, ...(source?.manualSeconds !== undefined && info.videoUrl === source.videoUrl && { seconds: source.manualSeconds }) })
       }
       const tailInfo = await withManualSource(
-        sourceInfo(selectedTail?.previousCardId ?? (tailSource === 'pending' ? previous?.id : undefined), selectedTail?.videoUrl), tailSource === 'pending',
+        sourceInfo(selectedTail?.previousCardId ?? (tailSource === 'pending' ? previous?.id : undefined), selectedTail?.videoUrl, selectedTail?.sourceEpisodeId), tailSource === 'pending',
         tailMode === 'manual' && card.referenceFrameSettings?.tail?.mode === 'manual' && !!card.referenceFrameSettings.tail.sourceCardId,
       )
       result.tail = { kind: 'tail', mode: tailMode,
@@ -839,19 +858,23 @@ export function createScriptVideoRoutes(
         const row: ScriptVideoReferenceFrameRow | undefined = body.kind === 'tail' ? result.tail :
           result.lighting.find(range => range.startShot === body.startShot)
         const explicit = body.sourceCardId !== undefined
-        const listed = result.previousEpisodeSources?.find(source => source.cardId === body.sourceCardId)
-        const saved = row?.mode === 'manual' && row.sourceCardId === body.sourceCardId ? row.videoUrl : undefined
+        const listed = result.projectSources?.find(source => source.cardId === body.sourceCardId && source.videoUrl === body.expectedVideoUrl &&
+          (body.sourceEpisodeId === undefined || source.sourceEpisodeId === body.sourceEpisodeId))
+        const saved = row?.mode === 'manual' && row.sourceCardId === body.sourceCardId &&
+          (body.sourceEpisodeId === undefined || row.sourceEpisodeId === body.sourceEpisodeId) ? row.videoUrl : undefined
         const videoUrl = explicit ? [listed?.videoUrl, saved].find(url => url === body.expectedVideoUrl) : row?.videoUrl
         if (body.expectedVideoUrl !== undefined && videoUrl !== body.expectedVideoUrl) {
           throw new ScriptVideoStoreError('参考来源成片已更新，请重新打开选帧。', 409, 'REFERENCE_FRAME_SOURCE_CHANGED')
         }
-        if (!row || !videoUrl || !previousScriptVideoRender(project, episodeId, cardId, videoUrl, body.sourceCardId)) {
+        const owner = videoUrl && previousScriptVideoRender(project, episodeId, cardId, videoUrl, body.sourceCardId, body.sourceEpisodeId)
+        if (!row || !videoUrl || !owner) {
           throw new ScriptVideoStoreError('没有可用的来源成片', 422, 'REFERENCE_FRAME_UNAVAILABLE')
         }
         const seconds = Number(body.seconds.toFixed(3))
         const imageUrl = await extractVideoReferenceFrame(videoUrl, seconds)
         if (!imageUrl) throw new ScriptVideoStoreError('来源视频在该时间点没有可读取的帧', 422, 'REFERENCE_FRAME_TIME')
-        result.candidate = { imageUrl, videoUrl, seconds, ...(explicit && { sourceCardId: body.sourceCardId }) }
+        result.candidate = { imageUrl, videoUrl, seconds, ...(explicit && { sourceCardId: body.sourceCardId,
+          ...(body.sourceEpisodeId && { sourceEpisodeId: body.sourceEpisodeId }) }) }
       }
       const [prepared, tailImage] = await Promise.all([
         prepareScriptVideoLighting(plans),
@@ -1460,6 +1483,12 @@ export function createScriptVideoRoutes(
               409,
               'CONFLICT',
             )
+          const manualTail = card.referenceFrameSettings?.tail
+          if (manualTail?.mode === 'manual' && manualTail.sourceCardId &&
+              !previousScriptVideoRender(record.project, episodeId, cardId, manualTail.videoUrl,
+                manualTail.sourceCardId, manualTail.sourceEpisodeId)) {
+            throw new ScriptVideoStoreError('手选尾帧的来源成片已不可用，请重新选帧。', 422, 'REFERENCE_FRAME_UNAVAILABLE')
+          }
           const cast = episode.production?.characters
           const stylePreset = episode.production?.stylePreset || record.project.settings?.stylePreset
           if (card.manuallyAdded) {

@@ -27,7 +27,7 @@ function editor() {
   const view = runInNewContext(script + '\n;({materialize,acceptProject,refreshProject,writeStatus,syncProject})', {
     projects: { value: projects }, serverSnapshots, writers, diskQueues: new Map(), sharedLoaded: new Map(),
     locallySaved: { value: new Set() }, pendingEdits: { value: new Set() }, saveErrors: { value: {} },
-    diffScriptVideoChanges, mergeScriptVideoProject, ScriptVideoRequestError, AbortSignal,
+    applyScriptVideoChanges, diffScriptVideoChanges, mergeScriptVideoProject, ScriptVideoRequestError, AbortSignal,
     selectedProjectId: { value: 'p' }, selectedEpisodeId: { value: 'e1' }, previewId: () => 'test-client',
     canSend: true, alive: true, navigator: online, draftAccount: 'admin', tabId: 'tab-A',
     placeholderEpisode: { script: '', cards: [], tasks: [] },
@@ -101,5 +101,61 @@ test('分集正文和共享目录独立按版本更新，迟到的旧响应不�
   await app.view.refreshProject('p', 'e1', undefined, false)
   assert.equal(app.projects[0].episodes[0].script, '最新正文')
   assert.equal(app.projects[0].episodes[1]._loaded, false)
+  assert.equal(app.view.writeStatus('p'), false)
+})
+
+test('视频提示词保存中撤回时，轮询先读到已提交稿也会保留用户最后一次编辑', async () => {
+  const app = editor(), started = Promise.withResolvers<void>(), ack = Promise.withResolvers<void>()
+  const serverEpisode = { ...episode('正文'), cards: [{ id: 'card', prompt: '原提示词', shots: [] }] }
+  app.view.acceptProject(app.view.materialize(summary(1), [serverEpisode]))
+  const local = app.projects[0]
+  const card = () => local.episodes[0].cards[0]
+  let server = clone(local), revision = 1, title = '七天', readBeforeWrite = false
+  const requests: any[] = []
+  app.request(async (path, method, body) => {
+    if (method === 'GET') {
+      if (path.includes('view=summary')) return summary(revision, title)
+      if (readBeforeWrite) return { episode: serverEpisode, revision: 1, episodeRevision: 1 }
+      return { episode: clone(server.episodes[0]), revision, episodeRevision: revision }
+    }
+    requests.push(clone(body.changes))
+    server = applyScriptVideoChanges(server, body.changes)
+    revision++
+    const response = { project: summary(revision, title), episodes: [clone(server.episodes[0])], sequence: body.sequence, revision }
+    if (body.sequence === 1) {
+      started.resolve()
+      await ack.promise
+    }
+    return response
+  })
+  card().prompt = '暂存修改'
+  const writing = app.view.syncProject('p')
+  await started.promise
+  try {
+    // A read already in flight can return the state from before the write.
+    readBeforeWrite = true
+    await app.view.refreshProject('p', 'e1', undefined, false)
+    assert.equal(card().prompt, '暂存修改')
+    readBeforeWrite = false
+
+    card().prompt = '原提示词'
+    title = '其他页面的新项目名'
+    await app.view.refreshProject('p', 'e1')
+    assert.equal(card().prompt, '原提示词')
+    assert.equal(local.title, title)
+    title = '其他页面的第二次更名'
+    revision++
+    await app.view.refreshProject('p', 'e1')
+    assert.equal(card().prompt, '原提示词')
+    assert.equal(local.title, title)
+  } finally {
+    ack.resolve()
+    await writing
+  }
+  assert.equal(server.episodes[0].cards[0].prompt, '原提示词')
+  assert.deepEqual(requests.map(changes => changes.map((change: any) => [change.target, change.fields])), [
+    [['card', { prompt: '暂存修改' }]],
+    [['card', { prompt: '原提示词' }]],
+  ])
   assert.equal(app.view.writeStatus('p'), false)
 })

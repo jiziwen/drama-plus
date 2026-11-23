@@ -62,6 +62,15 @@
             >
               <Sparkles :size="13" />让 AI 调整
             </button>
+            <button
+              class="sv-button sv-quiet"
+              type="button"
+              aria-haspopup="dialog"
+              @pointerdown.prevent
+              @click="expandPromptEditor"
+            >
+              <Maximize2 :size="13" aria-hidden="true" />放大编辑
+            </button>
           </div>
         </div>
         <input
@@ -83,22 +92,25 @@
           :key="promptProjection.style.name"
           :preset="promptProjection.style"
         />
-        <MentionTextarea
-          ref="promptInput"
-          :model-value="promptVoiceView.text"
-          :options="mentionOptions"
-          searchable
-          :preview-on-hover="true"
-          :resolve-preview-ranges="previewRanges"
-          :rows="12"
-          input-class="sv-prompt-input"
-          placeholder="描述画面、动作和声音，输入 @ 引用素材…"
-          @focus="beginPromptEdit"
-          @compositionstart="compositionProjection = promptProjection"
-          @compositionend="compositionProjection = undefined"
-          @update:model-value="editPrompt"
-          @commit="finishPromptEdit"
-        />
+        <Teleport :to="promptDialogBody || 'body'" :disabled="!promptExpanded">
+          <MentionTextarea
+            ref="promptInput"
+            :model-value="promptVoiceView.text"
+            :options="mentionOptions"
+            searchable
+            :preview-on-hover="true"
+            :resolve-preview-ranges="previewRanges"
+            :rows="12"
+            :popup-target="promptExpanded ? promptDialog : undefined"
+            input-class="sv-prompt-input"
+            placeholder="描述画面、动作和声音，输入 @ 引用素材…"
+            @focus="beginPromptEdit"
+            @compositionstart="compositionProjection = promptProjection"
+            @compositionend="compositionProjection = undefined"
+            @update:model-value="editPrompt"
+            @commit="finishPromptEdit"
+          />
+        </Teleport>
         <div class="sv-reference-head">
           <div>
             <h3>本片段参考素材</h3>
@@ -380,12 +392,29 @@
         />
       </div>
     </dialog>
+    <dialog
+      ref="promptDialog"
+      class="sv-reference-dialog sv-prompt-dialog"
+      :aria-labelledby="promptTitleId"
+      @close="collapsePromptEditor"
+    >
+      <header class="sv-prompt-dialog-header">
+        <div>
+          <h3 :id="promptTitleId">视频提示词</h3>
+          <p>{{ card.title }}</p>
+        </div>
+        <button class="sv-button sv-quiet" type="button" @pointerdown.prevent @click="promptDialog?.close()">
+          <Minimize2 :size="14" aria-hidden="true" />收起编辑
+        </button>
+      </header>
+      <div ref="promptDialogBody" class="sv-prompt-dialog-body" />
+    </dialog>
   </section>
 </template>
 
 <script setup lang="ts">
 import { computed, nextTick, ref, shallowRef, useId, watch } from 'vue'
-import { Eye, Headphones, Sparkles, Upload, X } from 'lucide-vue-next'
+import { Eye, Headphones, Maximize2, Minimize2, Sparkles, Upload, X } from 'lucide-vue-next'
 import MentionTextarea from './MentionTextarea.vue'
 import type { useScriptVideoReferenceFrames } from '~/composables/useScriptVideoReferenceFrames'
 import { getPreviewMaterialUse, inspectPreviewCardAssets, validatePreviewCards } from '~/utils/scriptVideoPreviewValidation'
@@ -651,15 +680,45 @@ function offsetMentions<T extends { start: number; end: number }>(mentions: read
 const savedPrompt = computed(() => projectPrompt(props.card))
 const hasPromptBody = computed(() => Boolean(savedPrompt.value.view.source.trim()))
 const promptDraft = shallowRef<PreviewCard>()
+const activePrompt = computed(() => promptDraft.value?.id === props.card.id
+  ? projectPrompt(promptDraft.value) : savedPrompt.value)
 // The textarea still contains the previous display while an IME composes.
 const compositionProjection = shallowRef<ReturnType<typeof projectPrompt>>()
-const promptProjection = computed(() => compositionProjection.value ?? (promptDraft.value?.id === props.card.id
-  ? projectPrompt(promptDraft.value) : savedPrompt.value))
+const promptProjection = computed(() => compositionProjection.value ?? activePrompt.value)
 const analyzedPrompt = computed(() => promptProjection.value.analyzed)
 const materialUse = computed(() => analyzedPrompt.value.materialUse)
 const promptVoices = computed(() => promptProjection.value.voices)
 const promptVoiceView = computed(() => promptProjection.value.view)
 const promptInput = ref<InstanceType<typeof MentionTextarea>>()
+const promptDialog = ref<HTMLDialogElement>()
+const promptDialogBody = ref<HTMLElement>()
+const promptTitleId = useId()
+const promptExpanded = ref(false)
+let movingPromptEditor = false
+async function expandPromptEditor() {
+  const dialog = promptDialog.value
+  if (!dialog || promptExpanded.value) return
+  const position = promptInput.value?.editingPosition()
+  movingPromptEditor = true
+  try {
+    promptExpanded.value = true
+    await nextTick()
+    if (!dialog.isConnected || tab.value !== 'prompt') {
+      promptExpanded.value = false
+      return
+    }
+    dialog.showModal()
+    promptInput.value?.focusEditor(position)
+  } finally {
+    movingPromptEditor = false
+  }
+}
+async function collapsePromptEditor() {
+  const position = promptInput.value?.editingPosition()
+  promptExpanded.value = false
+  await nextTick()
+  if (tab.value === 'prompt') promptInput.value?.focusEditor(position)
+}
 watch(promptVoiceView, (view, previous) => {
   if (view.source !== previous.source || view.text === previous.text) return
   // Reference numbers can change when two characters no longer share a recording.
@@ -681,36 +740,35 @@ function previewRanges(text: string) {
     ...view.cues.map(cue => ({ id: `voice-${cue.index}`, start: cue.tokenStart, end: cue.tokenEnd })),
   ].sort((a, b) => a.start - b.start)
 }
-let lastEdit: { display: string; source: string } | undefined
-let editSequence = 0
+let lastEdit: { display: string; source: string; changed: boolean } | undefined
 function beginPromptEdit() {
   if (promptDraft.value?.id === props.card.id) return
   promptDraft.value = { ...props.card }
 }
 function clearPromptEdit() {
-  editSequence++
   promptDraft.value = undefined
   compositionProjection.value = undefined
   lastEdit = undefined
 }
-watch([() => props.card.id, tab], clearPromptEdit)
+watch([() => props.card.id, tab], () => {
+  if (promptDialog.value?.open) promptDialog.value.close()
+  clearPromptEdit()
+})
 
-async function editPrompt(display: string, input: HTMLTextAreaElement) {
-  const sequence = ++editSequence
+function editPrompt(display: string, input: HTMLTextAreaElement) {
   const cardId = props.card.id
-  const view = promptVoiceView.value
+  const { view, prefix } = promptProjection.value
   const edit = editScriptVideoPromptVoiceView(view, display, input.selectionStart, input.selectionEnd)
   const direction = input.selectionDirection
-  lastEdit = { display, source: edit.text }
+  const changed = edit.text !== view.source
+  lastEdit = { display, source: edit.text, changed: changed || lastEdit?.changed === true }
   // Save authored edits as usual. A save acknowledgement may normalize the
   // stored prompt, but should not replace the active textarea under its caret.
-  if (edit.text !== view.source) promptDraft.value = updatePrompt(joinPrompt(promptProjection.value.prefix, edit.text))
+  if (changed) promptDraft.value = updatePrompt(joinPrompt(prefix, edit.text))
   else if (promptDraft.value?.id !== cardId) promptDraft.value = { ...props.card }
-  await nextTick()
-  const updated = promptVoiceView.value
-  if (sequence !== editSequence || cardId !== props.card.id || input.value !== display && input.value !== updated.text) return
+  const { view: updated, normalizedOffset: normalize } = activePrompt.value
+  // Write the normalized display and selection together before Vue updates the native field.
   if (display !== updated.text) {
-    const normalize = promptProjection.value.normalizedOffset
     promptInput.value?.syncDisplay(updated.text, updated.displayOffset(normalize(edit.selectionStart), edit.beforeCue),
       updated.displayOffset(normalize(edit.selectionEnd), edit.beforeCue), direction)
   }
@@ -749,18 +807,22 @@ function updatePrompt(prompt: string): PreviewCard {
   return checked
 }
 function finishPromptEdit(text: string, blurred = false) {
-  const view = promptVoiceView.value
-  const { prefix } = promptProjection.value
+  if (blurred && movingPromptEditor) return
+  const { view, prefix } = promptProjection.value
   const source = text === view.text ? view.source : lastEdit?.display === text ? lastEdit.source
     : editScriptVideoPromptVoiceView(view, text, text.length, text.length).text
+  const edited = lastEdit?.changed === true
   if (blurred) clearPromptEdit()
   const authoredPrompt = joinPrompt(prefix, source)
   const result = analyzePrompt(authoredPrompt)
   const ids = [...new Set([...props.card.assetIds, ...result.assetIds])]
-  // Changes already accepted by autosave can now appear in the editor. Do not
-  // overwrite those changes with the focused copy if commit had nothing to add.
+  const saved = savedPrompt.value
+  const savedText = textareaText(saved.normalizedText)
+  const savedIncludesEdit = savedText === result.text || saved.view.source === view.source ||
+    (!!result.text && savedText.endsWith('\n\n' + result.text))
+  // Accept server normalization after editing only if the saved text contains this edit.
   const currentText = textareaText(props.card.prompt)
-  const prompt = blurred && result.text === prefix + view.source ? savedPrompt.value.normalizedText
+  const prompt = blurred && result.text === joinPrompt(prefix, view.source) && (!edited || savedIncludesEdit) ? saved.normalizedText
     : result.text === currentText ? props.card.prompt : result.text
   if (prompt === props.card.prompt && ids.length === props.card.assetIds.length) return
   const after = prompt === authoredPrompt ? result.mentions : analyzePrompt(textareaText(prompt)).mentions
@@ -967,7 +1029,7 @@ p {
   font-size: 11px;
   white-space: nowrap;
 }
-.sv-body :deep(.sv-prompt-input) {
+.sv-editor :deep(.sv-prompt-input) {
   box-sizing: border-box;
   width: 100%;
   min-height: 230px;
@@ -982,11 +1044,11 @@ p {
   /* The native textarea otherwise uses its own letter spacing. Match the highlighted mirror. */
   letter-spacing: inherit;
 }
-.sv-body :deep(.mention-input.sv-prompt-input) {
+.sv-editor :deep(.mention-input.sv-prompt-input) {
   background: transparent;
   color: transparent;
 }
-.sv-body :deep(.mention-backdrop.sv-prompt-input) {
+.sv-editor :deep(.mention-backdrop.sv-prompt-input) {
   border-color: transparent;
   background: transparent;
 }
@@ -1126,6 +1188,41 @@ p {
 }
 .sv-reference-dialog::backdrop {
   background: var(--scrim, #000a);
+}
+.sv-prompt-dialog {
+  width: min(1120px, calc(100vw - 32px));
+  height: min(780px, calc(100dvh - 48px));
+  overflow: visible;
+}
+.sv-prompt-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+.sv-prompt-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px clamp(14px, 2vw, 24px);
+  border-bottom: 1px solid var(--border);
+}
+.sv-prompt-dialog-header h3 { font-size: 16px; }
+.sv-prompt-dialog-header p {
+  margin-top: 4px;
+  color: var(--text-2);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.sv-prompt-dialog-header button { flex-shrink: 0; }
+.sv-prompt-dialog-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  padding: 14px clamp(14px, 2vw, 24px) clamp(14px, 2vw, 24px);
+}
+.sv-prompt-dialog-body :deep(.sv-prompt-input) {
+  min-height: 0;
+  font-size: 15px;
 }
 .sv-reference-dialog-content {
   display: grid;

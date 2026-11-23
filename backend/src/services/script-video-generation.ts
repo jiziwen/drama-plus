@@ -34,6 +34,7 @@ import { LIBTV_VIDEO_RATIOS, libtvVideoModel } from './libtv-video-models.js'
 type Asset = ScriptVideoDeliveryAsset
 export type ScriptVideoContinuationSource = {
   previousCardId: string
+  sourceEpisodeId?: string
   previousTaskId?: number
   videoUrl: string
   shotStartSeconds?: number
@@ -175,6 +176,7 @@ async function prepareOpeningFrame(
     provider === 'aicost' && isAicostMiniMaxH3Model(model)
   return {
     previousCardId: source.previousCardId, previousVideoUrl: source.videoUrl,
+    ...(source.sourceEpisodeId && { previousEpisodeId: source.sourceEpisodeId }),
     ...(source.manualSeconds !== undefined && { manualSeconds: source.manualSeconds }),
     ...(source.previousTaskId && { previousTaskId: source.previousTaskId }), imageUrl,
     mode: supportsFirstFrame && !hasReferences ? 'first-frame' : 'reference',

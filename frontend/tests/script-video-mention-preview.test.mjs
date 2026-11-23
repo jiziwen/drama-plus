@@ -23,7 +23,7 @@ function controller(overrides = {}) {
     addEventListener: (type, callback) => listeners.set(type, callback),
     removeEventListener: (type, callback) => { if (listeners.get(type) === callback) listeners.delete(type) },
   }
-  const value = runInNewContext(script + '\n;({ text, mention, taEl, backdropEl, dropdownEl, searchEl, searchQuery, flatList, preview, previewStyle, previewImageFailed, highlightedHtml, onPreviewMove, enterPreview, leavePreview, onTouchPreview, closePreview, onScroll, onInput, onBlur, onDropdownFocusOut, onCompositionStart, onCompositionEnd, onKeydown, onMentionKeydown })', {
+  const value = runInNewContext(script + '\n;({ text, mention, taEl, backdropEl, dropdownEl, searchEl, searchQuery, flatList, preview, previewStyle, previewImageFailed, highlightedHtml, onPreviewMove, enterPreview, leavePreview, onTouchPreview, closePreview, onScroll, onInput, onBlur, onDropdownFocusOut, onCompositionStart, onCompositionEnd, onKeydown, onMentionKeydown, syncDisplay })', {
     ref, computed, watch, nextTick, window, document,
     setTimeout: callback => { const id = ++nextTimer; timers.set(id, callback); return id },
     clearTimeout: id => timers.delete(id),
@@ -167,9 +167,9 @@ test('中文组合输入不触发引用选择，compositionend 在失焦前完�
   app.onInput({ target, isComposing: true })
   app.onCompositionEnd({ target })
   assert.equal(app.mention.value.open, false)
-  assert.deepEqual(app.events, [['update:modelValue', '对白：轻声', target]])
+  assert.deepEqual(app.events, [['update:modelValue', '对白：轻声', target], ['compositionend']])
   app.onInput({ target, isComposing: false })
-  assert.equal(app.events.length, 1, 'browsers that also dispatch a final input must not apply it twice')
+  assert.equal(app.events.length, 2, 'browsers that also dispatch a final input must not apply it twice')
   app.dispose()
 })
 
@@ -289,10 +289,37 @@ test('组合输入时失焦，等中文输入完成后保存最终文字且不�
   app.onInput({ target, isComposing: true })
   app.document.activeElement = null
   app.onBlur({ target, relatedTarget: null })
-  assert.deepEqual(app.events, [])
+  assert.deepEqual(app.events, [['compositionstart']])
   target.value = '对白：轻声'
   app.onCompositionEnd({ target })
-  assert.deepEqual(app.events, [['update:modelValue', '对白：轻声', target], ['commit', '对白：轻声', true]])
+  assert.deepEqual(app.events, [['compositionstart'], ['update:modelValue', '对白：轻声', target], ['compositionend'], ['commit', '对白：轻声', true]])
   assert.equal(app.mention.value.open, false)
+  app.dispose()
+})
+
+test('格式化素材引用后恢复原滚动位置和选区，镜像同步滚动', () => {
+  const app = controller({ modelValue: '逐镜检查\n画面与动作：侍卫推门。' })
+  const target = app.taEl.value
+  let nativeValue = app.text.value
+  Object.defineProperty(target, 'value', {
+    get: () => nativeValue,
+    set(value) {
+      nativeValue = value
+      target.scrollTop = 0
+      target.scrollLeft = 0
+    },
+  })
+  target.scrollTop = 170
+  target.scrollLeft = 10
+  target.setSelectionRange = (start, end, direction) => Object.assign(target, { selectionStart: start, selectionEnd: end, selectionDirection: direction })
+  const formatted = nativeValue.replace('侍卫', '@侍卫')
+  const end = formatted.indexOf('。')
+  app.syncDisplay(formatted, end - 2, end, 'backward')
+  assert.equal(target.value, formatted)
+  assert.deepEqual([target.selectionStart, target.selectionEnd, target.selectionDirection], [end - 2, end, 'backward'])
+  assert.equal(target.scrollTop, 170)
+  assert.equal(target.scrollLeft, 10)
+  assert.equal(app.backdropEl.value.scrollTop, 170)
+  assert.equal(app.backdropEl.value.scrollLeft, 10)
   app.dispose()
 })

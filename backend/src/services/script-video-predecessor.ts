@@ -27,15 +27,23 @@ export function previousScriptVideoCard<Episode extends ReferenceEpisode>(
   if (card) return { episode: sourceEpisode, card, index: sourceIndex, episodeIndex: sourceEpisodeIndex }
 }
 
-/** A manual selection can keep an archived take from its chosen segment. */
-export function previousScriptVideoRender(project: Pick<ScriptVideoProject, 'episodes'>, episodeId: string, cardId: string, videoUrl: string, sourceCardId?: string) {
+/** Explicit manual references can use any saved take in this project; implicit references remain adjacent. */
+export function previousScriptVideoRender(project: Pick<ScriptVideoProject, 'episodes'>, episodeId: string, cardId: string, videoUrl: string, sourceCardId?: string, sourceEpisodeId?: string) {
   const url = scriptVideoReferenceSourceUrl(videoUrl)
   if (!url) return
+  if (sourceEpisodeId !== undefined && sourceCardId === undefined) return
+  if (!project.episodes.some(episode => episode.id === episodeId && episode.cards.some((card: { id: string }) => card.id === cardId))) return
   const predecessor = sourceCardId === undefined ? previousScriptVideoCard(project, episodeId, cardId) : undefined
-  const episode = predecessor?.episode ?? previousScriptVideoEpisode(project, episodeId, cardId)
-  const previous = predecessor?.card ?? episode?.cards.find((item: { id: string }) => item.id === sourceCardId)
+  const explicit = sourceCardId === undefined ? undefined : project.episodes
+    .filter(episode => sourceEpisodeId === undefined || episode.id === sourceEpisodeId)
+    .map(episode => ({ episode, card: episode.cards.find((item: { id: string }) => item.id === sourceCardId) }))
+    .find(source => source.card && listScriptVideoVersions(source.card, source.episode.tasks)
+      .some(version => scriptVideoReferenceSourceUrl(version.url) === url))
+  const episode = predecessor?.episode ?? explicit?.episode
+  const previous = predecessor?.card ?? explicit?.card
   if (!episode || !previous || !listScriptVideoVersions(previous, episode.tasks).some(version => scriptVideoReferenceSourceUrl(version.url) === url)) return
   const task = episode.tasks?.find((item: { cardId: string; videoUrl?: string; status: string }) =>
     item.cardId === previous.id && item.status === 'completed' && scriptVideoReferenceSourceUrl(item.videoUrl) === url)
-  return { cardId: previous.id as string, taskId: task?.taskId as number | undefined, videoUrl: url }
+  return { cardId: previous.id as string, taskId: task?.taskId as number | undefined, videoUrl: url,
+    ...(sourceCardId !== undefined && { sourceEpisodeId: episode.id as string }) }
 }

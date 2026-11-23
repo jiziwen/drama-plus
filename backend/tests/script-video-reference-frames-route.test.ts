@@ -127,7 +127,12 @@ test('参考帧后台预处理、按时间替换、移除和恢复在预览、�
   assert.notEqual(tail.imageUrl, light.imageUrl)
   assert.equal((await post(framesRoute, { ...seek, expectedVideoUrl: newerUrl })).status, 409)
   assert.equal((await post(framesRoute, { ...seek, videoUrl: newerUrl })).status, 400)
-  assert.equal((await post(framesRoute, { ...seek, seconds: 2 })).status, 422)
+  for (const kind of ['tail', 'lighting']) {
+    const ending = (await read(framesRoute, { ...seek, kind, ...(kind === 'lighting' && { startShot: 1 }), seconds: 2 })).candidate
+    assert.equal(ending.seconds, 2)
+    assert.ok(ending.imageUrl, '视频结束位置也应取得最后显示的画面')
+  }
+  assert.equal((await post(framesRoute, { ...seek, seconds: 3 })).status, 422)
   await store.mutate(id, record => {
     const now = new Date().toISOString()
     record.jobs.push({ id: 'prior-remake', projectId: id, episodeId, cardId: 'prior', cardVersion: 2,

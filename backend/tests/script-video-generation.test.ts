@@ -454,7 +454,7 @@ test('AICost 按 PUBLIC_BASE_URL 选择公网参考图与角色音频或本地�
   delete process.env.PUBLIC_BASE_URL
   const applicableAssets = [{ ...assets[0], kind: 'character', voiceAudio, voiceMode: 'model' as const },
     { ...assets[1], name: '戍卒', kind: 'character', voiceAudio: otherVoiceAudio }]
-  const dialogue = '侍卫：“我来守门。”；戍卒：“好。”'
+  const dialogue = '侍卫：“我来守门。”；戍卒【克制】(内心 OS)：“好。”'
   const card = { ...input.card, duration: 30, shots: [{ duration: 23 }, { duration: 3, dialogue }, { duration: 4 }],
     prompt: `镜头 01（0–23秒）\n画面与动作：侍卫和戍卒站在门边。\n镜头 02（23–26秒）\n对白／音效：${dialogue}\n镜头 03（26–30秒）\n画面与动作：二人继续守门。` }
   const episode = { ...input, configId, model: aicostModel, resolution: '480P', card, assets: applicableAssets }
@@ -485,10 +485,11 @@ test('AICost 按 PUBLIC_BASE_URL 选择公网参考图与角色音频或本地�
   assert.equal(payload.prompt, delivery.prompt)
   assert.equal(payload.prompt, preview.prompt)
   assert.match(payload.prompt, /^镜头02（23–26秒）$/mu)
+  assert.match(payload.prompt, /@图片1侍卫 @音频1：\{我来守门。\}；@图片2戍卒 @音频2【克制】\(内心 OS\) ：“好。”/u)
   const persisted = getScriptVideoSubmissionPrompt(submitted.taskId, [], submitted.referenceNames)
   assert.deepEqual(persisted, { ...preview, source: 'submitted' })
-  assert.match(delivery.prompt, /@图片1侍卫的对白音色参考@音频1/)
-  assert.match(delivery.prompt, /@图片2戍卒的对白音色参考@音频2/)
+  assert.match(delivery.prompt, /@图片1侍卫的角色音色参考@音频1/u)
+  assert.match(delivery.prompt, /@图片2戍卒的角色音色参考@音频2/u)
   assert.deepEqual(payload.images, [png, png2].map(bytes => 'data:image/png;base64,' + bytes.toString('base64')))
   assert.deepEqual(payload.audios, [voice, otherVoice].map(bytes => 'data:audio/wav;base64,' + bytes.toString('base64')))
   assert.deepEqual([scriptVideoCapabilities('aicost', customModel)?.maxDuration, scriptVideoCapabilities('aicost', customModel)?.maxAudioReferences], [30, null])
@@ -527,7 +528,7 @@ test('AICost 按 PUBLIC_BASE_URL 选择公网参考图与角色音频或本地�
   assert.match(guidedPreview.prompt, /^参考素材：[\s\S]+@图片3 是 @绣春刀/u)
   const body = guidedPreview.prompt.split(/^镜头01/mu)[1]
   assert.doesNotMatch(body, /@图片\d/u)
-  assert.match(body, /@戍卒 @音频2/u)
+  assert.match(body, /@戍卒 @音频2【克制】\(内心 OS\) ：“好。”/u)
   const guided = await startScriptVideoGeneration(guidedEpisode)
   assert.equal((await finish(guided.taskId)).status, 'completed')
   const guidedPayload = aicostSubmissions.at(-1)!

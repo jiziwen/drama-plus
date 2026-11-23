@@ -40,6 +40,7 @@ test('剧本转视频提交使用所选 LibTV 账号和提示词模式，页面�
   await fs.writeFile(path.join(root, 'static', 'uploads', 'prop.png'),
     Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN1sAAAAASUVORK5CYII=', 'base64'))
   const { id } = await store.create('单账号视频配置')
+  const dialogue = '对白／音效：魏忠国（内心OS、续）【焦躁／紧凑】 (内心 OS)：“先等等。”'
   const episodeId = await store.mutate(id, record => {
     record.project.assets = [{ id: 'prop', kind: 'prop', name: '古伞', image: '/static/uploads/prop.png' }]
     const episode = record.project.episodes[0]
@@ -47,7 +48,7 @@ test('剧本转视频提交使用所选 LibTV 账号和提示词模式，页面�
     episode.confirmedScript = '场景：外墙\n时间：早晨'
     episode.cards = configs.map((config, index) => ({
       id: `part-${index}`, title: config.name, scene: '外墙', version: 2, status: 'draft', duration: 4,
-      manuallyAdded: true, prompt: '窗外一束日光穿过树叶。', assetIds: ['prop'], shots: [],
+      manuallyAdded: true, prompt: '窗外一束日光穿过树叶。\n' + dialogue, assetIds: ['prop'], shots: [],
     }))
     return { documentChanged: true, result: episode.id }
   })
@@ -60,6 +61,7 @@ test('剧本转视频提交使用所选 LibTV 账号和提示词模式，页面�
     reviseScriptVideoCard: unused, assertScriptVideoFormal: unused, recoverVideoTask: unused,
     async getScriptVideoGeneration(taskId) { return { taskId, status: 'processing', stage: 'polling' } },
     async startScriptVideoGeneration(input) {
+      assert.ok(input.card.prompt.includes(dialogue))
       submissions.push({ accountId: input.videoCliAccountId, promptMode: input.promptMode })
       return { taskId: 401 + submissions.length, status: 'processing' }
     },
@@ -69,13 +71,18 @@ test('剧本转视频提交使用所选 LibTV 账号和提示词模式，页面�
     method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Script-Video-Session': '12345678-1234-4567-8234-123456789012' },
     body: JSON.stringify(body),
   })
-  const preview = { cardId: 'part-0', cardVersion: 2 }
+  const preview = { cardId: 'part-0', cardVersion: 2, configId: configs[0].id, model, aspectRatio: '16:9', resolution: '480p' }
   const inline = await post('/final-prompt', preview)
   assert.equal(inline.status, 200, await inline.clone().text())
-  assert.doesNotMatch((await inline.json()).data.prompt, /参考素材：/u)
+  const inlinePrompt = (await inline.json()).data.prompt
+  const authoredCue = /魏忠国（内心OS、续）【焦躁／紧凑】 \(内心 OS\) ：“先等等。”/u
+  assert.doesNotMatch(inlinePrompt, /参考素材：/u)
+  assert.match(inlinePrompt, authoredCue)
   const guide = await post('/final-prompt', { ...preview, promptMode: 'reference-guide' })
   assert.equal(guide.status, 200, await guide.clone().text())
-  assert.match((await guide.json()).data.prompt, /^参考素材：[\s\S]+@图片1 是 @古伞/u)
+  const guidePrompt = (await guide.json()).data.prompt
+  assert.match(guidePrompt, /^参考素材：[\s\S]+@图片1 是 @古伞/u)
+  assert.match(guidePrompt, authoredCue)
   for (const [index, config] of configs.entries()) {
     const response = await post(`/cards/part-${index}/video`, { configId: config.id, model, aspectRatio: '16:9',
       resolution: '480p', expectedCardVersion: 2, ...(index === 0 && { promptMode: 'reference-guide' }) })

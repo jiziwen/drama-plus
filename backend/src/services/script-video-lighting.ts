@@ -9,6 +9,7 @@ import { extractVideoReferenceFrame } from '../utils/video-reference-frame.js'
 
 type LightingSource = {
   cardId: string
+  sourceEpisodeId?: string
   taskId?: number
   videoUrl: string
   start: number
@@ -74,7 +75,7 @@ function manualLightingSource(
   project: ScriptVideoProject, episodeId: string, cardId: string, choice: ScriptVideoFrameChoice | undefined,
 ): LightingSource | undefined {
   if (choice?.mode !== 'manual') return
-  const owner = previousScriptVideoRender(project, episodeId, cardId, choice.videoUrl, choice.sourceCardId)
+  const owner = previousScriptVideoRender(project, episodeId, cardId, choice.videoUrl, choice.sourceCardId, choice.sourceEpisodeId)
   if (owner) return { ...owner, start: choice.seconds, end: choice.seconds, stableStart: choice.seconds, manualSeconds: choice.seconds }
 }
 

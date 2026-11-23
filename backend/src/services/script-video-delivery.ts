@@ -1,6 +1,6 @@
 import { omitScriptVideoRecapQuotes, replaceScriptVideoPromptStyle } from './script-video-format.js'
 import type { ScriptVideoReferenceSettings } from './script-video-reference-settings.js'
-import { annotateScriptVideoInnerOs, hasScriptVideoInnerOs, SCRIPT_VIDEO_INNER_OS_DIRECTION } from './script-video-inner-os.js'
+import { annotateScriptVideoInnerOs, hasExplicitScriptVideoInnerOs, hasScriptVideoInnerOs, SCRIPT_VIDEO_INNER_OS_DIRECTION } from './script-video-inner-os.js'
 import { mapScriptVideoSoundLine, speechClosers, unquotedSpeaker, withoutScriptVideoVoiceCues } from './script-video-foley.js'
 import { annotateScriptVideoAssets, describeScriptVideoReferenceProblem, scriptVideoMaterialEvidenceText, scriptVideoMaterialIds, type AssetMention } from './script-video-mentions.js'
 import { scriptVideoShotHeadings, splitScriptVideoHandoff } from './script-video-asset-scope.js'
@@ -44,6 +44,7 @@ export interface ScriptVideoDeliveryCard {
 
 export interface ScriptVideoContinuation {
   previousCardId: string
+  previousEpisodeId?: string
   previousTaskId?: number
   previousVideoUrl?: string
   manualSeconds?: number
@@ -118,9 +119,9 @@ type SeedanceSoundContext = {
   hasMultipleCharacters: boolean
   vocalizationShots: ReadonlySet<number>
 }
-type ShotSound = { innerSpeakers: string[]; onCameraSpeakers: Set<string>; hasOnScreenSpeech: boolean; hasVocalization: boolean }
+type ShotSound = { hasInnerVoice: boolean; onCameraSpeakers: Set<string>; hasOnScreenSpeech: boolean; hasVocalization: boolean }
 
-function seedanceShotText(body: string, duration: number, context: SeedanceSoundContext): string {
+function seedanceShotText(body: string, duration: number, context: SeedanceSoundContext) {
   const headings = [...body.matchAll(shotHeading)]
   // Seedance 2.5 uses whole seconds. Round shared boundaries together, and keep
   // shot order alone if rounding would collapse a shot or the timeline is invalid.
@@ -134,11 +135,11 @@ function seedanceShotText(body: string, duration: number, context: SeedanceSound
     .replace(/^→衔接[：:]/gmu, '末镜停在：')
     .replace(/^独立生成[：:]/gmu, '本段事件：')
     .split(shotBoundary).map(block => renderSeedanceShot(block, context))
-  return blocks.map((block, index) => {
+  const text = blocks.map((block, index) => {
     const next = blocks[index + 1]
     const [nextSpeaker] = next?.sound.onCameraSpeakers || []
     if (context.hasMultipleCharacters && next?.sound.onCameraSpeakers.size === 1 &&
-        block.isShot && !block.hasVocalization && !block.sound.hasOnScreenSpeech && !block.sound.innerSpeakers.length && block.actionIndex >= 0) {
+        block.isShot && !block.hasVocalization && !block.sound.hasOnScreenSpeech && !block.sound.hasInnerVoice && block.actionIndex >= 0) {
       const action = block.lines[block.actionIndex]
       if (action.split(nextSpeaker).slice(1).some(part => leadingMovement.test(part))) {
         block.lines[block.actionIndex] += ` ${nextSpeaker}是该动作的主体，沿用对应参考图的脸、发型和服装，由同一人接续下一镜。`
@@ -146,6 +147,7 @@ function seedanceShotText(body: string, duration: number, context: SeedanceSound
     }
     return block.lines.join('\n')
   }).join('')
+  return { text, hasInnerVoice: blocks.some(block => block.sound.hasInnerVoice) }
 }
 
 function renderSeedanceShot(block: string, context: SeedanceSoundContext) {
@@ -153,7 +155,7 @@ function renderSeedanceShot(block: string, context: SeedanceSoundContext) {
   const shotNumber = /^镜头[ \t]*(\d+)/u.exec(block)?.[1]
   const isShot = shotNumber !== undefined
   const hasVocalization = isShot && context.vocalizationShots.has(Number(shotNumber))
-  const sound: ShotSound = { innerSpeakers: [], onCameraSpeakers: new Set(), hasOnScreenSpeech: false, hasVocalization }
+  const sound: ShotSound = { hasInnerVoice: false, onCameraSpeakers: new Set(), hasOnScreenSpeech: false, hasVocalization }
   const lines = block.split(/\r?\n/u).map(line => {
     const heading = soundField.exec(line)
     if (heading) {
@@ -216,16 +218,18 @@ function renderSpeech(line: string, context: SeedanceSoundContext, sound: ShotSo
             !isAudioOnlySpeaker(label, context.audioOnlySpeakers)) continue
           if (!unquotedSpeaker.test(label + '：')) continue
           sep += speaker.slice(0, next)
-          speaker = hasScriptVideoInnerOs(label) ? annotateScriptVideoInnerOs(label + '：').slice(0, -1) : label
+          speaker = hasScriptVideoInnerOs(label)
+            ? annotateScriptVideoInnerOs(label + '：', { preserveExplicitInnerOs: true }).slice(0, -1) : label
           break
         }
       }
       if (soundEffect.test(speaker.trim())) return sep + '<' + speech.replace(/^<(.*)>$/u, '$1') + '>'
-      if (speaker.includes(SCRIPT_VIDEO_INNER_OS_DIRECTION)) {
-        const label = annotateScriptVideoInnerOs(speaker + '：').slice(0, -1).replace(SCRIPT_VIDEO_INNER_OS_DIRECTION, '').trim()
-        const speakerName = withoutScriptVideoVoiceCues(label).split(/[【（(\[]/u, 1)[0].trimEnd()
-        sound.innerSpeakers.push(speakerName)
-        return `${sep}${label}(OS) ：“${speech}”`
+      const explicitInnerOs = hasExplicitScriptVideoInnerOs(speaker)
+      if (explicitInnerOs || speaker.includes(SCRIPT_VIDEO_INNER_OS_DIRECTION)) {
+        const label = explicitInnerOs ? speaker.trim()
+          : annotateScriptVideoInnerOs(speaker + '：').slice(0, -1).replace(SCRIPT_VIDEO_INNER_OS_DIRECTION, '').trim() + SCRIPT_VIDEO_INNER_OS_DIRECTION
+        sound.hasInnerVoice = true
+        return `${sep}${label} ：“${speech}”`
       }
       const offscreen = /(?:V\.?O\.?|O\.?V\.?)[）)】\]]|画外|旁白|只闻其声/iu.test(speaker)
       const labels = withoutScriptVideoVoiceCues(speaker).split(/[【（(\[]/u, 1)[0].split('、')
@@ -294,6 +298,7 @@ function inspectScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(
   const legend = assetIds.map((id, i) => `图${i + 1} = @${byId.get(id)?.name ?? ''}`).join('，')
   if (legend && body.split(/\r?\n/u, 1)[0] === legend) body = body.slice(legend.length).replace(/^\r?\n/u, '')
   body = annotateScriptVideoInnerOs(omitScriptVideoRecapQuotes(body, card.shots || []), {
+    preserveExplicitInnerOs: true,
     referenceAudioNames: assets.filter(asset => asset.kind === 'audio').map(asset => asset.name),
     speakers: [...assets.filter(asset => asset.kind === 'character').map(asset => asset.name),
       ...(options.cast?.map(role => role.name) ?? [])],
@@ -572,8 +577,17 @@ export function buildScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(
       ? `${imageTag(indexByImage.get(asset.image)!)} 是 @${asset.name} 的${pictureDuties[asset.kind || ''] || '外观'}参考图${voiceOnly ? '（画外声音来源，不安排出镜）' : referenceOnly ? '（是否出镜以当前分镜为准）' : ''}。`
       : `${imageTag(indexByImage.get(asset.image)!)} ${asset.name}（${duty}）`]
   }).join(referenceGuide ? '\n' : '，')
-  const hasInnerVoice = seedance25 && output.includes(SCRIPT_VIDEO_INNER_OS_DIRECTION)
+  let hasInnerVoice = seedance25 && output.includes(SCRIPT_VIDEO_INNER_OS_DIRECTION)
   const hasMultipleCharacters = images.filter(asset => asset.kind === 'character').length > 1
+  const duration = options.duration ?? card.duration
+  if (!card.manuallyAdded && duration !== card.duration) output = retimeShotText(output, card, duration)
+  if (seedance25) {
+    const rendered = seedanceShotText(output, duration, {
+      audioOnlySpeakers: [...audioOnlySpeakers], visualSpeakerNames: [...visualSpeakerNames], hasMultipleCharacters, vocalizationShots,
+    })
+    output = rendered.text
+    hasInnerVoice ||= rendered.hasInnerVoice
+  } else if (aicostSeedance20 || seedanceModelLimits(model)?.version === '2.0') output = output.replace(shotHeading, '镜头$1')
   const castContinuity = (referenceGuide && images.some(asset => asset.kind === 'character') || seedance25 && hasMultipleCharacters)
     ? '各角色沿用各自参考图的脸、发型和服装。各镜的走位、动作与画内对白由该镜指定的人物完成。'
     : ''
@@ -608,12 +622,6 @@ export function buildScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(
     }
   }
   const voiceText = [...referenceVoiceText, ...modelVoiceText].join('\n')
-  const duration = options.duration ?? card.duration
-  if (!card.manuallyAdded && duration !== card.duration) output = retimeShotText(output, card, duration)
-  if (seedance25) output = seedanceShotText(output, duration, {
-    audioOnlySpeakers: [...audioOnlySpeakers], visualSpeakerNames: [...visualSpeakerNames], hasMultipleCharacters, vocalizationShots,
-  })
-  else if (aicostSeedance20 || seedanceModelLimits(model)?.version === '2.0') output = output.replace(shotHeading, '镜头$1')
   if (voiceText && !referenceGuide) {
     const firstShot = output.search(shotBoundary)
     const insertion = firstShot < 0 ? Math.max(0, output.search(legacyShotBody)) : firstShot

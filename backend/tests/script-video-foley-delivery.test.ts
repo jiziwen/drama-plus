@@ -67,7 +67,8 @@ test('无标签的前置拟音后仍识别说话角色，并把音频紧跟在�
   const dialogue = effect + '吴良（内心OS）【心急 / 略快】：“门外是谁？”'
   const inner = render(dialogue)
   assert.deepEqual(inner.voices.map(voice => voice.asset.id), ['wu'])
-  assert.ok(inner.prompt.includes('对白／音效：' + effect + '@图片1吴良 @音频1【心急 / 略快】(OS) ：“门外是谁？”'))
+  assert.ok(inner.prompt.includes('对白／音效：' + effect + '@图片1吴良 @音频1（内心OS）【心急 / 略快】 ：“门外是谁？”'))
+  assert.doesNotMatch(inner.prompt, /是本镜画内发声者/u)
   const spoken = render(effect + '吴良：“门外是谁？”')
   assert.ok(spoken.prompt.includes('对白／音效：' + effect + '@图片1吴良 @音频1：{门外是谁？}'))
   assert.match(spoken.prompt, /@图片1吴良保持对应参考图的造型，是本镜画内发声者/u)

@@ -5,7 +5,7 @@ import type { ScriptVideoFrameChoice, ScriptVideoReferenceFrameRow, ScriptVideoR
 type Scope = { projectId: string; episodeId: string; card: { id: string; version?: number; referenceFrameSettings?: ScriptVideoReferenceSettings } }
 type Request = (path: string, body: object, signal: AbortSignal) => Promise<ScriptVideoReferenceFrames>
 export type FrameSelection = 'auto' | 'off' | 'manual'
-export type FrameSource = NonNullable<ScriptVideoReferenceFrames['previousEpisodeSources']>[number]
+export type FrameSource = NonNullable<ScriptVideoReferenceFrames['projectSources']>[number]
 
 export function useScriptVideoReferenceFrames(
   current: () => Scope | undefined, sourceRevision: () => string,
@@ -70,8 +70,10 @@ export function useScriptVideoReferenceFrames(
   onScopeDispose(reset)
 
   function matchesSource(state: ScriptVideoReferenceFrames, row: ScriptVideoReferenceFrameRow | undefined, source: FrameSource) {
-    return (row?.sourceCardId === source.cardId && row.videoUrl === source.videoUrl) ||
-      state.previousEpisodeSources?.some(item => item.cardId === source.cardId && item.videoUrl === source.videoUrl)
+    return (row?.sourceCardId === source.cardId && row.videoUrl === source.videoUrl &&
+        (!source.sourceEpisodeId || row.sourceEpisodeId === source.sourceEpisodeId)) ||
+      (state.projectSources ?? state.previousEpisodeSources)?.some(item => item.cardId === source.cardId && item.videoUrl === source.videoUrl &&
+        (!source.sourceEpisodeId || item.sourceEpisodeId === source.sourceEpisodeId))
   }
 
   async function choose(row: ScriptVideoReferenceFrameRow, mode: FrameSelection, seconds?: number, source?: FrameSource) {
@@ -94,11 +96,12 @@ export function useScriptVideoReferenceFrames(
       if (mode === 'manual') {
         const result = await request(endpoint, {
           kind: row.kind, ...(row.kind === 'lighting' && { startShot: row.startShot }), seconds, expectedVideoUrl: videoUrl,
-          ...(source && { sourceCardId: source.cardId }),
+          ...(source && { sourceCardId: source.cardId, ...(source.sourceEpisodeId && { sourceEpisodeId: source.sourceEpisodeId }) }),
         }, controller.signal)
         if (controller.signal.aborted) return false
         const frame = result.candidate
         if (!frame?.imageUrl || frame.videoUrl !== videoUrl || (source && frame.sourceCardId !== source.cardId) ||
+            (source?.sourceEpisodeId && frame.sourceEpisodeId !== source.sourceEpisodeId) ||
             !validScriptVideoFrameTime(frame.seconds))
           throw new Error('来源成片已变化，请刷新后重新选帧。')
         if (sourceVersion !== version) {
@@ -109,7 +112,8 @@ export function useScriptVideoReferenceFrames(
           if (sourceVersion !== rechecking || (source ? !matchesSource(latest, latestRow, source) : latestRow?.videoUrl !== videoUrl))
             throw new Error('来源成片已变化，请重新选帧。')
         }
-        choice = { mode, videoUrl: frame.videoUrl, seconds: frame.seconds, ...(frame.sourceCardId && { sourceCardId: frame.sourceCardId }) }
+        choice = { mode, videoUrl: frame.videoUrl, seconds: frame.seconds, ...(frame.sourceCardId && { sourceCardId: frame.sourceCardId }),
+          ...(frame.sourceEpisodeId && { sourceEpisodeId: frame.sourceEpisodeId }) }
       }
       const card = current()?.card
       if (!card || controller.signal.aborted) return false

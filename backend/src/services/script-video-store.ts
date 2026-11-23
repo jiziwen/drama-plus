@@ -120,10 +120,15 @@ function assertChangedReferenceSources(
       const old = frameChoices(priorCards.get(card.id)?.referenceFrameSettings)
       for (const [key, choice] of Object.entries(frameChoices(card.referenceFrameSettings))) {
         if (choice?.mode !== 'manual' || !choice.sourceCardId || isDeepStrictEqual(choice, old[key as keyof typeof old])) continue
-        const previousId = order[order.indexOf(episode.id) - 1]
-        const previous = previousId && (currentEpisodes.get(previousId) ?? loadEpisode?.(previousId))
-        const context = { episodes: previous ? [previous, episode] : [episode] }
-        if (!previousScriptVideoRender(context, episode.id, card.id, choice.videoUrl, choice.sourceCardId))
+        const candidates = choice.sourceEpisodeId ? order.filter(id => id === choice.sourceEpisodeId) : order
+        const valid = candidates.some(id => {
+          if (!currentEpisodes.has(id)) currentEpisodes.set(id, loadEpisode?.(id))
+          const source = currentEpisodes.get(id)
+          if (!source) return false
+          const context = { episodes: source.id === episode.id ? [episode] : [source, episode] }
+          return !!previousScriptVideoRender(context, episode.id, card.id, choice.videoUrl, choice.sourceCardId, choice.sourceEpisodeId)
+        })
+        if (!valid)
           throw new ScriptVideoStoreError('参考来源成片已更新，请重新打开选帧。', 409, 'REFERENCE_FRAME_SOURCE_CHANGED')
       }
     }
@@ -256,7 +261,7 @@ function restoreSavedPromptReferences(project: ScriptVideoProject, episodes = pr
     for (const card of episode.cards || []) {
       const { prompt: savedPrompt, assetIds } = card
       if (typeof savedPrompt !== 'string' || !savedPrompt.trim()) continue
-      const prompt = annotateScriptVideoInnerOs(savedPrompt, { protectedPrefix: prefix, speakers, referenceAudioNames })
+      const prompt = annotateScriptVideoInnerOs(savedPrompt, { protectedPrefix: prefix, speakers, referenceAudioNames, preserveExplicitInnerOs: true })
       card.prompt = prompt
       if (!project.assets.length || !Array.isArray(assetIds)) continue
       const scan = scanCardReferences(card, prompt, project.assets, episode.production?.characters, prefix)
@@ -283,6 +288,7 @@ function cardReferences(card: any, assets: MentionAsset[], production: any, styl
   const protectedPrefix = style && scriptVideoPromptStylePrefix(style)
   const prompt = annotateScriptVideoInnerOs(card.prompt, {
     protectedPrefix,
+    preserveExplicitInnerOs: true,
     referenceAudioNames: assets.filter(asset => asset.kind === 'audio').map(asset => asset.name),
     speakers: [...assets.filter(asset => asset.kind === 'character').map(asset => asset.name),
       ...(production?.characters?.map((role: { name: string }) => role.name) ?? [])],
@@ -724,14 +730,35 @@ export class ScriptVideoStore {
       if (includePrevious) {
         const order: string[] = JSON.parse(row.episode_order)
         const previousId = order[order.indexOf(scope) - 1]
-        const previous = previousId && this.catalog.episode(id, previousId)
-        if (previous) project.episodes.unshift(previous.episode)
+        const requested = new Set([scope, ...(previousId ? [previousId] : [])])
+        const legacyCardIds = new Set<string>()
+        for (const card of episode.episode.cards) {
+          const settings: ScriptVideoReferenceSettings | undefined = card.referenceFrameSettings
+          for (const choice of [settings?.tail, ...Object.values(settings?.lighting ?? {})]) {
+            if (choice?.mode !== 'manual' || !choice.sourceCardId) continue
+            if (choice.sourceEpisodeId) requested.add(choice.sourceEpisodeId)
+            else legacyCardIds.add(choice.sourceCardId)
+          }
+        }
+        if (legacyCardIds.size) {
+          const matches = this.catalog.db.prepare<[string, string], { id: string }>(`
+            SELECT id FROM episodes WHERE project_id=? AND EXISTS (
+              SELECT 1 FROM json_each(document,'$.cards') card
+              JOIN json_each(?) source ON json_extract(card.value,'$.id')=source.value
+            )`).all(id, JSON.stringify([...legacyCardIds]))
+          for (const source of matches) requested.add(source.id)
+        }
+        // Keep the real previous episode directly before the current one, while
+        // loading explicit sources as read-only context in their project order.
+        project.episodes = order.filter(id => requested.has(id)).flatMap(episodeId => {
+          const selected = episodeId === scope ? episode : this.catalog.episode(id, episodeId)
+          return selected ? [selected.episode] : []
+        })
       }
     } else project.episodes = this.catalog.allEpisodes(row)
     const originalEpisodes = trackChanges ? new Map(project.episodes.map(episode => [episode.id, JSON.stringify(episode)])) : undefined
     restoreSavedPromptReferences(project)
-    const jobs = this.catalog.jobs(id, scope)
-    if (scope && includePrevious && project.episodes.length > 1) jobs.unshift(...this.catalog.jobs(id, project.episodes[0].id))
+    const jobs = scope && includePrevious ? project.episodes.flatMap(episode => this.catalog.jobs(id, episode.id)) : this.catalog.jobs(id, scope)
     return { project, jobs, storageVersion: row.version, scope, episodeRevision, originalEpisodes }
   }
 

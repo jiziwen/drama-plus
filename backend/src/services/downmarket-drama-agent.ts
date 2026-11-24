@@ -63,17 +63,20 @@ function withChapterContext(drama: DownmarketDrama, chapter: number) {
   }
 }
 
-export type DramaTextRequest = { instructions: string; message: string; maxTokens: number; signal: AbortSignal }
+export type DramaTextRequest = { instructions: string; message: string; signal: AbortSignal }
 export type DramaTextRunner = ((request: DramaTextRequest) => Promise<string>) & { limits?: TextModelLimits }
 
-export async function createDramaTextRunner(selection?: DramaModelSelection): Promise<DramaTextRunner> {
+export async function createDramaTextRunner(
+  selection?: DramaModelSelection,
+  resolveModel: typeof resolveScriptVideoTextModel = resolveScriptVideoTextModel,
+): Promise<DramaTextRunner> {
   let resolved
   try {
-    resolved = await resolveScriptVideoTextModel(selection?.model, selection?.configId)
+    resolved = await resolveModel(selection?.model, selection?.configId)
   } catch (error) {
     throw new Error(selection ? '所选 LLM 不可用，请在项目中重新选择。' : '文字模型不可用，请在右上角检查设置。', { cause: error })
   }
-  const run: DramaTextRunner = async ({ instructions, message, maxTokens, signal }) => {
+  const run: DramaTextRunner = async ({ instructions, message, signal }) => {
     const agent = new Agent({
       id: 'downmarket-drama',
       name: '下沉剧智能体',
@@ -84,7 +87,7 @@ export async function createDramaTextRunner(selection?: DramaModelSelection): Pr
     const result = await agent.generate(message, {
       abortSignal: AbortSignal.any([signal, AbortSignal.timeout(SCRIPT_VIDEO_TEXT_TIMEOUT_MS)]),
       maxSteps: 1,
-      modelSettings: { maxOutputTokens: Math.min(maxTokens, resolved.maxOutputTokens ?? maxTokens) },
+      modelSettings: resolved.maxOutputTokens ? { maxOutputTokens: resolved.maxOutputTokens } : {},
     })
     signal.throwIfAborted()
     if (result.error) throw result.error
@@ -99,13 +102,12 @@ export async function createDramaTextRunner(selection?: DramaModelSelection): Pr
 }
 
 export function downmarketDramaAgent(run: DramaTextRunner, signal: AbortSignal, phase: (label: string) => void) {
-  async function ask<T>(label: string, task: string, input: unknown, schema: z.ZodType<T>, maxTokens = 8_000): Promise<T> {
+  async function ask<T>(label: string, task: string, input: unknown, schema: z.ZodType<T>): Promise<T> {
     signal.throwIfAborted()
     phase(label)
     const raw = await run({
       instructions: system + '\n\n' + task,
       message: JSON.stringify(input),
-      maxTokens,
       signal,
     })
     signal.throwIfAborted()
@@ -134,23 +136,22 @@ export function downmarketDramaAgent(run: DramaTextRunner, signal: AbortSignal, 
     analyze(drama: DownmarketDrama, source = drama.brief.reference) {
       const direction = drama.brief.direction
       const budget = dramaReferenceBudgets(run.limits, direction)
-      const digestOutput = Math.min(3200, budget.output)
       return analyzeDramaReference(source, budget.source, signal, {
-        whole: reference => ask('拆解赛道与开头', analysisTask, { reference, direction }, analysisSchema, budget.output),
+        whole: reference => ask('拆解赛道与开头', analysisTask, { reference, direction }, analysisSchema),
         async slice({ text, number, first, last, progress }) {
           const digest = await ask(`分批分析对标文案 · 第 ${number} 批（已读 ${progress}%）`,
             '这是同一对标文的连续片段。按原有顺序记录情绪、人物动机、主要冲突、升级与回报、伏笔回收和有效断章。区分真正的全篇开头、结尾和分段边界。保留有助于串联前后片段的因果，只生成笔记。' + digestShape,
-            { reference: text, number, first, last, direction }, digestSchema, digestOutput)
+            { reference: text, number, first, last, direction }, digestSchema)
           return digest.notes
         },
         async merge(digests) {
           const digest = await ask('归并各批对标分析', '按段号顺序合并对标结构笔记。保留真正的开头、主矛盾演变、转折、伏笔、节奏变化和全篇收束。把跨段的同一矛盾连起来，用简洁语言覆盖所有段号。' + digestShape,
-            { digests, direction }, digestSchema, digestOutput)
+            { digests, direction }, digestSchema)
           return digest.notes
         },
         finish: digests => ask('汇总全文分析并生成三个选题',
           '下面是按先后顺序整理的全文分析笔记。先综合所有批次，再生成选题。\n' + analysisTask,
-          { digests, direction }, analysisSchema, budget.output),
+          { digests, direction }, analysisSchema),
       })
     },
 
@@ -159,10 +160,10 @@ export function downmarketDramaAgent(run: DramaTextRunner, signal: AbortSignal, 
       const premise = { pitch: drama.pitches![index], analysis: drama.analysis, chapterCount, chapterWords, runtimeMinutes, style, direction, notes, previous: drama.outline }
       const bible = await ask('搭建世界与人物', '以选定的创意建立故事规则、主角可用资源与代价、物件线索、人物关系、各方目标与弱点。按题材决定是否需要战力、宝物和功法。人物的选择必须能驱动主线。' +
         contract('{ "world": "世界规则与关键物件", "characters": "角色目标、关系、形象和变化" }'),
-      premise, z.object({ world: required(5_000), characters: required(5_000) }), 5200)
+      premise, z.object({ world: required(5_000), characters: required(5_000) }))
       return ask('规划章节与反转', `基于选定创意和设定写完整的 ${chapterCount} 章大纲，规划约 ${chapterCount * chapterWords} 字、${runtimeMinutes} 分钟。每章写本章目标、出场人物、因果、对抗与结果、伏笔或章尾钩子，标明回收点。把冲突升级、反击、反转、高潮与结局排进指定章数。先把第一章开场矛盾写具体。` +
         contract('{ "title": "全剧标题", "world": "确认后的世界设定", "characters": "确认后的人物设定", "chapters": [{ "title": "章名", "plan": "详细章纲" }] }'),
-      { ...premise, ...bible }, outlineSchema.extend({ chapters: outlineSchema.shape.chapters.length(chapterCount) }), 15_000)
+      { ...premise, ...bible }, outlineSchema.extend({ chapters: outlineSchema.shape.chapters.length(chapterCount) }))
     },
 
     async write(drama: DownmarketDrama) {
@@ -170,20 +171,20 @@ export function downmarketDramaAgent(run: DramaTextRunner, signal: AbortSignal, 
       const target = drama.brief.chapterWords
       const input = { chapter, isFinal: chapter === drama.brief.chapterCount, target, direction: drama.brief.direction, ...withChapterContext(drama, chapter) }
       const draft = checkChapter(await ask('撰写正文与连续性台账', `写完第 ${chapter} 章，正文约 ${target} 字（含标点，空白不计），在本章大纲规定的节点停住。沿用前文人物现状、关系和未回收线索。结尾根据全剧进度留有效断章或收束。\n${screenplay}` + contract(chapterShape),
-        input, chapterSchema, 12_000))
+        input, chapterSchema))
       const audit = await ask('审核本章因果、篇幅和台词', '审核正文是否违背大纲或前文，检查因果、世界规则、内容拖沓、人物选择、角色行动和情绪标注。检查篇幅偏差（预算前后约10%）、对白长短、章尾钩子，能读成稿即通过；存在明确且有影响的问题才要求修订。' +
         (drama.brief.humor ? '从人物反差、情境轻梗和大众热点形式提供可选增强。只有自然融入剧情才要求修订，禁止硬塞流行梗。' : '') +
         contract('{ "revise": false, "notes": "审核结果和明确的修改点" }'),
-      { ...input, draft, actualWords: countDramaWords(draft.text) }, z.object({ revise: z.boolean(), notes: required(2_500) }), 3800)
+      { ...input, draft, actualWords: countDramaWords(draft.text) }, z.object({ revise: z.boolean(), notes: required(2_500) }))
       if (!audit.revise) return draft
       return checkChapter(await ask('按审核意见润色成稿', `按审核意见修正第 ${chapter} 章，保持前后剧情连续，约 ${target} 字。输出润色后的完整正文；只有符合章纲的标题和章尾钩子才可改。\n${screenplay}` +
-        contract(chapterShape), { ...input, draft, audit: audit.notes }, chapterSchema, 12_000))
+        contract(chapterShape), { ...input, draft, audit: audit.notes }, chapterSchema))
     },
 
     logic: (drama: DownmarketDrama) => ask('通读全剧并标出逻辑问题', '对照定稿前的全剧正文及大纲查时间、空间、动机、因果、人物身份、道具和伏笔承接。每个问题必须有具体章号、证据和可落地的修法。跨章问题拆出涉及各章的动作。没有逻辑问题就给空数组；此步只出方案，不改剧本。' +
       contract('{ "verdict": "整体判断", "issues": [{ "chapter": 1, "problem": "正文问题和证据", "fix": "该章修改办法" }] }'),
     { outline: drama.outline, chapters: approvedScript(drama) },
-    z.object({ verdict: required(3_000), issues: z.array(z.object({ chapter: chapterNumber.max(drama.chapters.length), problem: required(1000), fix: required(1000) })).max(30) }), 12_000),
+    z.object({ verdict: required(3_000), issues: z.array(z.object({ chapter: chapterNumber.max(drama.chapters.length), problem: required(1000), fix: required(1000) })).max(30) })),
 
     opening: (drama: DownmarketDrama, mode: 'conflict' | 'narrated', reference?: string, notes?: string) => ask(
       mode === 'conflict' ? '设计冲突式前置开头' : '拆解结构并撰写解说式开头',
@@ -205,12 +206,12 @@ export function downmarketDramaAgent(run: DramaTextRunner, signal: AbortSignal, 
     async revise(drama: DownmarketDrama, chapter: number, approvedChanges: unknown) {
       return checkChapter(await ask('按确认方案生成第' + chapter + '章修改稿', '按已经确认的修改方案重写指定章正文，保留原格式、主线和与相邻章的衔接。若提供人工编辑的开头片段，接入第一章并尽量逐字保留片段，消除与后文重复的部分。整章都要输出，方便作者逐行确认。\n' +
         screenplay + contract(chapterShape),
-      { chapter, script: drama.chapters[chapter - 1], ...withChapterContext(drama, chapter), approvedChanges }, chapterSchema, 12_000))
+      { chapter, script: drama.chapters[chapter - 1], ...withChapterContext(drama, chapter), approvedChanges }, chapterSchema))
     },
 
     assets: (drama: DownmarketDrama) => ask('提取人物、场景、物品资产', '从完整剧本提取真实出现的角色、可反复拍摄的独立场景和推进剧情且要固定外观的物品。按类别去重，角色确有明确换装才拆成不同造型。名称使用剧本原名，单条提示词详细自洽，仅描述一个资产，适合单独生成一张16:9图。角色写年龄、体型、脸、发型、服饰、材质和辨识特征；场景写内外景、时间、空间、陈设、主光和动线；物品写比例、颜色、材质和使用痕迹。避免编造剧本未出现的资产。' +
       contract('{ "assets": [{ "kind": "character 或 scene 或 prop", "name": "单资产名", "prompt": "完整中文图像提示词" }] }'),
     { style: drama.brief.style === 'live' ? '仿真人' : '3D漫剧', outline: drama.outline, chapters: approvedScript(drama) },
-    z.object({ assets: z.array(z.object({ kind: assetKinds, name: required(100), prompt: required(3_200) })).min(1).max(60) }), 14_000),
+    z.object({ assets: z.array(z.object({ kind: assetKinds, name: required(100), prompt: required(3_200) })).min(1).max(60) })),
   }
 }

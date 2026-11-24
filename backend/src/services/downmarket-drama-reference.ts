@@ -23,13 +23,14 @@ const smallestBatch = 1_200
 const unknownInputLimit = 96_000
 
 export function dramaReferenceBudgets(limits: TextModelLimits = {}, direction = '') {
-  const output = Math.min(8_000, limits.maxOutputTokens ?? Infinity,
+  // This is an estimate reserved for output when splitting input, not a generation limit.
+  const outputReserve = Math.min(8_000, limits.maxOutputTokens ?? Infinity,
     Math.floor((limits.contextWindow ?? Infinity) / 4))
   const reportedInput = Math.min(limits.maxInputTokens ?? Infinity,
-    (limits.contextWindow ?? Infinity) - output)
+    (limits.contextWindow ?? Infinity) - outputReserve)
   const input = Number.isFinite(reportedInput) ? reportedInput : unknownInputLimit
   const overhead = Math.min(4_000, Math.floor(input * .12)) + estimateTokens(direction)
-  return { output, source: Math.max(smallestBatch, Math.floor(input * .93) - overhead) }
+  return { source: Math.max(smallestBatch, Math.floor(input * .93) - overhead) }
 }
 
 function sliceEnd(source: string, start: number, budget: number) {

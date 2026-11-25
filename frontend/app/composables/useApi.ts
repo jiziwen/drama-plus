@@ -3,6 +3,7 @@ import type { DownmarketDrama, DownmarketDramaListItem, DownmarketDramaProgress,
 import type { NovelChapter, NovelCommand, NovelPace, NovelProject, NovelProjectSummary } from '../../../backend/src/services/novel-storyboard-types'
 import type { ChatModelOption, ChatModelSelection, ChatSession, ChatSessionSummary } from '../../../backend/src/services/ai-chat-types'
 import type { ProjectModelOption } from '../../../backend/src/services/project-model-options'
+import type { GalleryAsset, GalleryAssetKind, GalleryImageRequest } from '../../../backend/src/services/gallery-asset-types'
 
 const BASE = '/api/v1'
 
@@ -246,6 +247,16 @@ export const dramaAPI = {
   create: (data: any) => api.post('/dramas', data),
   update: (id: number, data: any) => api.put(`/dramas/${id}`, data),
   del: (id: number) => api.del(`/dramas/${id}`),
+}
+
+export const galleryAssetAPI = {
+  models: () => api.get<ProjectModelOption[]>('/asset-gallery/models'),
+  list: (projectId: number) => api.get<GalleryAsset[]>(`/asset-gallery/${projectId}`),
+  create: (projectId: number, data: GalleryImageRequest & { kind: GalleryAssetKind; name?: string }) =>
+    req<{ id: number; name: string; taskId: number | null; error?: string }>('POST', `/asset-gallery/${projectId}`, data, false),
+  generate: (projectId: number, kind: GalleryAssetKind, id: number, data: GalleryImageRequest) =>
+    req<{ id: number; taskId: number }>('POST', `/asset-gallery/${projectId}/${kind}/${id}/generate`, data, false),
+  delete: (projectId: number, kind: GalleryAssetKind, id: number) => api.del(`/asset-gallery/${projectId}/${kind}/${id}`),
 }
 
 /** Follow the existing paginated endpoint for workspaces that show every project. */

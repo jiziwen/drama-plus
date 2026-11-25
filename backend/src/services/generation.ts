@@ -5,7 +5,7 @@
 import { isSeedance25Model } from './seedance-models.js'
 import { inlineSeedanceVoice } from './seedance-reference-media.js'
 import { db, getInsertId, schema } from '../db/index.js'
-import { and, desc, eq, gt, ne } from 'drizzle-orm'
+import { and, desc, eq, gt, isNull, ne } from 'drizzle-orm'
 import fs from 'node:fs'
 import { getAbsolutePath } from '../utils/storage.js'
 import { downloadVideo, safeTaskError } from './video-download.js'
@@ -34,6 +34,7 @@ import { assertVideoCliNotDisconnecting, holdVideoCliSubmission } from './video-
 import { resolveVideoCliAccountId } from './video-cli-accounts.js'
 import { cancelUpstreamVideo } from './video-upstream-cancel.js'
 import { scheduleRetiredUploadCleanup } from './script-video-media-retention.js'
+import { GALLERY_IMAGE_SIZES, isGalleryImageAspect, type GalleryImageAspect } from './gallery-asset-types.js'
 
 type TaskType = 'image' | 'video'
 
@@ -66,6 +67,7 @@ interface GenerateImageParams {
   model?: string
   size?: string
   requireLandscape16x9?: boolean
+  galleryAspect?: GalleryImageAspect
   referenceImages?: string[]
   frameType?: string
   configId?: number
@@ -110,6 +112,7 @@ async function enqueueImage(params: GenerateImageParams): Promise<number> {
   const config = await resolveMediaConfig('image', params)
   const referenceImages = params.referenceImages === undefined ? [] : validateReferenceImages(params.referenceImages)
   assertImageMode(config, referenceImages.length ? 'reference' : 'text')
+  const size = params.galleryAspect ? galleryRequestSize(config, params.galleryAspect) : params.size
 
   const id = await createTask('image', config, {
     storyboardId: params.storyboardId,
@@ -120,7 +123,8 @@ async function enqueueImage(params: GenerateImageParams): Promise<number> {
     prompt: params.prompt,
     model: params.model || config.model,
   }, {
-    size: params.size || (config.provider === 'comfyui' ? undefined : '1920x1080'),
+    size: size || (config.provider === 'comfyui' ? undefined : '1920x1080'),
+    ...(params.galleryAspect && { galleryAspect: params.galleryAspect }),
     ...(params.requireLandscape16x9 && { requireLandscape16x9: true }),
     frameType: params.frameType,
     referenceImages,
@@ -141,6 +145,16 @@ async function enqueueImage(params: GenerateImageParams): Promise<number> {
     params,
   })
   return id
+}
+
+function galleryRequestSize(config: AIConfig, aspect: GalleryImageAspect) {
+  if (config.provider === 'openai') {
+    if (config.model === 'dall-e-2') return '1024x1024'
+    if (config.model === 'dall-e-3') {
+      return { '9:16': '1024x1792', '16:9': '1792x1024', '1:1': '1024x1024' }[aspect]
+    }
+  }
+  return GALLERY_IMAGE_SIZES[aspect]
 }
 
 export type VideoSubmissionControl = {
@@ -302,6 +316,16 @@ async function createTask(
       const shot = tx.select({ id: schema.storyboards.id, deletedAt: schema.storyboards.deletedAt })
         .from(schema.storyboards).where(eq(schema.storyboards.id, fields.storyboardId)).get()
       if (!shot || shot.deletedAt) throw new Error('镜头不存在')
+    }
+    if (params.galleryAspect) {
+      const target = fields.characterId ? { table: schema.characters, id: fields.characterId }
+        : fields.sceneId ? { table: schema.scenes, id: fields.sceneId }
+          : fields.propId ? { table: schema.props, id: fields.propId } : null
+      if (!target || fields.dramaId === undefined) throw new Error('项目资产不存在')
+      const saved = tx.update(target.table).set({
+        finalPrompt: fields.prompt, imageModel: fields.model, imageConfigId: config.id, updatedAt: ts,
+      }).where(and(eq(target.table.id, target.id), eq(target.table.dramaId, fields.dramaId), isNull(target.table.deletedAt))).run()
+      if (!saved.changes) throw new Error('项目资产不存在')
     }
     return tx.insert(schema.sysTask).values({
       type,
@@ -827,13 +851,32 @@ async function handleImageCompleteBase64(record: SysTaskRecord, base64Data: stri
 }
 
 async function validateGeneratedImageAspect(record: SysTaskRecord, localPath: string) {
-  if (!parseTaskParams(record.params).requireLandscape16x9) return true
+  const params = parseTaskParams(record.params)
+  const galleryAspect = isGalleryImageAspect(params.galleryAspect) ? params.galleryAspect : undefined
+  if (!params.requireLandscape16x9 && !galleryAspect) return true
   const absolute = getAbsolutePath(localPath)
   const metadata = await sharp(absolute).metadata().catch(() => undefined)
   const { width, height } = metadata?.autoOrient ?? metadata ?? {}
-  if (width && height && Math.abs(height - width * 9 / 16) <= 1) return true
+  if (galleryAspect && width && height) {
+    const [w, h] = galleryAspect.split(':').map(Number)
+    const scale = Math.floor(Math.min(width / w, height / h))
+    if (width === w * scale && height === h * scale) return true
+    if (scale > 0) {
+      const temporary = `${absolute}.gallery-${record.id}${path.extname(absolute)}`
+      try {
+        await sharp(absolute).autoOrient().resize(w * scale, h * scale, { fit: 'cover', position: 'centre' }).toFile(temporary)
+        await rename(temporary, absolute)
+        return true
+      } catch {
+        await rm(temporary, { force: true }).catch(() => {})
+      }
+    }
+  }
+  if (!galleryAspect && width && height && Math.abs(height - width * 9 / 16) <= 1) return true
   await rm(absolute, { force: true }).catch(() => {})
-  const message = width && height
+  const message = galleryAspect
+    ? '无法将模型返回的图片保存为所选比例，请重试或更换生图模型。'
+    : width && height
     ? `图片为 ${width}×${height}，比例不符。请在右上角设置启用支持 16:9 横图的图片模型。`
     : '图片服务返回的文件无法读取，请重试或切换图片模型。'
   await failTask(record.id, message, 'image_aspect_invalid')

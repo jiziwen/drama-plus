@@ -16,8 +16,8 @@ test('project status stays manual and rolls back failed saves',()=>{
 })
 test('gallery uses persisted project detail and links to the full asset manager',()=>{
  assert.match(gallery,/listAllDramas\(\)/)
- assert.match(gallery,/await dramaAPI.get\(id\)/)
- for(const type of ['characters','scenes','props'])assert.ok(gallery.includes("key:'"+type+"'"))
+ assert.match(gallery,/await galleryAssetAPI.list\(id\)/)
+ for(const type of ['characters','scenes','props'])assert.ok(gallery.includes("key: '"+type+"'"))
  assert.match(gallery,/\?tab=assets/)
  assert.match(gallery,/thumbFallback/)
  assert.match(detail,/route.query.tab === 'assets'/)

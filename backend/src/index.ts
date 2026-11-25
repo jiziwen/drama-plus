@@ -14,6 +14,7 @@ import scenes from './routes/scenes.js'
 import characters from './routes/characters.js'
 import tasks from './routes/tasks.js'
 import upload from './routes/upload.js'
+import assetGallery from './routes/asset-gallery.js'
 import aiConfigs, { aiProviders } from './routes/aiConfigs.js'
 import stylePresets from './routes/stylePresets.js'
 import prompts from './routes/prompts.js'
@@ -70,6 +71,7 @@ api.route(SIGNED_REFERENCE_MEDIA_PATH, signedReferenceMediaRoutes)
 api.route('/libtv', libtvCallbackRoutes)
 api.use('*', requireLocalSiteSession)
 api.route('/dramas', dramas)
+api.route('/asset-gallery', assetGallery)
 api.route('/episodes', episodes)
 api.route('/storyboards', storyboards)
 api.route('/scenes', scenes)

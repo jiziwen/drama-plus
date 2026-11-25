@@ -9,6 +9,7 @@
     <NuxtLink to="/novel-to-script" :class="{ selected: route.path === '/novel-to-script' }"><BookOpen :size="15"/>小说转剧本</NuxtLink>
     <NuxtLink to="/script-to-video" :class="{ selected: route.path.includes('script-to-video') }" title="剧本转视频"><Film :size="15"/>剧本转视频</NuxtLink>
     <NuxtLink to="/downmarket-drama" :class="{selected:route.path==='/downmarket-drama'}"><PenLine :size="15"/>一键下沉</NuxtLink>
+    <NuxtLink to="/ai-chat" :class="{selected:route.path==='/ai-chat'}"><MessageSquare :size="15"/>AI 聊天</NuxtLink>
    </nav>
    <div class="soft-header-actions"><NuxtLink class="btn interface-version-switch" :to="interfaceTarget('cinematic')" title="切换为新版">新版 <ArrowUpRight :size="13"/></NuxtLink><button class="global-settings-trigger soft-icon" :aria-label="t('layout.nav.settings')" @click="openSettings()"><SlidersHorizontal :size="18"/></button><ThemeToggle /><SiteSessionMenu /></div>
   </header>
@@ -17,7 +18,7 @@
  </div>
 </template>
 <script setup>
-import {BookOpen,Clapperboard,LayoutGrid,FolderKanban,Images,Film,PenLine,SlidersHorizontal,TriangleAlert,ArrowUpRight} from 'lucide-vue-next'
+import {BookOpen,Clapperboard,LayoutGrid,FolderKanban,Images,Film,MessageSquare,PenLine,SlidersHorizontal,TriangleAlert,ArrowUpRight} from 'lucide-vue-next'
 import {useI18n} from 'vue-i18n'
 import {aiConfigAPI} from '~/composables/useApi'
 const {t}=useI18n(),route=useRoute()

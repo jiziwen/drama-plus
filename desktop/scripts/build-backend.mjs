@@ -9,10 +9,15 @@
  *   desktop/node_modules（与主应用同 ABI 的副本）
  */
 import { build } from 'esbuild'
+import { cpSync } from 'node:fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const pdfDist = path.resolve(__dirname, '../../backend/node_modules/pdfjs-dist')
+for (const directory of ['cmaps', 'standard_fonts']) {
+  cpSync(path.join(pdfDist, directory), path.resolve(__dirname, '../build/pdf-text', directory), { recursive: true })
+}
 
 await build({
   entryPoints: [path.resolve(__dirname, '../../backend/src/index.ts')],

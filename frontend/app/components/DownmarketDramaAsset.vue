@@ -1,8 +1,11 @@
 <template>
   <article class="drama-asset">
-    <div class="drama-asset-image">
-      <img v-if="asset.image" :src="asset.image" :alt="asset.name" loading="lazy">
-      <span v-else><Image :size="22" aria-hidden="true" />{{ asset.imageStatus === 'running' ? '正在生成' : '待出图' }}</span>
+    <button v-if="asset.image" type="button" class="drama-asset-image drama-asset-preview"
+      :aria-label="`查看${asset.name}大图`" aria-haspopup="dialog" title="点击查看大图" @click="openPreview">
+      <img :src="asset.image" :alt="asset.name" loading="lazy">
+    </button>
+    <div v-else class="drama-asset-image">
+      <span><Image :size="22" aria-hidden="true" />{{ asset.imageStatus === 'running' ? '正在生成' : '待出图' }}</span>
     </div>
     <header>
       <h3>{{ asset.name }}</h3>
@@ -29,11 +32,20 @@
       </button>
       <a v-if="asset.image" class="btn btn-ghost" :href="asset.image" :download="downloadName">下载图片</a>
     </div>
+    <Teleport to="body">
+      <dialog ref="previewDialog" class="drama-image-dialog" :aria-label="`${asset.name}大图`" @click="closeOnBackdrop">
+        <div class="drama-image-head">
+          <h2>{{ asset.name }}</h2>
+          <button type="button" class="btn btn-icon" aria-label="关闭大图" @click="previewDialog?.close()"><X :size="18" /></button>
+        </div>
+        <div class="drama-image-body"><img v-if="asset.image" :src="asset.image" :alt="asset.name"></div>
+      </dialog>
+    </Teleport>
   </article>
 </template>
 
 <script setup lang="ts">
-import { Image } from 'lucide-vue-next'
+import { Image, X } from 'lucide-vue-next'
 import { uploadAPI } from '~/composables/useApi'
 import type { DramaAsset, DramaCommand } from '../../../backend/src/services/downmarket-drama-types'
 
@@ -43,9 +55,22 @@ const prompt = ref(props.asset.prompt)
 const reference = ref<{ url: string; name: string }>()
 const error = ref('')
 const uploading = ref(false)
+const previewDialog = ref<HTMLDialogElement | null>(null)
 const kindLabel = computed(() => ({ character: '人物', scene: '场景', prop: '物品' })[props.asset.kind])
 const downloadName = computed(() => kindLabel.value + '-' + props.asset.name.replace(/[\\/:*?"<>|]/gu, '_') + (props.asset.image?.match(/\.[a-z0-9]+$/iu)?.[0] || '.png'))
 watch(() => props.asset.prompt, (next, previous) => { if (prompt.value === previous) prompt.value = next })
+watch(() => props.asset.image, image => { if (!image) previewDialog.value?.close() })
+
+function openPreview() {
+  if (props.asset.image && previewDialog.value && !previewDialog.value.open) previewDialog.value.showModal()
+}
+
+function closeOnBackdrop(event: MouseEvent) {
+  const dialog = previewDialog.value
+  if (!dialog || event.target !== dialog) return
+  const rect = dialog.getBoundingClientRect()
+  if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) dialog.close()
+}
 
 async function attach(event: Event) {
   const input = event.target as HTMLInputElement
@@ -72,6 +97,8 @@ function generate() {
 <style scoped>
 .drama-asset { min-width: 0; display: grid; align-content: start; gap: 10px; padding: 12px; border-radius: 14px; border: 1px solid var(--surface-outline); background: var(--surface-muted); }
 .drama-asset-image { display: grid; place-items: center; aspect-ratio: 16 / 9; overflow: hidden; border-radius: 9px; background: var(--surface-input); }
+.drama-asset-preview { width: 100%; padding: 0; border: 0; cursor: zoom-in; }
+.drama-asset-preview:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .drama-asset-image img { width: 100%; height: 100%; object-fit: contain; min-height: 0; }
 .drama-asset-image span { display: flex; align-items: center; gap: 8px; color: var(--text-3); font-size: 12px; }
 .drama-asset header { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
@@ -79,4 +106,11 @@ function generate() {
 .drama-asset h3 { margin: 0; font-size: 15px; overflow-wrap: anywhere; }
 .drama-inline span { font-size: 12px; overflow-wrap: anywhere; }
 .asset-error { margin: 0; color: var(--danger, #ad4042); }
+.drama-image-dialog { width: min(1200px, 94vw); max-width: 94vw; max-height: 92dvh; margin: auto; padding: 0; overflow: hidden; border: 1px solid var(--surface-outline-strong); border-radius: 14px; background: var(--surface-raised); color: var(--text-1); }
+.drama-image-dialog::backdrop { background: rgb(0 0 0 / 75%); }
+.drama-image-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--surface-outline); }
+.drama-image-head h2 { min-width: 0; margin: 0; overflow-wrap: anywhere; font-size: 15px; color: var(--text-0); }
+.drama-image-head button { flex-shrink: 0; }
+.drama-image-body { display: grid; place-items: center; padding: 12px; overflow: auto; max-height: calc(92dvh - 58px); }
+.drama-image-body img { display: block; max-width: 100%; max-height: calc(92dvh - 82px); object-fit: contain; }
 </style>

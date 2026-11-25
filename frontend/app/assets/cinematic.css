@@ -122,7 +122,7 @@ html[data-studio-preview="cinematic"] .cinematic-shell { height: 100dvh; display
 .cine-brand-mark { width: 36px; height: 39px; display: grid; place-items: center; position: relative; }
 .cine-brand-mark::before { content: ''; position: absolute; inset: 1px -1px; border: 1px solid #9edbd45c; border-radius: 11px; transform: rotate(-13deg); }
 .cine-brand-mark i { position: absolute; width: 4px; height: 4px; right: 0; top: 0; border-radius: 50%; background: #d2ebbe; box-shadow: 0 0 12px #b8ffbd; }
-.cine-navigation { display: flex; align-items: center; gap: clamp(18px, 2.5vw, 39px); height: 100%; }
+.cine-navigation { display: flex; align-items: center; gap: clamp(14px, 2.1vw, 34px); height: 100%; }
 .cine-navigation a { display: inline-flex; align-items: center; gap: 7px; height: 100%; text-decoration: none; color: var(--text-2); position: relative; font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif; font-size: 12px; font-weight: 600; -webkit-font-smoothing: auto; text-shadow: none; white-space: nowrap; transition: color .25s; }
 .cine-navigation a > span { font-size: 8px; font-weight: 500; color: var(--text-2); margin-top: -10px; }
 .cine-navigation a::after { content: ''; position: absolute; height: 2px; left: 0; right: 0; bottom: 18px; background: #b7eae1; transform: scaleX(0); transform-origin: left; transition: transform .3s; box-shadow: 0 0 12px #a6e7df55; }
@@ -187,7 +187,7 @@ html:root[data-studio-preview="cinematic"] body .cine-content > .page.cine-home-
 .cine-drag-hint { display: flex; gap: 9px; align-items: center; letter-spacing: .12em; font-size: 8px; position: absolute; left: 50%; transform: translateX(-50%); pointer-events: none; }
 @keyframes cine-page-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 @media(min-width:1600px) { .cine-gallery-intro { top: 7vh; } .cine-gallery-bottom { bottom: 12vh; } }
-@media(max-width:1100px) { .cine-header { gap: 15px; padding-inline: 24px; } .cine-navigation { gap: 21px; } .cine-preview-badge { display: none; } .cine-drag-hint { display: none; } }
+@media(max-width:1180px) { .cine-header { gap: 15px; padding-inline: 24px; } .cine-navigation { gap: 16px; } .cine-preview-badge { display: none; } .cine-drag-hint { display: none; } }
 @media(max-width:840px) {
   .cine-header { height: 112px; flex-wrap: wrap; padding: 14px 22px 0; gap: 5px 15px; align-content: space-between; }
   .cine-brand { font-size: 16px; }

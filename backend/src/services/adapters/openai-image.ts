@@ -37,7 +37,7 @@ export class OpenAIImageAdapter implements ImageProviderAdapter {
   buildGenerateRequest(config: AIConfig, record: ImageGenerationRecord): ProviderRequest {
     const model = record.model || config.model || 'gpt-image-2'
     const isGptImage = model.startsWith('gpt-image-')
-    const isGptImage2 = model === 'gpt-image-2'
+    const isGptImage2 = /^gpt-image-2(?:-\d{4}-\d{2}-\d{2}|\.(?:5|6)-(?:sunburst|flare)(?:-\d{4}-\d{2}-\d{2})?)?$/i.test(model)
     const size = isGptImage2
       ? this.normalizeGptImage2Size(record.size)
       : isGptImage

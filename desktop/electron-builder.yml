@@ -9,6 +9,7 @@ directories:
 files:
   - dist/**
   - build/backend.mjs
+  - build/pdf-text/**
   - package.json
 # 原生模块不能留在 asar（.node 需真实文件路径被 dlopen）
 asarUnpack:

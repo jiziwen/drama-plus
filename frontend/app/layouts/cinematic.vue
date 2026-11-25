@@ -14,6 +14,7 @@
         <NuxtLink :to="interfaceLink('/novel-to-script')" :class="{ selected: route.path === '/novel-to-script' }"><span>04</span>小说转剧本</NuxtLink>
         <NuxtLink :to="interfaceLink('/script-to-video')" :class="{ selected: route.path.includes('script-to-video') }" title="剧本转视频"><span>05</span>剧本转视频</NuxtLink>
         <NuxtLink :to="interfaceLink('/downmarket-drama')" :class="{ selected: route.path === '/downmarket-drama' }"><span>06</span>一键下沉</NuxtLink>
+        <NuxtLink :to="interfaceLink('/ai-chat')" :class="{ selected: route.path === '/ai-chat' }"><span>07</span>AI 聊天</NuxtLink>
       </nav>
       <div class="cine-header-actions">
         <ReleaseNotesBell />

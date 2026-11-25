@@ -1,6 +1,6 @@
 /** Default to the director interface and remember an explicit switch on this device. */
 export default defineNuxtRouteMiddleware((to, from) => {
-  const internalWorkspace = ['/', '/assets', '/settings', '/novel-to-script', '/downmarket-drama'].includes(to.path) || /^\/drama\/[^/]+(?:\/episode\/[^/]+)?\/?$/.test(to.path)
+  const internalWorkspace = ['/', '/assets', '/settings', '/novel-to-script', '/downmarket-drama', '/ai-chat'].includes(to.path) || /^\/drama\/[^/]+(?:\/episode\/[^/]+)?\/?$/.test(to.path)
   if (!internalWorkspace) return
   const validMode = (value: unknown) => value === 'cinematic' || value === 'classic'
   const key = 'xiaoli:interface-mode'

@@ -34,7 +34,8 @@ export const requestLogger: MiddlewareHandler = async (c, next) => {
   let bodyInfo = ''
   const privateBody = path.startsWith('/api/v1/settings/feedback') || path.startsWith('/api/v1/libtv/auth/phone/') ||
     path.startsWith('/api/v1/site-session/') || path === '/api/v1/libtv/auth/callback' ||
-    path.startsWith('/api/v1/downmarket-drama') || path.startsWith('/api/v1/novel-storyboard')
+    path.startsWith('/api/v1/downmarket-drama') || path.startsWith('/api/v1/novel-storyboard') ||
+    path.startsWith('/api/v1/ai-chat/')
   if (['POST', 'PUT', 'PATCH'].includes(method) && !privateBody) {
     try {
       const clone = c.req.raw.clone()

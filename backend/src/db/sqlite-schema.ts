@@ -355,6 +355,19 @@ export const sqliteSchemaStatements = [
     assets TEXT,
     PRIMARY KEY (project_id, number)
   )`,
+  `CREATE TABLE IF NOT EXISTS ai_chats (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    document TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS ai_chat_attachments (
+    chat_id TEXT NOT NULL REFERENCES ai_chats(id) ON DELETE CASCADE,
+    message_id TEXT NOT NULL,
+    document TEXT NOT NULL,
+    PRIMARY KEY (chat_id, message_id)
+  )`,
 ]
 
 /**

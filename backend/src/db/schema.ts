@@ -403,3 +403,17 @@ export const novelChapters = sqliteTable('novel_chapters', {
   storyboard: text('storyboard'),
   assets: text('assets'),
 }, table => [primaryKey({ columns: [table.projectId, table.number] })])
+
+export const aiChats = sqliteTable('ai_chats', {
+  id: text('id').primaryKey(),
+  title: text('title').notNull(),
+  document: text('document').notNull(),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+})
+
+export const aiChatAttachments = sqliteTable('ai_chat_attachments', {
+  chatId: text('chat_id').notNull().references(() => aiChats.id, { onDelete: 'cascade' }),
+  messageId: text('message_id').notNull(),
+  document: text('document').notNull(),
+}, table => [primaryKey({ columns: [table.chatId, table.messageId] })])

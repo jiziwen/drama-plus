@@ -1,6 +1,7 @@
 import type { ScriptVideoPromptMode } from '../../../backend/src/services/video-prompt-mode'
 import type { DownmarketDrama, DownmarketDramaListItem, DownmarketDramaProgress, DramaCommand, DramaModelOption } from '../../../backend/src/services/downmarket-drama-types'
 import type { NovelChapter, NovelCommand, NovelPace, NovelProject, NovelProjectSummary } from '../../../backend/src/services/novel-storyboard-types'
+import type { ChatModelOption, ChatModelSelection, ChatSession, ChatSessionSummary } from '../../../backend/src/services/ai-chat-types'
 import type { ProjectModelOption } from '../../../backend/src/services/project-model-options'
 
 const BASE = '/api/v1'
@@ -83,6 +84,91 @@ export const novelStoryboardAPI = {
   },
   command: (id: string, revision: number, command: NovelCommand) =>
     req<NovelProject>('POST', '/novel-storyboard/' + encodeURIComponent(id) + '/commands', { revision, command }, false),
+}
+
+export const aiChatAPI = {
+  models: () => api.get<{ models: ChatModelOption[]; defaultModel: { configId?: number; model: string } | null }>('/ai-chat/models'),
+  listSessions: () => api.get<ChatSessionSummary[]>('/ai-chat/sessions'),
+  createSession: (data: { title?: string; model?: ChatModelSelection | null } = {}) =>
+    req<ChatSession>('POST', '/ai-chat/sessions', data, false),
+  getSession: (id: string) => api.get<ChatSession>('/ai-chat/sessions/' + encodeURIComponent(id)),
+  updateSession: (id: string, data: { title?: string; model?: ChatModelSelection | null }) =>
+    req<ChatSession>('PATCH', '/ai-chat/sessions/' + encodeURIComponent(id), data, false),
+  deleteSession: (id: string) => api.del<{ id: string }>('/ai-chat/sessions/' + encodeURIComponent(id)),
+  compressSession: (id: string) =>
+    req<{ session: ChatSession; compression: unknown }>('POST', '/ai-chat/sessions/' + encodeURIComponent(id) + '/compress', {}, false),
+  async streamMessage(
+    id: string,
+    payload: { content?: string; regenerate?: boolean; model?: ChatModelSelection | null },
+    handlers: {
+      signal?: AbortSignal
+      onEvent: (event: string, data: any) => void
+    },
+    files: File[] = [],
+  ): Promise<void> {
+    const headers: Record<string, string> = { Accept: 'text/event-stream' }
+    let body: string | FormData = JSON.stringify(payload)
+    if (files.length) {
+      body = new FormData()
+      body.set('message', JSON.stringify(payload))
+      for (const file of files) body.append('files', file)
+    } else {
+      headers['Content-Type'] = 'application/json'
+    }
+    const resp = await fetch(`${BASE}/ai-chat/sessions/${encodeURIComponent(id)}/messages`, {
+      method: 'POST',
+      headers,
+      body,
+      signal: handlers.signal,
+    })
+    if (!resp.ok) {
+      const json = await resp.json().catch(() => null)
+      throw Object.assign(new Error(apiErrorMessage(json, resp.status)), { status: resp.status })
+    }
+    const reader = resp.body?.getReader()
+    if (!reader) throw new Error('浏览器不支持流式读取响应')
+    const decoder = new TextDecoder()
+    let buffer = ''
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const blocks = buffer.split(/\r?\n\r?\n/)
+        buffer = blocks.pop() ?? ''
+        for (const block of blocks) {
+          if (!block.trim()) continue
+          let eventName = 'message'
+          const dataLines: string[] = []
+          for (const line of block.split(/\r?\n/)) {
+            if (line.startsWith('event:')) eventName = line.slice(6).trim()
+            else if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart())
+          }
+          if (!dataLines.length) continue
+          const raw = dataLines.join('\n')
+          let parsed: any = raw
+          try { parsed = JSON.parse(raw) } catch { /* raw string */ }
+          handlers.onEvent(eventName, parsed)
+        }
+      }
+      if (buffer.trim()) {
+        let eventName = 'message'
+        const dataLines: string[] = []
+        for (const line of buffer.split(/\r?\n/)) {
+          if (line.startsWith('event:')) eventName = line.slice(6).trim()
+          else if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart())
+        }
+        if (dataLines.length) {
+          const raw = dataLines.join('\n')
+          let parsed: any = raw
+          try { parsed = JSON.parse(raw) } catch { /* raw string */ }
+          handlers.onEvent(eventName, parsed)
+        }
+      }
+    } finally {
+      reader.releaseLock()
+    }
+  },
 }
 
 export const promptModeAPI = {

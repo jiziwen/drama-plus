@@ -2,8 +2,10 @@ import { readFile, realpath } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isSeedance25Model } from './seedance-models.js'
+import type { ScriptVideoStoryboardMode } from './script-video-storyboard-mode.js'
 
 export type ScriptVideoStage = 'outline' | 'storyboard' | 'revision'
+const assetExtraction = '资产提取.md'
 const source = 'references/sd25-v2.1/'
 const five = source + '五维镜头优化Skill-原始参考/'
 const combat = 'fight-choreography/'
@@ -11,6 +13,9 @@ const ref = combat + 'references/'
 const seedance = 'references/seedance-2.5/'
 const files = {
   main: 'SKILL.md',
+  outline: '分段大纲.md',
+  cultivation: 'cultivation/SD2.5_30秒连续3D动漫分镜第三版.txt',
+  cultivationAdapter: 'cultivation/项目适配.md',
   adapter: '项目适配说明.md',
   validation: 'references/validation.md',
   rules: source + '02-当前有效总规则.txt',
@@ -75,8 +80,19 @@ export async function loadScriptVideoSkill(
     instruction?: string
     videoModel?: string
     reviewing?: boolean
+    sharedOutline?: boolean
+    storyboardMode?: ScriptVideoStoryboardMode
   },
 ) {
+  if (stage === 'outline' && context.sharedOutline) {
+    const requested = [files.outline, files.setting]
+    if (/心声|内心独白|旁白|系统|手机|屏幕|弹窗|界面|\bOS\b/iu.test(context.scene)) requested.push(files.screen)
+    return readScriptVideoSkillDocuments(requested, new Set([...requested, files.screen]))
+  }
+  if (stage !== 'outline' && context.storyboardMode === 'cultivation' && !context.reviewing) {
+    const requested = [files.cultivation, files.cultivationAdapter, files.validation]
+    return readScriptVideoSkillDocuments(requested, new Set(requested))
+  }
   const requested = new Set<string>([files.main, files.adapter, files.rules])
   const add = (...names: string[]) =>
     names.forEach((name) => requested.add(name))
@@ -152,13 +168,22 @@ export async function loadScriptVideoSkill(
         if (match.test(text)) add(chapterPath(chapter))
     }
   }
-  const allowed = new Set<string>(Object.values(files))
+  const allowed = new Set<string>(Object.values(files).filter(name =>
+    name !== files.outline && name !== files.cultivation && name !== files.cultivationAdapter))
   for (const doc of [files.prompt25, files.text25, files.reference25, files.troubleshoot25])
     if (!seedanceDocs.includes(doc)) allowed.delete(doc)
   if (!directorRequested) allowed.delete(files.director)
   if (context.combatEnabled === false) allowed.delete(files.fight)
   else for (const chapter of chapters) allowed.add(chapterPath(chapter))
 
+  return readScriptVideoSkillDocuments(requested, allowed)
+}
+
+export async function loadScriptVideoAssetSkill() {
+  return (await readScriptVideoSkillDocuments([assetExtraction], new Set([assetExtraction]))).instructions
+}
+
+async function readScriptVideoSkillDocuments(requested: Iterable<string>, allowed: Set<string>) {
   const roots = process.env.WORKSPACE_PATH
     ? [
         path.resolve(process.env.WORKSPACE_PATH, 'skills/script-to-video'),

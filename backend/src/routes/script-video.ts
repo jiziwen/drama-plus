@@ -1,5 +1,7 @@
 import { registerScriptVideoQueueRoutes } from './script-video-queue.js'
 import { registerScriptVideoProjectExportRoutes } from './script-video-project-export.js'
+import { registerScriptVideoAssetExtractionRoutes } from './script-video-asset-extraction.js'
+import { createScriptVideoAssetImages } from './script-video-asset-images.js'
 import { Hono } from 'hono'
 import { randomUUID, createHash } from 'node:crypto'
 import { eq } from 'drizzle-orm'
@@ -45,6 +47,7 @@ import { isSeedance25Model } from '../services/seedance-models.js'
 import { assertScriptVideoFormal, getScriptVideoContentWarnings, ScriptVideoAIError, type ScriptVideoCard, type ScriptVideoInput } from '../services/script-video-types.js'
 import { hasScriptVideoPromptBody, scriptVideoPromptStylePrefix } from '../services/script-video-style.js'
 import { getCurrentScriptVideoStylePresets } from '../services/script-video-style-source.js'
+import { DEFAULT_SCRIPT_VIDEO_STORYBOARD_MODE, isScriptVideoStoryboardMode, type ScriptVideoStoryboardMode } from '../services/script-video-storyboard-mode.js'
 import { legacyScriptVideoInnerOs } from '../services/script-video-inner-os.js'
 import {
   generateScriptVideoOutline,
@@ -231,7 +234,7 @@ function digest(
 /** Bind a checkpoint to the exact project snapshot and effective text options.
  * A change to any active text configuration invalidates reuse conservatively.
  * API keys only contribute through the final digest and are never stored. */
-function storyboardResumeKey(project: ScriptVideoProject, episodeId: string, body: any, legacyText = false): string {
+function storyboardResumeKey(project: ScriptVideoProject, episodeId: string, body: any, mode: ScriptVideoStoryboardMode, legacyText = false): string {
   const ep = episodeOf(project, episodeId)
   const configs = db.select().from(schema.aiServiceConfigs)
     .where(eq(schema.aiServiceConfigs.serviceType, 'text')).all()
@@ -242,6 +245,8 @@ function storyboardResumeKey(project: ScriptVideoProject, episodeId: string, bod
     systemPrompt: body.systemPrompt ?? project.settings?.systemPrompt,
     combatEnabled: body.combatEnabled ?? project.settings?.combatEnabled,
     autoSelectCharacterBases: body.autoSelectCharacterBases ?? project.settings?.autoSelectCharacterBases,
+    // Existing original-mode checkpoints were recorded without a mode field.
+    ...(mode === 'cultivation' && { storyboardMode: mode }),
     configs,
   }
   return createHash('sha256').update(JSON.stringify({
@@ -359,6 +364,9 @@ export function createScriptVideoRoutes(
   const queue = store.queue
   registerScriptVideoQueueRoutes(app, store, queue)
   registerScriptVideoProjectExportRoutes(app, store, respondError)
+  registerScriptVideoAssetExtractionRoutes(app, store, respondError)
+  const assetImages = createScriptVideoAssetImages(store)
+  app.route('/', assetImages.routes)
   const videoSubmissions = new Map<string, { controller: AbortController; taskId?: number }>()
   const canceledVideoRequests = new Map<string, number>()
   const videoRequestKey = (project: string, episode: string, session: string | null, request: string) =>
@@ -600,10 +608,14 @@ export function createScriptVideoRoutes(
   app.get('/projects/:id', async (c) => {
     try {
       const id = c.req.param('id')
-      if (c.req.query('view') === 'summary') return success(c, await store.summary(id))
+      if (c.req.query('view') === 'summary') {
+        const summary = await store.summary(id)
+        return success(c, await assetImages.refresh(id, summary) ? await store.summary(id) : summary)
+      }
       const project = await store.get(id)
+      const imagesChanged = await assetImages.refresh(id, project)
       if (!project.episodes.some(episode => episode.tasks?.some((task: any) => task.status === 'processing' && task.taskId)))
-        return success(c, project)
+        return success(c, imagesChanged ? await store.get(id) : project)
       // A worker can finish while all editing pages are closed.
       await refreshPendingVideos(id)
       return success(c, await store.get(id))
@@ -1100,6 +1112,11 @@ export function createScriptVideoRoutes(
           action = c.req.param('action') as Action
         const session = scriptVideoSession(c.req.header(SESSION_HEADER))
         const body = await c.req.json()
+        const storyboardMode = action === 'storyboard'
+          ? body.storyboardMode ?? DEFAULT_SCRIPT_VIDEO_STORYBOARD_MODE
+          : undefined
+        if (storyboardMode !== undefined && !isScriptVideoStoryboardMode(storyboardMode))
+          throw new ScriptVideoStoreError('分镜模式无效，请选择修仙分镜或原有分镜')
         if (
           action === 'revisions' &&
           (typeof body.cardId !== 'string' ||
@@ -1141,12 +1158,13 @@ export function createScriptVideoRoutes(
               'AI_ACTIVE',
             )
           const base = digest(record.project, episodeId, action, body.cardId)
-          const resumeKey = action === 'storyboard' ? storyboardResumeKey(record.project, episodeId, body) : undefined
+          const resumeKey = storyboardMode ? storyboardResumeKey(record.project, episodeId, body, storyboardMode) : undefined
           const resumable = resumeKey ? record.jobs.slice().reverse().filter(item =>
             item.action === 'storyboard' && item.episodeId === episodeId && item.resumeKey &&
             (item.status === 'canceled' || (item.status === 'failed' && item.checkpoint))) : []
           // Existing unfinished checkpoints used the full unprojected text digest.
-          const legacyKey = resumable.length ? storyboardResumeKey(record.project, episodeId, body, true) : undefined
+          const legacyKey = storyboardMode === 'original' && resumable.length
+            ? storyboardResumeKey(record.project, episodeId, body, storyboardMode, true) : undefined
           const lastResume = resumable.find(item => item.resumeKey === resumeKey || item.resumeKey === legacyKey)
           const previous = lastResume?.status === 'failed' ? lastResume : undefined
           const retryCurrentSegment = previous?.code === 'STORYBOARD_REPAIRS_EXHAUSTED' &&
@@ -1179,6 +1197,7 @@ export function createScriptVideoRoutes(
             ...(action === 'revisions' ? { cardId: body.cardId } : {}),
             createdAt: now,
             updatedAt: now,
+            ...(storyboardMode && { storyboardMode }),
             ...(resumeKey ? {
               resumeKey,
               ...(checkpoint ? { checkpoint } : {}),
@@ -1236,6 +1255,7 @@ export function createScriptVideoRoutes(
         stylePreset: job.action === 'revisions' || job.action === 'review' ? ep.production?.stylePreset : project.settings?.stylePreset,
         deliverySpecs: { aspectRatio: ep.aspectRatio, resolution: ep.resolution, videoModel: ep.modelName },
         systemPrompt: body.systemPrompt ?? project.settings?.systemPrompt,
+        storyboardMode: job.storyboardMode,
         combatEnabled: body.combatEnabled ?? project.settings?.combatEnabled,
         autoSelectCharacterBases: body.autoSelectCharacterBases ?? project.settings?.autoSelectCharacterBases,
         characterAppearanceNotes: ep.characterAppearanceNotes,
@@ -1296,7 +1316,7 @@ export function createScriptVideoRoutes(
         }
         if (
           removedTarget || removesPendingCard || digest(record.project, job.episodeId, job.action as Action, body.cardId) !== base
-          || (job.action === 'storyboard' && job.resumeKey !== storyboardResumeKey(record.project, job.episodeId, body))
+          || (job.action === 'storyboard' && job.resumeKey !== storyboardResumeKey(record.project, job.episodeId, body, job.storyboardMode ?? DEFAULT_SCRIPT_VIDEO_STORYBOARD_MODE))
         ) {
           current.status = 'failed'
           current.code = 'STALE'

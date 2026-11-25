@@ -82,6 +82,11 @@ function sanitizeValue(value: unknown): unknown {
         continue
       }
 
+      if (lower === 'base64array' && Array.isArray(raw)) {
+        out[key] = `[参考图内容已省略，共 ${raw.length} 张]`
+        continue
+      }
+
       if (typeof raw === 'string' && binaryDataUrl.test(raw)) {
         out[key] = sanitizeValue(raw)
         continue

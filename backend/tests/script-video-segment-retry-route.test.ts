@@ -12,14 +12,18 @@ test('batched retry endpoints retain accepted cards and reset only an explicitly
   const beforeDb = process.env.SQLITE_PATH, beforeData = process.env.HUOBAO_DATA_DIR
   process.env.SQLITE_PATH = path.join(directory, 'fixture.sqlite3')
   process.env.HUOBAO_DATA_DIR = directory
+  const store = new ScriptVideoStore(path.join(directory, 'projects'))
+  let closeDatabase: (() => void) | undefined
+  let closeDefaultStore: (() => Promise<void>) | undefined
   try {
-    const { createScriptVideoRoutes } = await import('../src/routes/script-video.js')
+    const { createScriptVideoRoutes, scriptVideoStore } = await import('../src/routes/script-video.js')
     const { db, schema } = await import('../src/db/index.js')
+    closeDatabase = () => db.$client.close()
+    closeDefaultStore = () => scriptVideoStore.close()
     const now = new Date().toISOString()
     const [config] = db.insert(schema.aiServiceConfigs).values({ serviceType: 'text', provider: 'openai',
       name: 'Segment scope fixture', baseUrl: 'https://www.aicost.me/v1', apiKey: 'fixture', model: '["fixture-model"]',
       createdAt: now, updatedAt: now }).returning().all()
-    const store = new ScriptVideoStore(path.join(directory, 'projects'))
     const session = randomUUID()
     const headers = { 'content-type': 'application/json', 'X-Script-Video-Session': session }
     const production = { coreRhythm: '连续动作', characters: [] }
@@ -34,10 +38,12 @@ test('batched retry endpoints retain accepted cards and reset only an explicitly
       const drafts = episode.cards.map((card: any) => ({ ...card, shots: [{ duration: 30 }], prompt: '已生成 ' + card.id }))
       let calls = 0
       const interrupted = mode === 'ordinary-interruption'
+      const storyboardMode = mode === 'restartAfterRepairs' ? 'original' : undefined
       const app = createScriptVideoRoutes(store, {
         assertScriptVideoFormal: () => 0,
-        generateScriptVideoCards: async (_input, _runner, options) => {
+        generateScriptVideoCards: async (input, _runner, options) => {
           calls++
+          assert.equal(input.storyboardMode, storyboardMode ?? 'cultivation')
           assert.equal(options?.batchSize, 1)
           if (calls === 1) {
             await options!.onProgress!({ phase: 'repairing', batchSize: 1, completed: 3, total: 4,
@@ -60,10 +66,13 @@ test('batched retry endpoints retain accepted cards and reset only an explicitly
       const post = (suffix: string, body: unknown) => app.request(root + suffix, { method: 'POST', headers,
         body: JSON.stringify(body) })
       assert.equal((await post('/lock', {})).status, 200)
-      const common = { configId: config.id, model: 'fixture-model' }
+      const common = { configId: config.id, model: 'fixture-model', storyboardMode }
+      assert.equal((await post('/storyboard', { ...common, storyboardMode: 'unknown' })).status, 400)
       const first = await post('/storyboard', common)
       assert.equal(first.status, 201)
-      const firstId = ((await first.json()) as any).data.id
+      const firstJob = ((await first.json()) as any).data
+      assert.equal(firstJob.storyboardMode, storyboardMode ?? 'cultivation')
+      const firstId = firstJob.id
       const waitForJob = async (id: string) => {
         for (let count = 0; count < 100; count++) {
           const current = await store.getJob(project.id, id)
@@ -83,6 +92,9 @@ test('batched retry endpoints retain accepted cards and reset only an explicitly
       const stale = await post('/storyboard', { ...common, model: 'changed', resumeFromJobId: firstId,
         ...(!interrupted && { retryCurrentSegment: true }) })
       assert.equal(stale.status, 409)
+      const otherMode = await post('/storyboard', { ...common, storyboardMode: storyboardMode ? 'cultivation' : 'original',
+        resumeFromJobId: firstId, ...(!interrupted && { retryCurrentSegment: true }) })
+      assert.equal(otherMode.status, 409)
       assert.equal(calls, 1)
       const continued = await post('/storyboard', { ...common, resumeFromJobId: firstId,
         ...(mode === 'retryCurrentSegment' && { retryCurrentSegment: true }),
@@ -94,6 +106,9 @@ test('batched retry endpoints retain accepted cards and reset only an explicitly
       assert.equal((await store.get(project.id)).episodes[0].cards[0].prompt, drafts[0].prompt)
     }
   } finally {
+    await store.close()
+    await closeDefaultStore?.()
+    closeDatabase?.()
     if (beforeDb === undefined) delete process.env.SQLITE_PATH; else process.env.SQLITE_PATH = beforeDb
     if (beforeData === undefined) delete process.env.HUOBAO_DATA_DIR; else process.env.HUOBAO_DATA_DIR = beforeData
     await rm(directory, { recursive: true, force: true })

@@ -5,7 +5,7 @@
       <img :src="asset.image" :alt="asset.name" loading="lazy">
     </button>
     <div v-else class="drama-asset-image">
-      <span><Image :size="22" aria-hidden="true" />{{ asset.imageStatus === 'running' ? '正在生成' : '待出图' }}</span>
+      <span><Image :size="22" aria-hidden="true" />{{ asset.imageStatus === 'running' ? '处理中' : asset.imageStatus === 'delivery_pending' ? '已生成，待取回' : '待出图' }}</span>
     </div>
     <header>
       <h3>{{ asset.name }}</h3>
@@ -25,10 +25,13 @@
       <span>{{ reference.name }}</span>
       <button class="btn btn-sm" type="button" :disabled="disabled" @click="reference = undefined">移除参考图</button>
     </div>
-    <p v-if="error || asset.imageError" class="asset-error" role="alert">{{ error || asset.imageError }}</p>
+    <p v-if="error || (asset.imageError && ['failed', 'delivery_pending'].includes(asset.imageStatus || ''))"
+      :class="{ 'asset-error': error || asset.imageStatus === 'failed' }" role="status">{{ error || asset.imageError }}</p>
     <div class="drama-inline">
+      <button v-if="asset.imageStatus === 'delivery_pending' && asset.imageCanRetryDelivery && asset.taskId" class="btn" type="button"
+        :disabled="disabled" @click="emit('recover', asset.taskId)">重试取图</button>
       <button class="btn" type="button" :disabled="disabled || uploading || asset.imageStatus === 'running' || !prompt.trim()" @click="generate">
-        {{ uploading ? '上传参考图中…' : asset.imageStatus === 'running' ? '正在生成…' : asset.image ? '重新出图' : '生成单张图片' }}
+        {{ uploading ? '上传参考图中…' : asset.imageStatus === 'running' ? '处理中…' : asset.image || asset.taskId ? '重新出图' : '生成单张图片' }}
       </button>
       <a v-if="asset.image" class="btn btn-ghost" :href="asset.image" :download="downloadName">下载图片</a>
     </div>
@@ -50,7 +53,7 @@ import { uploadAPI } from '~/composables/useApi'
 import type { DramaAsset, DramaCommand } from '../../../backend/src/services/downmarket-drama-types'
 
 const props = defineProps<{ asset: DramaAsset; disabled: boolean }>()
-const emit = defineEmits<{ generate: [command: Extract<DramaCommand, { action: 'image' }>] }>()
+const emit = defineEmits<{ generate: [command: Extract<DramaCommand, { action: 'image' }>]; recover: [taskId: number] }>()
 const prompt = ref(props.asset.prompt)
 const reference = ref<{ url: string; name: string }>()
 const error = ref('')

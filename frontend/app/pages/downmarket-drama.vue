@@ -313,7 +313,8 @@
         <p v-if="!draft.assetsCurrent" class="drama-hint">{{ draft.assets.length ? '剧本有新定稿，请更新资产清单。' : '从定稿提取每个资产的生图提示词，再为各项分别出图。' }}</p>
         <template v-if="draft.assets.length">
           <div class="drama-asset-grid">
-            <DownmarketDramaAsset v-for="asset in draft.assets" :key="asset.id" :asset="asset" :disabled="busy || !draft.assetsCurrent" @generate="send" />
+            <DownmarketDramaAsset v-for="asset in draft.assets" :key="asset.id" :asset="asset" :disabled="busy || !draft.assetsCurrent"
+              @generate="send" @recover="retryImageDelivery" />
           </div>
           <footer v-if="draft.assetsCurrent" class="drama-delivery">
             <div>
@@ -348,7 +349,7 @@
 
 <script setup lang="ts">
 import { ArrowRight, ArrowUpRight, Check, CircleAlert, Clapperboard, Download, FileText, ListTree, LoaderCircle, PenLine, Plus, ScanLine, Sparkles, Trash2, Upload } from 'lucide-vue-next'
-import { downmarketDramaAPI } from '~/composables/useApi'
+import { downmarketDramaAPI, taskAPI } from '~/composables/useApi'
 import { DRAMA_INLINE_REFERENCE_CHARACTERS, DRAMA_REFERENCE_UPLOAD_BYTES, DRAMA_REFERENCE_UPLOAD_MB } from '../../../backend/src/services/downmarket-drama-types'
 import type { DownmarketDrama, DownmarketDramaListItem, DramaBrief, DramaChapter, DramaCommand, DramaModelKind, DramaModelOption, DramaModelSelection, DramaOpeningMode, DramaOutline, DramaRevisionSource } from '../../../backend/src/services/downmarket-drama-types'
 
@@ -544,6 +545,26 @@ async function poll() {
     if (alive && draft.value?.id === current.id) pollError.value = '正在重新连接项目，生成任务可继续运行。'
   } finally {
     reading = false
+    schedulePoll()
+  }
+}
+
+async function retryImageDelivery(taskId: number) {
+  const current = draft.value
+  if (!current || sending.value) return
+  sending.value = true
+  error.value = ''
+  try {
+    await taskAPI.recover(taskId)
+    if (alive && draft.value === current) {
+      adopt({ ...current, assets: current.assets.map(asset =>
+        asset.taskId === taskId ? { ...asset, imageStatus: 'running', imageError: undefined } : asset,
+      ) })
+    }
+  } catch (cause) {
+    if (alive && draft.value === current) error.value = (cause as Error).message
+  } finally {
+    sending.value = false
     schedulePoll()
   }
 }

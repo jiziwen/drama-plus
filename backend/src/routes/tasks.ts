@@ -4,7 +4,7 @@ import { Hono } from 'hono'
 import { and, desc, eq } from 'drizzle-orm'
 import { db, schema } from '../db/index.js'
 import { success, created, badRequest } from '../utils/response.js'
-import { generateImage, generateVideo, recoverVideoTask } from '../services/generation.js'
+import { generateImage, generateVideo, recoverImageTask, recoverVideoTask } from '../services/generation.js'
 import { safeTaskError } from '../services/video-download.js'
 import { resolveMediaConfig } from '../services/media-selection.js'
 import { videoPosterResponse } from '../services/video-poster-response.js'
@@ -20,8 +20,11 @@ app.get('/:id/poster', async c => {
 
 app.post('/:id/recover', async c => {
   try {
-    await recoverVideoTask(Number(c.req.param('id')))
-    return success(c, { id: Number(c.req.param('id')) })
+    const id = Number(c.req.param('id'))
+    const task = db.select({ type: schema.sysTask.type }).from(schema.sysTask).where(eq(schema.sysTask.id, id)).get()
+    if (task?.type === 'image') await recoverImageTask(id)
+    else await recoverVideoTask(id)
+    return success(c, { id })
   } catch (error) { return badRequest(c, safeTaskError(error)) }
 })
 

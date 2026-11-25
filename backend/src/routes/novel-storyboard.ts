@@ -83,10 +83,10 @@ function read(id: string) {
 function withImages(assets: NovelAsset[]): NovelAsset[] {
   const ids = assets.flatMap(asset => asset.taskId ? [asset.taskId] : [])
   if (!ids.length) return assets
-  const tasks = new Map<number, { status: string | null; localPath: string | null; error: string | null }>()
+  const tasks = new Map<number, { status: string | null; localPath: string | null; resultUrl: string | null; error: string | null }>()
   for (let offset = 0; offset < ids.length; offset += 500) {
     const rows = db.select({ id: schema.sysTask.id, status: schema.sysTask.status,
-      localPath: schema.sysTask.localPath, error: schema.sysTask.errorMsg,
+      localPath: schema.sysTask.localPath, resultUrl: schema.sysTask.resultUrl, error: schema.sysTask.errorMsg,
     }).from(schema.sysTask).where(inArray(schema.sysTask.id, ids.slice(offset, offset + 500))).all()
     for (const row of rows) tasks.set(row.id, row)
   }
@@ -97,6 +97,10 @@ function withImages(assets: NovelAsset[]): NovelAsset[] {
       return { ...asset, imageStatus: 'ready', image: '/' + task.localPath.replace(/^\/+/u, '') }
     }
     if (task?.status === 'pending' || task?.status === 'processing') return { ...asset, imageStatus: 'running' }
+    if (task?.status === 'delivery_pending') {
+      return { ...asset, imageStatus: 'delivery_pending', imageCanRetryDelivery: !!(task.resultUrl || task.localPath),
+        imageError: safeTaskError(task.error || '图片已生成，暂未保存到资产。') }
+    }
     return { ...asset, imageStatus: 'failed', imageError: safeTaskError(task?.error || '图片任务没有返回可用文件。') }
   })
 }

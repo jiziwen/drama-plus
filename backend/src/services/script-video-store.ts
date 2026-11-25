@@ -14,7 +14,7 @@ import { annotateScriptVideoAssets, scriptVideoAudioReferences, scriptVideoMater
 import { annotateScriptVideoInnerOs } from './script-video-inner-os.js'
 import { hasScriptVideoShotHeadings } from './script-video-asset-scope.js'
 import { replaceScriptVideoPromptStyle } from './script-video-format.js'
-import { getScriptVideoOutlineDurationIssues } from './script-video-types.js'
+import { getScriptVideoOutlineDurationIssues, scriptVideoAssetImageStatuses } from './script-video-types.js'
 import { getScriptVideoVoiceInputs, scriptVideoVoiceSource, type ScriptVideoDeliveryAsset, type ScriptVideoDeliveryCard } from './script-video-delivery.js'
 import type { ScriptVideoStoryboardCheckpoint, ScriptVideoStoryboardProgress } from './script-video-ai.js'
 import type { LightingCheck } from './script-video-lighting.js'
@@ -23,6 +23,7 @@ import type { ScriptVideoPromptMode } from './video-prompt-mode.js'
 import { isScriptVideoGenerationDuration } from './script-video-capabilities.js'
 import { listScriptVideoVersions } from './script-video-versions.js'
 import { scriptVideoReferenceSettings, type ScriptVideoReferenceSettings } from './script-video-reference-settings.js'
+import type { ScriptVideoStoryboardMode } from './script-video-storyboard-mode.js'
 import { previousScriptVideoRender } from './script-video-predecessor.js'
 import { isScriptVideoEpisodeProgress } from './script-video-episode-progress.js'
 
@@ -33,6 +34,7 @@ export type ScriptVideoJob = {
   projectId: string
   episodeId: string
   action: 'outline' | 'storyboard' | 'revisions' | 'review' | 'video'
+  storyboardMode?: ScriptVideoStoryboardMode
   status: 'queued' | 'running' | 'completed' | 'failed' | 'canceled'
   createdAt: string
   updatedAt: string
@@ -154,6 +156,16 @@ function validateAsset(asset: any) {
     !['character', 'scene', 'prop', 'creature', 'audio'].includes(asset.kind)
   )
     throw new ScriptVideoStoreError('资产信息无效')
+  if (asset.imagePrompt !== undefined && (typeof asset.imagePrompt !== 'string' || asset.imagePrompt.length > 16000))
+    throw new ScriptVideoStoreError('资产生图提示词无效或过长')
+  if (asset.imageStatus !== undefined && !scriptVideoAssetImageStatuses.includes(asset.imageStatus))
+    throw new ScriptVideoStoreError('资产生图状态无效')
+  if ((asset.assetIdentity !== undefined && (typeof asset.assetIdentity !== 'string' || !asset.assetIdentity.trim())) ||
+      [asset.aliases, asset.sourceTitles].some(values => values !== undefined &&
+        (!Array.isArray(values) || values.some(value => typeof value !== 'string' || !value.trim()))) ||
+      (asset.sourceEpisodes !== undefined && (!Array.isArray(asset.sourceEpisodes) ||
+        asset.sourceEpisodes.some((value: number) => !Number.isSafeInteger(value) || value < 1))))
+    throw new ScriptVideoStoreError('资产提取记录无效')
   if (asset.voiceMode !== undefined && (asset.kind !== 'character' || !['model', 'reference'].includes(asset.voiceMode))) {
     throw new ScriptVideoStoreError('角色配音设置无效')
   }
@@ -163,7 +175,7 @@ function validateAsset(asset: any) {
       throw new ScriptVideoStoreError('参考音频信息无效，请重新上传音频')
     }
   }
-  if (asset.kind === 'audio' && asset.image === '') return
+  if (asset.image === '' && (asset.kind === 'audio' || typeof asset.imagePrompt === 'string')) return
   if (
     typeof asset.image !== 'string' ||
     !asset.image.startsWith('/static/') ||
@@ -182,6 +194,26 @@ function validateAsset(asset: any) {
   } catch {
     throw new ScriptVideoStoreError('资产图片地址无效')
   }
+}
+
+const imageJobFields = ['imageStatus', 'imageError', 'imageTaskId', 'imageRequestId'] as const
+
+function preserveAssetImageJobs(input: any, previous: ScriptVideoProject) {
+  if (!Array.isArray(input?.assets)) return input
+  const priorAssets = new Map(previous.assets.map(asset => [asset.id, asset]))
+  const assets = input.assets.map((asset: any) => {
+    if (!asset || typeof asset !== 'object' || Array.isArray(asset)) return asset
+    const prior = priorAssets.get(asset.id)
+    const next = { ...asset }
+    for (const field of imageJobFields) {
+      delete next[field]
+      if (prior && prior.image === asset.image && prior[field] !== undefined) next[field] = prior[field]
+    }
+    if (prior && prior.image !== asset.image && typeof next.imagePrompt === 'string')
+      next.imageStatus = next.image ? 'completed' : 'pending'
+    return next
+  })
+  return { ...input, assets }
 }
 function withoutCardMetadata(card: any) {
   const { status, version, videoUrl, videoVersions, promptNeedsSync, referenceFrameSettings, ...rest } = card
@@ -1047,7 +1079,7 @@ export class ScriptVideoStore {
         )
       if ((input as any)?.id !== id)
         throw new ScriptVideoStoreError('项目标识不匹配')
-      const project = sanitizeProject(input, record.project)
+      const project = sanitizeProject(preserveAssetImageJobs(input, record.project), record.project)
       assertChangedReferenceSources(project, record.project, project.episodes.map(episode => episode.id))
       this.assertRemovalsAllowed(record.project, project.episodes)
       project.revision = record.project.revision + 1
@@ -1110,7 +1142,7 @@ export class ScriptVideoStore {
             else if (change.value && change.id && !nextOrder.includes(change.id)) nextOrder = [...nextOrder, change.id]
           }
           next.episodeId = ''
-          next = sanitizeProject(next, before, true)
+          next = sanitizeProject(preserveAssetImageJobs(next, before), before, true)
           assertChangedReferenceSources(next, before, nextOrder, eid => this.catalog.episode(id, eid)?.episode)
           if (voiceModesOnly) {
             // A persisted toggle only affects speakers that actually use the
@@ -1173,6 +1205,16 @@ export class ScriptVideoStore {
       assets[index] = next
       record.project = sanitizeProject({ ...project, assets }, project)
       return { result: record.project, documentChanged: true }
+    })
+  }
+  mutateAssets<T>(id: string, update: (assets: ScriptVideoProject['assets'], project: ScriptVideoProject) => {
+    assets?: ScriptVideoProject['assets']; result: T
+  }): Promise<T> {
+    return this.mutate(id, record => {
+      const { assets, result } = update(record.project.assets, record.project)
+      if (!assets || isDeepStrictEqual(assets, record.project.assets)) return { result, recordChanged: false }
+      record.project = sanitizeProject({ ...record.project, assets }, record.project)
+      return { result, documentChanged: true }
     })
   }
   /** Server-only mutation under the project lock. Document changes bump revision;

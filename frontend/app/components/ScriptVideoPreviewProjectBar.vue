@@ -176,9 +176,12 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', dismissProject
       >
         <FolderPlus :size="15" />新建项目
       </button>
-      <button class="btn btn-sm project-style" type="button" aria-label="设置项目统一风格" :title="styleName || '设置项目统一风格'" :disabled="!selectedProject" @click="emit('editStyle')">
-        <Palette :size="14" /><span>{{ styleName || '项目风格' }}</span>
-      </button>
+      <div class="project-appearance">
+        <button class="btn btn-sm project-style" type="button" aria-label="设置项目统一风格" :title="styleName || '设置项目统一风格'" :disabled="!selectedProject" @click="emit('editStyle')">
+          <Palette :size="14" /><span>{{ styleName || '项目风格' }}</span>
+        </button>
+        <slot name="storyboard-mode" />
+      </div>
     </div>
     <div class="picker episode-picker">
       <span>分集</span>
@@ -231,6 +234,7 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', dismissProject
 <style scoped>
 .project-bar,
 .project-controls,
+.project-appearance,
 .episode-actions,
 .picker {
   display: flex;
@@ -247,13 +251,14 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', dismissProject
 }
 .project-style { min-width: 0; max-width: 170px; }
 .project-style span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-appearance { min-width: 0; max-width: 100%; }
 .project-controls,
 .episode-picker {
   flex: 1 1 200px;
   max-width: 310px;
   min-width: 0;
 }
-.project-controls { flex-basis: 400px; max-width: 500px; }
+.project-controls { flex-basis: 480px; max-width: 580px; }
 .picker {
   flex-grow: 1;
   min-width: 0;
@@ -451,7 +456,7 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', dismissProject
     pointer-events: auto;
   }
 }
-@media (max-width: 750px) {
+@media (max-width: 920px) {
   .project-bar {
     flex-wrap: wrap;
     gap: 8px 12px;
@@ -461,7 +466,8 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', dismissProject
     max-width: none;
     flex-basis: calc(50% - 6px);
   }
-  .project-controls { flex-basis: 100%; }
+  .project-controls { flex-basis: 100%; flex-wrap: wrap; }
+  .project-picker { min-width: 132px; }
 }
 @media (max-width: 420px) {
   .project-controls,

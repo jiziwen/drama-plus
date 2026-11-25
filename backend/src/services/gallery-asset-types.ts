@@ -30,5 +30,5 @@ export type GalleryAsset = {
   model: string | null
   configId: number | null
   aspect: GalleryImageAspect | null
-  task: { id: number; status: string | null; error: string | null } | null
+  task: { id: number; status: string | null; stage: string | null; error: string | null; canRetryDelivery: boolean } | null
 }

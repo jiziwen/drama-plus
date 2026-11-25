@@ -42,6 +42,7 @@ export function selectScriptVideoEpisodeAssets(
   return input.assets.filter((asset) => {
     if (asset.kind === 'audio') return false
     if (selected.has(asset.id)) return true
+    const namedByAlias = Array.isArray(asset.aliases) && asset.aliases.some(alias => typeof alias === 'string' && alias.length >= 2 && mentioned(alias))
     if (asset.kind === 'character') {
       const entity = scriptVideoCharacterName(asset)
       const base = scriptVideoCharacterBase(asset)
@@ -50,9 +51,9 @@ export function selectScriptVideoEpisodeAssets(
       if (entity !== base && mentioned(entity)) return true
       if (boundRoles.has(base)) return false
       const owner = base.replace(/\/群体(?:[-_（(【\[].*)?$/u, '')
-      return owner !== '群体' && mentioned(owner)
+      return namedByAlias || (owner !== '群体' && mentioned(owner))
     }
-    if (mentioned(asset.name)) return true
+    if (namedByAlias || mentioned(asset.name)) return true
     const filename = asset.originalName || asset.name.split('/').at(-1) || ''
     if (mentioned(filename)) return true
     // Scene packs often qualify the site's name, e.g. 京城皇宫-后宫偏殿院落.

@@ -970,6 +970,7 @@ const providers = ['gemini', 'openai', 'volcengine', 'minimax', 'aliyun', 'comfy
 const providerSelectOptions = computed(() => {
   const available = providers.filter(provider => provider !== 'comfyui' || cfgForm.service_type !== 'text')
     .map(provider => ({ label: provider === 'comfyui' ? 'ComfyUI' : provider, value: provider }))
+  if (cfgForm.service_type === 'image') available.push({ label: '火灵灵 · Midjourney', value: 'midjourney' })
   if (cfgForm.service_type === 'video') available.push({ label: 'AICost', value: 'aicost' }, { label: '即梦积分', value: 'jimeng' }, { label: 'LibTV', value: 'libtv' })
   return available
 })
@@ -987,6 +988,7 @@ const providerPresets = {
     comfyui: { label: 'ComfyUI · Work-Fisher', baseUrl: 'http://127.0.0.1:8188', models: ['wf-image', 'wf-z-image', 'wf-z-scene', 'wf-qwen-image'] },
     gemini: { label: 'Gemini 官方', baseUrl: 'https://generativelanguage.googleapis.com', models: ['gemini-3-pro-image', 'gemini-3.1-flash-image'] },
     openai: { label: 'OpenAI 官方', baseUrl: 'https://api.openai.com', models: ['gpt-image-2'] },
+    midjourney: { label: '火灵灵 · Midjourney', baseUrl: 'https://api.hllapi.vip', models: ['mj_imagine', 'mj_blend'] },
   },
   video: {
     comfyui: { label: 'ComfyUI · Work-Fisher H3', baseUrl: 'http://127.0.0.1:8188', models: ['wf-minimax-h3'] },

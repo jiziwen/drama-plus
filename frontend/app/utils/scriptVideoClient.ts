@@ -1,4 +1,5 @@
 import type { PreviewCard } from './scriptVideoPreview'
+import type { ScriptVideoStoryboardMode } from '../../../backend/src/services/script-video-storyboard-mode'
 
 export class ScriptVideoRequestError extends Error {
   constructor(
@@ -191,6 +192,7 @@ export type ScriptVideoJobProgress = {
 export type ScriptVideoClientJob = {
   id: string
   action?: 'outline' | 'storyboard' | 'revisions' | 'review' | 'video'
+  storyboardMode?: ScriptVideoStoryboardMode
   cardId?: string
   updatedAt?: string
   status: 'queued' | 'running' | 'completed' | 'failed' | 'canceled'

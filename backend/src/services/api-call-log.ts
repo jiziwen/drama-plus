@@ -21,6 +21,7 @@ export function sanitizeCallData(value: any, key = '', depth = 0): any {
   if (depth > 35) return '[内容层级过深]'
   const normalized = key.replace(/[-_]/g, '').toLowerCase()
   if (/apikey|authorization|cookie|secret|password|signature|credential/.test(normalized) || /^(token|accesstoken|refreshtoken)$/.test(normalized)) return '[已隐藏]'
+  if (normalized === 'base64array' && Array.isArray(value)) return `[参考图内容已省略，共 ${value.length} 张]`
   if (typeof value === 'string') {
     if (/^data:[^;]+;base64,/i.test(value) || /^(b64_json|base64|audiohex)$/i.test(key)) return `[二进制编码已省略，${value.length} 字符]`
     if (/^https?:\/\//i.test(value)) return redactUrl(value)

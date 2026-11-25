@@ -40,7 +40,8 @@ export type DramaAsset = {
   prompt: string
   image?: string
   taskId?: number
-  imageStatus?: 'running' | 'ready' | 'failed'
+  imageStatus?: 'running' | 'ready' | 'failed' | 'delivery_pending'
+  imageCanRetryDelivery?: boolean
   imageError?: string
 }
 export type DramaJobAction = 'analyze' | 'outline' | 'write' | 'logic' | 'opening' | 'pace' | 'revise' | 'assets' | 'image' | 'images' | 'deliver'
@@ -78,7 +79,7 @@ export type DownmarketDramaListItem = Pick<DownmarketDrama, 'id' | 'title' | 're
 export type DownmarketDramaProgress = { draft: DownmarketDrama } | {
   revision: number
   job?: DramaJob
-  images: Pick<DramaAsset, 'id' | 'taskId' | 'image' | 'imageStatus' | 'imageError'>[]
+  images: Pick<DramaAsset, 'id' | 'taskId' | 'image' | 'imageStatus' | 'imageError' | 'imageCanRetryDelivery'>[]
 }
 export type DramaRevisionSource = 'logic' | 'opening' | 'pace'
 export type DramaCommand =

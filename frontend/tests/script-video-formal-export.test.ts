@@ -44,6 +44,20 @@ test('单段导出沿用整集原编号与累计时间', () => {
   assert.ok(!markdown.includes('## 视频编号01｜'))
 })
 
+test('修仙分镜导出逐镜配音和声音统计，统计留在制作文稿中', () => {
+  const [template] = createPreviewCards(seedScript, seedAssets, true)
+  const card = { ...template, duration: 6, assetIds: [], shots: [{ ...template.shots[0], duration: 6,
+    camera: '固定中景', action: '顾凌天抬眼。\n情绪提示：神情克制。',
+    dialogue: '顾凌天 (OS)【男｜青年感｜低沉男声｜克制｜轻声｜正常语速｜OS（1/1）｜中文普通话】：「我知道了。」\n音效：衣袖轻响。' }] }
+  card.prompt = buildCardPrompt(card, [], production)
+  const markdown = exportMarkdown([card], [], { production })
+  const delivery = buildScriptVideoDelivery(card, [])
+  assert.match(markdown, /人物声音统计（不计入视频时长）[\s\S]+\| 顾凌天 \| 低沉男声 \| 克制、轻声、正常语速 \| 0 \| 1 \|/u)
+  assert.ok(markdown.includes(delivery.prompt))
+  assert.match(delivery.prompt, /【0s-6s】[\s\S]+【配音指令】：顾凌天｜男/u)
+  assert.ok(!delivery.prompt.includes('人物声音统计'))
+})
+
 test('单段视频下载使用中文集数和原片段编号', () => {
   assert.equal(scriptVideoClipFilename(1, 1), '第一集-01.mp4')
   assert.equal(scriptVideoClipFilename(12, 8), '第十二集-08.mp4')

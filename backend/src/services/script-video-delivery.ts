@@ -14,6 +14,7 @@ import { libtvVideoModel } from './libtv-video-models.js'
 import { aicostVideoModelCapabilities, isAicostMiniMaxH3Model, isAicostSeedance25Model } from './aicost-video-models.js'
 import type { ScriptVideoVoiceMode } from './script-video-types.js'
 import type { ScriptVideoPromptMode } from './video-prompt-mode.js'
+import { renderScriptVideoCultivationTimeline } from './script-video-cultivation.js'
 
 export type { ScriptVideoLightingRange, ScriptVideoReferenceLimits } from './script-video-lighting-delivery.js'
 export type { ScriptVideoPromptMode } from './video-prompt-mode.js'
@@ -584,7 +585,9 @@ export function buildScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(
   const hasMultipleCharacters = images.filter(asset => asset.kind === 'character').length > 1
   const duration = options.duration ?? card.duration
   if (!card.manuallyAdded && duration !== card.duration) output = retimeShotText(output, card, duration)
-  if (seedance25) {
+  const cultivationTimeline = renderScriptVideoCultivationTimeline(output)
+  if (cultivationTimeline) output = cultivationTimeline
+  else if (seedance25) {
     const rendered = seedanceShotText(output, duration, {
       audioOnlySpeakers: [...audioOnlySpeakers], visualSpeakerNames: [...visualSpeakerNames], hasMultipleCharacters, vocalizationShots,
     })
@@ -630,7 +633,7 @@ export function buildScriptVideoDelivery<A extends ScriptVideoDeliveryAsset>(
   }
   const voiceText = [...referenceVoiceText, ...modelVoiceText].join('\n')
   if (voiceText && !referenceGuide) {
-    const firstShot = output.search(shotBoundary)
+    const firstShot = output.search(cultivationTimeline ? /^【\d+(?:\.\d+)?s-/mu : shotBoundary)
     const insertion = firstShot < 0 ? Math.max(0, output.search(legacyShotBody)) : firstShot
     const header = output.slice(0, insertion)
     const separator = header && !/(?:\r?\n){2}$/u.test(header) ? '\n' : ''

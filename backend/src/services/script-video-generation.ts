@@ -20,6 +20,7 @@ import { getVideoPromptMode } from './app-settings.js'
 import type { ScriptVideoPromptMode } from './video-prompt-mode.js'
 import { isScriptVideoGenerationDuration, scriptVideoCapabilities, type ScriptVideoCapabilities } from './script-video-capabilities.js'
 import { buildScriptVideoDelivery, scriptVideoDeliveryTags, type ScriptVideoContinuation, type ScriptVideoDeliveryAsset, type ScriptVideoDeliveryCard, type ScriptVideoDeliveryOptions, type ScriptVideoLightingRange } from './script-video-delivery.js'
+import { scriptVideoCultivationFinalShot } from './script-video-cultivation.js'
 import { safeTaskError } from './video-download.js'
 import { aicostVideoSubmissionRejection } from './adapters/aicost-video.js'
 import { aliyunWanVideoPrompt } from './adapters/aliyun-wan-video.js'
@@ -519,8 +520,10 @@ function readSubmittedFinalShotRange(prompt: string | null, finalShotNumber?: nu
   if (!prompt || finalShotNumber === undefined || finalShotNumber !== 'last' && (!Number.isSafeInteger(finalShotNumber) || finalShotNumber < 1)) return
   const lastHeading = prompt.match(/^镜头[ \t]*\d+[^\r\n]*$/gmu)?.at(-1)
   const heading = lastHeading?.match(/^镜头[ \t]*(\d+)[ \t]*[（(][ \t]*(\d+(?:\.\d+)?)[ \t]*[–—-][ \t]*(\d+(?:\.\d+)?)[ \t]*秒[ \t]*[）)][ \t]*$/u)
-  if (!heading || finalShotNumber !== 'last' && Number(heading[1]) !== finalShotNumber) return
-  const shotStartSeconds = Number(heading[2]), shotEndSeconds = Number(heading[3])
+  const shot = heading ? { number: Number(heading[1]), start: Number(heading[2]), end: Number(heading[3]) }
+    : !lastHeading ? scriptVideoCultivationFinalShot(prompt) : undefined
+  if (!shot || finalShotNumber !== 'last' && shot.number !== finalShotNumber) return
+  const { start: shotStartSeconds, end: shotEndSeconds } = shot
   if (shotStartSeconds >= 0 && shotStartSeconds < shotEndSeconds && shotEndSeconds <= 30) {
     return { shotStartSeconds, shotEndSeconds }
   }

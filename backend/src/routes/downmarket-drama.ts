@@ -53,7 +53,7 @@ const withImageStatus = (draft: DownmarketDrama): DownmarketDrama => {
   if (!ids.length) return draft
   const tasks = db.select({
     id: schema.sysTask.id, status: schema.sysTask.status,
-    localPath: schema.sysTask.localPath, error: schema.sysTask.errorMsg,
+    localPath: schema.sysTask.localPath, resultUrl: schema.sysTask.resultUrl, error: schema.sysTask.errorMsg,
   }).from(schema.sysTask).where(inArray(schema.sysTask.id, ids)).all()
   const byId = new Map(tasks.map(task => [task.id, task]))
   const assets = draft.assets.map((asset): DramaAsset => {
@@ -63,6 +63,10 @@ const withImageStatus = (draft: DownmarketDrama): DownmarketDrama => {
       return { ...asset, imageStatus: 'ready', image: '/' + task.localPath.replace(/^\//u, '') }
     }
     if (imageIsRunning(task?.status)) return { ...asset, imageStatus: 'running' }
+    if (task?.status === 'delivery_pending') {
+      return { ...asset, imageStatus: 'delivery_pending', imageCanRetryDelivery: !!(task.resultUrl || task.localPath),
+        imageError: safeTaskError(task.error || '图片已生成，暂未保存到资产。') }
+    }
     return { ...asset, imageStatus: 'failed', imageError: safeTaskError(task?.error || '图片任务未返回可用文件。') }
   })
   return { ...draft, assets }
@@ -244,8 +248,8 @@ export function createDownmarketDramaRoutes(
     if (!current) return notFound(c, '下沉剧项目不存在。')
     const { draft } = current
     if (draft.revision !== Number(c.req.query('revision'))) return success(c, { draft })
-    const images = draft.assets.filter(asset => asset.taskId || asset.imageError).map(({ id, taskId, image, imageStatus, imageError }) => ({
-      id, taskId, image, imageStatus, imageError,
+    const images = draft.assets.filter(asset => asset.taskId || asset.imageError).map(({ id, taskId, image, imageStatus, imageError, imageCanRetryDelivery }) => ({
+      id, taskId, image, imageStatus, imageError, imageCanRetryDelivery,
     }))
     return success(c, { revision: draft.revision, job: draft.job, images })
   })

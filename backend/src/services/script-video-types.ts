@@ -9,6 +9,7 @@ import { parseScriptVideoPromptDialogue } from './script-video-prompt-dialogue.j
 import { getScriptVideoSceneContinuityIssues } from './script-video-scene-continuity.js'
 import { annotateScriptVideoAssets, describeScriptVideoReferenceProblem } from './script-video-mentions.js'
 import type { ScriptVideoReferenceSettings } from './script-video-reference-settings.js'
+import type { ScriptVideoStoryboardMode } from './script-video-storyboard-mode.js'
 
 export type ScriptVideoVoiceAudio = {
   url: string
@@ -17,7 +18,20 @@ export type ScriptVideoVoiceAudio = {
   duration?: number
 }
 export type ScriptVideoVoiceMode = 'model' | 'reference'
-export type ScriptVideoAsset = {
+export const scriptVideoAssetImageStatuses = ['pending', 'generating', 'completed', 'failed'] as const
+export type ScriptVideoAssetImageFields = {
+  imagePrompt?: string
+  imageStatus?: typeof scriptVideoAssetImageStatuses[number]
+  imageError?: string
+  imageTaskId?: number
+}
+export type ScriptVideoAssetExtractionFields = {
+  assetIdentity?: string
+  aliases?: string[]
+  sourceTitles?: string[]
+  sourceEpisodes?: number[]
+}
+export type ScriptVideoAsset = Pick<ScriptVideoAssetExtractionFields, 'aliases'> & {
   id: string
   name: string
   kind: string
@@ -39,6 +53,7 @@ export type ScriptVideoInput = {
   autoSelectCharacterBases?: string[]
   characterAppearanceNotes?: string
   systemPrompt?: string
+  storyboardMode?: ScriptVideoStoryboardMode
   production?: ScriptVideoProduction
   stylePreset?: ScriptVideoStylePreset
   deliverySpecs?: { aspectRatio?: string; resolution?: string; videoModel?: string }

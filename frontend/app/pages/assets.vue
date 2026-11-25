@@ -79,6 +79,10 @@
               <span v-if="asset.aspect" class="gallery-ratio">{{ asset.aspect }}</span>
             </div>
             <div class="gallery-card-actions">
+              <button v-if="asset.task?.canRetryDelivery" type="button" class="btn btn-sm"
+                :disabled="isGenerating(asset)" @click="retryImageDelivery(asset)">
+                <Download :size="13" /> 重试取图
+              </button>
               <button type="button" class="btn btn-sm" aria-haspopup="dialog" :disabled="isGenerating(asset)"
                 :aria-label="`${generationLabel(asset)}${asset.name}`" @click="openEditor(asset)">
                 <RotateCcw :size="13" /> {{ generationLabel(asset) }}
@@ -87,7 +91,8 @@
                 :disabled="isGenerating(asset)" @click="confirmDelete(asset)"><Trash2 :size="14" /></button>
             </div>
           </div>
-          <div v-if="asset.task?.status === 'failed' && asset.task.error" class="gallery-task-error">{{ asset.task.error }}</div>
+          <div v-if="!isGenerating(asset) && asset.task?.error" class="gallery-task-message"
+            :class="{ 'gallery-failed': asset.task.status === 'failed' }">{{ asset.task.error }}</div>
         </div>
       </article>
     </div>
@@ -165,8 +170,8 @@
 </template>
 
 <script setup lang="ts">
-import { Search, Pencil, LoaderCircle, FolderKanban, Images, ArrowUpRight, UsersRound, Mountain, Box, Sparkles, X, Plus, RotateCcw, Trash2 } from 'lucide-vue-next'
-import { galleryAssetAPI, listAllDramas } from '~/composables/useApi'
+import { Search, Pencil, LoaderCircle, FolderKanban, Images, ArrowUpRight, UsersRound, Mountain, Box, Sparkles, X, Plus, RotateCcw, Trash2, Download } from 'lucide-vue-next'
+import { galleryAssetAPI, listAllDramas, taskAPI } from '~/composables/useApi'
 import { thumbOf, thumbFallback } from '~/composables/useMedia'
 import { GALLERY_IMAGE_ASPECTS, type GalleryAsset, type GalleryAssetKind, type GalleryImageAspect } from '../../../backend/src/services/gallery-asset-types'
 import type { ProjectModelOption } from '../../../backend/src/services/project-model-options'
@@ -210,6 +215,7 @@ const loadingModels = ref(false)
 const modelError = ref('')
 const deleteTarget = ref<{ projectId: number; asset: GalleryAsset } | null>(null)
 const deleting = ref(false)
+const recovering = ref(new Set<number>())
 let requestId = 0
 let modelRequestId = 0
 let pollTimer: ReturnType<typeof setTimeout> | undefined
@@ -223,7 +229,8 @@ const visibleAssets = computed(() => assets.value.filter(asset =>
 const modelKey = (model: { configId: number; model: string }) => `${model.configId}/${model.model}`
 const chosenModel = computed(() => models.value.find(model => modelKey(model) === editor.value?.modelKey))
 const canGenerate = computed(() => Boolean(editor.value?.prompt.trim() && chosenModel.value && !saving.value && !loadingModels.value))
-const isGenerating = (asset: GalleryAsset) => asset.task?.status === 'processing'
+const isRecovering = (asset: GalleryAsset) => !!asset.task && recovering.value.has(asset.task.id)
+const isGenerating = (asset: GalleryAsset) => asset.task?.status === 'processing' || isRecovering(asset)
 const generationLabel = (asset: GalleryAsset) => asset.image || asset.task ? '重新生成' : '生成图片'
 
 function imageOf(asset: GalleryAsset) {
@@ -247,6 +254,9 @@ function closePreviewOnBackdrop(event: MouseEvent) {
 }
 
 function assetStatus(asset: GalleryAsset) {
+  if (isRecovering(asset) || (asset.task?.status === 'processing' && asset.task.stage === 'downloading')) return '已生成，取图中'
+  if (asset.task?.status === 'processing' && asset.task.stage === 'saving') return '保存图片中'
+  if (asset.task?.status === 'delivery_pending') return asset.task.canRetryDelivery ? '已生成，待取回' : '已生成，保存中断'
   if (isGenerating(asset)) return '生成中'
   if (asset.task?.status === 'failed') return asset.image ? '生成失败，保留旧图' : '生成失败'
   return asset.image ? '图片已就绪' : '等待生成'
@@ -298,7 +308,7 @@ async function loadProjects() {
   }
 }
 
-async function loadModels() {
+async function loadModels(preferredConfigId?: number | null) {
   const request = ++modelRequestId
   loadingModels.value = true
   modelError.value = ''
@@ -308,7 +318,8 @@ async function loadModels() {
     if (request !== modelRequestId || !editor.value) return
     models.value = result
     if (!result.some(model => modelKey(model) === editor.value?.modelKey)) {
-      editor.value.modelKey = result[0] ? modelKey(result[0]) : ''
+      const fallback = result.find(model => model.configId === preferredConfigId) ?? result[0]
+      editor.value.modelKey = fallback ? modelKey(fallback) : ''
     }
   } catch (cause) {
     if (request === modelRequestId) modelError.value = messageOf(cause, '无法加载生图模型')
@@ -332,7 +343,7 @@ async function openEditor(asset?: GalleryAsset) {
   }
   editorError.value = ''
   notice.value = ''
-  const loadingOptions = loadModels()
+  const loadingOptions = loadModels(asset?.configId)
   await nextTick()
   editorDialog.value?.showModal()
   await loadingOptions
@@ -381,6 +392,22 @@ async function submitEditor() {
     editorError.value = messageOf(cause, '提交生图任务失败')
   } finally {
     saving.value = false
+  }
+}
+
+async function retryImageDelivery(asset: GalleryAsset) {
+  const projectId = selectedProject.value
+  const task = asset.task
+  if (!projectId || !task?.canRetryDelivery || isGenerating(asset)) return
+  recovering.value.add(task.id)
+  notice.value = ''
+  try {
+    await taskAPI.recover(task.id)
+    if (alive && selectedProject.value === projectId) await loadDetail(projectId, true)
+  } catch (cause) {
+    if (alive && selectedProject.value === projectId) notice.value = messageOf(cause, '暂时无法取回原图')
+  } finally {
+    recovering.value.delete(task.id)
   }
 }
 
@@ -438,8 +465,9 @@ onBeforeUnmount(() => {
 .gallery-card-status { flex-wrap: wrap; color: var(--text-2); font-size: 11px; }
 .gallery-ratio { border: 1px solid var(--surface-outline); padding: 1px 5px; border-radius: 5px; font-variant-numeric: tabular-nums; }
 .gallery-card-actions .btn { min-height: 28px; gap: 5px; padding-inline: 8px; }
-.gallery-task-error, .gallery-editor-error, .gallery-failed { color: var(--action-danger); }
-.gallery-task-error { margin-top: 8px; font-size: 11px; overflow-wrap: anywhere; }
+.gallery-card-actions { flex-wrap: wrap; }
+.gallery-task-message { margin-top: 8px; color: var(--text-2); font-size: 11px; overflow-wrap: anywhere; }
+.gallery-editor-error, .gallery-failed { color: var(--action-danger); }
 
 .gallery-image-dialog { width: min(1200px, 94vw); max-width: 94vw; max-height: 92dvh; margin: auto; padding: 0; overflow: hidden; border: 1px solid var(--surface-outline-strong); border-radius: 14px; background: var(--surface-raised); color: var(--text-1); }
 .gallery-image-dialog::backdrop { background: rgb(0 0 0 / 75%); }

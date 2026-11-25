@@ -7,12 +7,12 @@ import sharp from 'sharp'
 
 test('画廊创建项目资产，按所选比例生成和重绘，并从项目中删除', async t => {
   const root = await mkdtemp(join(tmpdir(), 'asset-gallery-'))
-  process.env.SQLITE_PATH = join(root, 'gallery.sqlite3')
+  process.env.SQLITE_PATH = ':memory:'
   process.env.HUOBAO_DATA_DIR = root
   t.after(() => rm(root, { recursive: true, force: true }))
 
-  const [{ default: gallery }, { default: projects }, { db, schema }] = await Promise.all([
-    import('../src/routes/asset-gallery.js'), import('../src/routes/dramas.js'), import('../src/db/index.js'),
+  const [{ default: gallery }, { default: projects }, { default: tasks }, { db, schema }] = await Promise.all([
+    import('../src/routes/asset-gallery.js'), import('../src/routes/dramas.js'), import('../src/routes/tasks.js'), import('../src/db/index.js'),
   ])
   const timestamp = new Date().toISOString()
   const dates = { createdAt: timestamp, updatedAt: timestamp }
@@ -28,27 +28,45 @@ test('画廊创建项目资产，按所选比例生成和重绘，并从项目�
   const output = await sharp({ create: { width: 96, height: 64, channels: 3, background: '#123456' } }).png().toBuffer()
   const upstream: { model: string; prompt: string; size: string }[] = []
   let hold: Promise<void> | undefined
-  t.mock.method(globalThis, 'fetch', async (_url: string, init?: RequestInit) => {
+  const imageUrl = 'https://example.test/result.png'
+  const encoded = output.toString('base64')
+  let imageResponse: { url?: string; b64_json?: string } = { b64_json: encoded }
+  let downloadCalls = 0
+  let interruptDownload = false
+  let rejectGeneration = false
+  t.mock.method(globalThis, 'fetch', async (url: string, init?: RequestInit) => {
+    if (url === imageUrl) {
+      downloadCalls++
+      await hold
+      const body = interruptDownload ? new ReadableStream({
+        start(controller) {
+          controller.error(new DOMException('The operation was aborted due to timeout', 'TimeoutError'))
+        },
+      }) : new Uint8Array(output)
+      return new Response(body, { headers: { 'Content-Type': 'image/png' } })
+    }
     upstream.push(JSON.parse(String(init?.body)))
     await hold
-    return Response.json({ data: [{ b64_json: output.toString('base64') }] })
+    if (rejectGeneration) return Response.json({ error: { message: '模型无可用渠道' } }, { status: 503 })
+    return Response.json({ data: [imageResponse] })
   })
 
   const post = (value: object) => ({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) })
   const url = `/${project.id}`
   const list = async () => (await (await gallery.request(url)).json()).data
-  async function completed(taskId: number) {
+  async function settled(taskId: number, status = 'completed') {
     for (let attempt = 0; attempt < 150; attempt++) {
       const assets = await list()
       const asset = assets.find((row: any) => row.task?.id === taskId)
       if (asset?.task?.status !== 'processing') {
-        assert.equal(asset?.task?.status, 'completed', asset?.task?.error ?? '')
+        assert.equal(asset?.task?.status, status, asset?.task?.error ?? '')
         return asset
       }
       await new Promise(resolve => setTimeout(resolve, 20))
     }
     assert.fail('图片生成超时')
   }
+  const completed = (taskId: number) => settled(taskId)
 
   const options = (await (await gallery.request('/models')).json()).data
   assert.deepEqual(options.map((option: any) => option.model), [model, 'gpt-image-1'])
@@ -140,4 +158,95 @@ test('画廊创建项目资产，按所选比例生成和重绘，并从项目�
   } finally {
     db.run(sql.raw('DROP TRIGGER gallery_test_reject_task'))
   }
+
+  await t.test('回包已经带图时跳过下载，内嵌图损坏时仍能使用原图地址', async () => {
+    const input = { kind: 'props', aspect: '16:9', model, configId: config.id, prompt: '一只猫' }
+    imageResponse = { url: imageUrl, b64_json: encoded }
+    interruptDownload = true
+    const inline = (await (await gallery.request(url, post(input))).json()).data
+    const first = await completed(inline.taskId)
+    assert.equal(downloadCalls, 0)
+    const metadata = await sharp(join(root, first.image)).metadata()
+    assert.equal(metadata.width * 9, metadata.height * 16)
+
+    imageResponse = { url: imageUrl, b64_json: Buffer.from('invalid image').toString('base64') }
+    interruptDownload = false
+    const fallback = (await (await gallery.request(url, post(input))).json()).data
+    assert.ok((await completed(fallback.taskId)).image)
+    assert.equal(downloadCalls, 1)
+  })
+
+  await t.test('取图中断后保存原结果地址，并只重试原图下载', async () => {
+    const input = { kind: 'props', aspect: '16:9', model, configId: config.id, prompt: '一个茶杯' }
+    imageResponse = { url: imageUrl }
+    interruptDownload = true
+    const result = (await (await gallery.request(url, post(input))).json()).data
+    const pending = await settled(result.taskId, 'delivery_pending')
+    assert.equal(pending.image, null)
+    assert.equal(pending.task.canRetryDelivery, true)
+    assert.match(pending.task.error, /下载超时/)
+    const diagnostic = (await (await tasks.request(`/${result.taskId}/diagnostics`)).json()).data
+    assert.equal(diagnostic.hasResult, true)
+    assert.equal(diagnostic.hasLocalFile, false)
+
+    interruptDownload = false
+    const initialDownloads = downloadCalls
+    const initialSubmissions = upstream.length
+    let releaseDownload!: () => void
+    hold = new Promise<void>(resolve => { releaseDownload = resolve })
+    try {
+      const recover = () => tasks.request(`/${result.taskId}/recover`, { method: 'POST' })
+      const [first, second] = await Promise.all([recover(), recover()])
+      assert.deepEqual([first.status, second.status], [200, 200])
+      const downloading = (await list()).find((asset: any) => asset.task?.id === result.taskId)
+      assert.equal(downloading.task.status, 'processing')
+      assert.equal(downloading.task.stage, 'downloading')
+    } finally {
+      releaseDownload()
+      hold = undefined
+    }
+    const restored = await completed(result.taskId)
+    assert.ok(restored.image)
+    assert.equal(restored.task.error, null)
+    assert.equal(downloadCalls - initialDownloads, 1)
+    assert.equal(upstream.length, initialSubmissions)
+  })
+
+  await t.test('重启后继续取图，历史结果不会覆盖后来保存的资产', async () => {
+    const { resumeInterruptedTasks } = await import('../src/services/generation.js')
+    const { eq } = await import('drizzle-orm')
+    const asset = (await list()).find((row: any) => row.kind === 'props' && row.image)
+    assert.ok(asset?.image)
+    const older = db.insert(schema.sysTask).values({
+      ...dates, type: 'image', dramaId: project.id, propId: asset.id, provider: 'openai', model,
+      resultUrl: imageUrl, status: 'processing', stage: 'downloading',
+    }).returning().get()
+    const newer = db.insert(schema.sysTask).values({
+      ...dates, type: 'image', dramaId: project.id, propId: asset.id, provider: 'openai', model,
+      status: 'completed', localPath: asset.image,
+    }).returning().get()
+    const initialSubmissions = upstream.length
+    await resumeInterruptedTasks()
+    let recovered = db.select().from(schema.sysTask).where(eq(schema.sysTask.id, older.id)).get()
+    for (let attempt = 0; attempt < 100 && recovered?.status === 'processing'; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 20))
+      recovered = db.select().from(schema.sysTask).where(eq(schema.sysTask.id, older.id)).get()
+    }
+    assert.equal(recovered?.status, 'completed', recovered?.errorMsg ?? '')
+    assert.ok(recovered.localPath)
+    assert.notEqual(recovered.localPath, asset.image)
+    assert.equal((await completed(newer.id)).image, asset.image)
+    assert.equal(upstream.length, initialSubmissions)
+  })
+
+  await t.test('上游明确拒绝生成时仍显示失败', async () => {
+    rejectGeneration = true
+    const rejected = (await (await gallery.request(url, post({
+      kind: 'props', aspect: '16:9', model, configId: config.id, prompt: '一个花瓶',
+    }))).json()).data
+    const asset = await settled(rejected.taskId, 'failed')
+    assert.equal(asset.task.canRetryDelivery, false)
+    assert.match(asset.task.error, /503.*模型无可用渠道/)
+    rejectGeneration = false
+  })
 })

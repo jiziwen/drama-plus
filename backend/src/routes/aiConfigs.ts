@@ -4,6 +4,7 @@ import { db, schema } from '../db/index.js'
 import { success, notFound, created, badRequest, now } from '../utils/response.js'
 import { toSnakeCase } from '../utils/transform.js'
 import { joinProviderUrl } from '../services/adapters/url.js'
+import { isMidjourneyImageConfig, midjourneyBaseUrl } from '../services/adapters/midjourney-image.js'
 import { isOfficialProvider, parseConfigTemperature } from '../services/ai.js'
 import { redactUrl, logTaskError, logTaskProgress, logTaskSuccess } from '../utils/task-logger.js'
 import { checkComfyWorkflow, parseComfySettings, validateComfySettings } from '../services/comfyui.js'
@@ -109,6 +110,15 @@ function buildProbe(serviceType: string, provider: string, baseUrl: string, mode
       url: url.toString(),
       headers: geminiHeaders(apiKey, true),
       body: { contents: [{ parts: [{ text: 'hi' }] }] },
+    }
+  }
+
+  if (serviceType === 'image' && isMidjourneyImageConfig({ provider: p, baseUrl, model: m })) {
+    return {
+      method: 'GET',
+      url: joinProviderUrl(midjourneyBaseUrl(baseUrl), '/v1', '/models'),
+      headers: bearerHeaders(apiKey),
+      body: undefined,
     }
   }
 
@@ -318,6 +328,11 @@ app.post('/test', async (c) => {
     const text = await resp.text()
     const reachable = [200, 204, 400, 401, 403].includes(resp.status)
     const isVideoListProbe = ['volcengine', 'aicost'].includes(body.provider.toLowerCase()) && body.service_type === 'video'
+    const isMidjourneyProbe = body.service_type === 'image'
+      && isMidjourneyImageConfig({ provider: body.provider, baseUrl: body.base_url, model })
+    const successMessage = isMidjourneyProbe ? '连接与 API Key 验证通过（只读查询，未提交绘图）'
+      : isVideoListProbe ? '连接与 API Key 验证通过（只读查询，未生成视频；模型生成权限尚未验证）'
+        : '端点可访问，认证与路径基本正常'
     const payload = {
       ok: resp.ok,
       reachable,
@@ -326,7 +341,7 @@ app.post('/test', async (c) => {
       method: probe.method,
       url: probeUrl,
       message: resp.ok
-        ? (isVideoListProbe ? '连接与 API Key 验证通过（只读查询，未生成视频；模型生成权限尚未验证）' : '端点可访问，认证与路径基本正常')
+        ? successMessage
         : resp.status === 401
           ? '认证失败，请检查 API Key；Agent Plan 需使用专属 API Key'
           : resp.status === 403
@@ -335,7 +350,7 @@ app.post('/test', async (c) => {
               ? '请求被拒绝，请查看接口返回的具体错误'
               : '测试未通过，请检查 Base URL、代理、额度或接口返回的错误',
       // 查询结果可能包含历史任务和媒体地址，连接成功时无需展示。
-      response_preview: resp.ok && isVideoListProbe ? '' : text.slice(0, 240),
+      response_preview: resp.ok && (isVideoListProbe || isMidjourneyProbe) ? '' : text.slice(0, 240),
     }
     if (resp.ok) {
       logTaskSuccess('AIConfig', 'probe-done', {

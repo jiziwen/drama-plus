@@ -349,7 +349,8 @@
             </div>
             <section v-if="editMode === 'reference'" class="mat-reference-panel">
               <AssetReferenceEditor :key="pendingKey(editTarget)" v-model="referenceDraft" :current-image="matImage(editTarget)" :history="referenceHistory" :disabled="editSaving || isPending(editTarget)" @error="message => toast.error(message)" @uploading="referenceUploading = $event" />
-              <label class="mat-detail-edit-field">
+              <p v-if="editUsesBlend" class="field-hint">{{ t('assetGeneration.blendReferenceHint') }}</p>
+              <label v-else class="mat-detail-edit-field">
                 <span>{{ t('assetGeneration.editDescription') }}</span>
                 <textarea v-model="editDescription" class="textarea" rows="5" :placeholder="t('assetGeneration.editPlaceholder')" />
               </label>
@@ -794,9 +795,10 @@ async function pollMaterial(m, taskId) {
     if (!materialPageAlive) return
     try {
       const task = await taskAPI.get(taskId)
-      if (task.status === 'completed' || task.status === 'failed') {
+      if (['completed', 'failed', 'delivery_pending'].includes(task.status)) {
         pendingMaterials.value = new Set([...pendingMaterials.value].filter(k => k !== key))
         if (task.status === 'failed') toastError(task.error_msg || task.errorMsg || t('assetGeneration.generateFailed'))
+        if (task.status === 'delivery_pending') toast.info(t('assetGeneration.deliveryPendingHint'))
         await load()
         const updated = materials.value.find(item => pendingKey(item) === key)
         if (updated && editTarget.value && pendingKey(editTarget.value) === key) {
@@ -884,6 +886,7 @@ const imageConfigs = ref([])
 const modelLabel = useModelLabel()
 const editModelOptions = computed(() => assetModelOptions(imageConfigs.value, editMode.value, textReferenceDraft.value.length > 0))
 const editModelKey = computed(() => assetModelKey(editTarget.value, editMode.value, editModelOptions.value))
+const editUsesBlend = computed(() => editModelOptions.value.some(option => option.key === editModelKey.value && option.blend))
 const editSelectModelOptions = computed(() => [
   { value: '', label: t('assetGeneration.followTop') },
   ...(editModelKey.value && !editModelOptions.value.some(option => option.key === editModelKey.value)
@@ -1032,7 +1035,8 @@ async function saveAndGenerateMaterial() {
     ? { generation_mode: mode, reference_images: [...referenceDraft.value], edit_prompt: editDescription.value.trim() }
     : { generation_mode: 'text', reference_images: [...textReferenceDraft.value] }
   if (mode === 'reference' && !options.reference_images.length) { toast.error(t('assetGeneration.referenceRequired')); return }
-  if (mode === 'reference' && !options.edit_prompt) { toast.error(t('assetGeneration.editRequired')); return }
+  if (editUsesBlend.value && options.reference_images.length !== 2) { toast.error(t('assetGeneration.blendReferenceHint')); return }
+  if (mode === 'reference' && !editUsesBlend.value && !options.edit_prompt) { toast.error(t('assetGeneration.editRequired')); return }
   if (await saveEdit(false)) await generateMaterial(target, options)
 }
 

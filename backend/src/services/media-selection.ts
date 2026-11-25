@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm'
 import { db, schema } from '../db/index.js'
 import { getActiveConfig, getConfigById, type AIConfig } from './ai.js'
+import { isMidjourneyBlend } from './adapters/midjourney-image.js'
 
 type MediaType = 'image' | 'video'
 type Selection = { model?: string | null; configId?: number | null }
@@ -31,8 +32,12 @@ export function validateReferenceImages(value: unknown, required = false): strin
   })
 }
 
-export function assertImageMode(config: Pick<AIConfig, 'provider' | 'model' | 'comfyui'>, mode: 'text' | 'reference') {
-  if (config.provider === 'comfyui') {
+export function assertImageMode(config: Pick<AIConfig, 'provider' | 'baseUrl' | 'model' | 'comfyui'>, mode: 'text' | 'reference', referenceCount?: number) {
+  if (isMidjourneyBlend(config)) {
+    if (mode === 'text' || (referenceCount !== undefined && referenceCount !== 2)) {
+      throw new Error('Midjourney 图片融合需要两张参考图，纯提示词绘图请选择 mj_imagine')
+    }
+  } else if (config.provider === 'comfyui') {
     if (config.comfyui?.workflow) {
       if (mode === 'reference' && (!config.comfyui.referenceNode || !config.comfyui.referencePrefix || config.comfyui.maxReferences === 0)) throw new Error('所选自定义工作流未配置参考图输入')
     } else if (mode === 'reference' && !['wf-image', 'wf-qwen-image'].includes(config.model)) {
@@ -55,14 +60,15 @@ export async function resolveAssetImageRequest(body: any, asset: AssetSelection,
     ? validateReferenceImages(body.reference_images, mode === 'reference')
     : []
   const editPrompt = mode === 'reference' && typeof body.edit_prompt === 'string' ? body.edit_prompt.trim() : ''
-  if (mode === 'reference' && !editPrompt) throw new Error('请填写修改描述')
   const model = mode === 'reference' ? asset.referenceModel : asset.imageModel
   const configId = mode === 'reference' ? asset.referenceConfigId : asset.imageConfigId
   const override = !!model || configId != null
   const config = await resolveMediaConfig('image', override
     ? { model, configId }
     : { model: body.model, configId: body.config_id ?? episodeConfigId })
-  assertImageMode(config, referenceImages.length ? 'reference' : 'text')
+  const blend = isMidjourneyBlend(config)
+  assertImageMode(config, blend ? mode : referenceImages.length ? 'reference' : 'text', referenceImages.length)
+  if (mode === 'reference' && !editPrompt && !blend) throw new Error('请填写修改描述')
   if (config.comfyui?.workflow && referenceImages.length > (config.comfyui.maxReferences ?? 4)) throw new Error('参考图数量超过该工作流限制')
   return { mode, editPrompt, referenceImages, model: config.model, configId: config.id! }
 }

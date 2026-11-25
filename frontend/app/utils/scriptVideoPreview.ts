@@ -2,9 +2,10 @@ import { buildScriptVideoDelivery, type ScriptVideoContinuation, type ScriptVide
 import { formatJimengScriptPrompt } from '../../../backend/src/services/jimeng-reference-labels'
 import { annotateScriptVideoAssets, type AssetMention } from '../../../backend/src/services/script-video-mentions'
 import { renderScriptVideoPrompt } from '../../../backend/src/services/script-video-format'
+import { renderScriptVideoCultivationTimeline, scriptVideoCultivationVoiceSummary } from '../../../backend/src/services/script-video-cultivation'
 import { scriptVideoShotHeadings } from '../../../backend/src/services/script-video-asset-scope'
 import { formatScriptVideoStylePreset, scriptVideoPromptStylePrefix, type ScriptVideoStylePreset } from '../../../backend/src/services/script-video-style'
-import type { ScriptVideoVoiceMode } from '../../../backend/src/services/script-video-types'
+import type { ScriptVideoAssetExtractionFields, ScriptVideoAssetImageFields, ScriptVideoVoiceMode } from '../../../backend/src/services/script-video-types'
 import type { ScriptVideoReferenceSettings } from '../../../backend/src/services/script-video-reference-settings'
 import type { ScriptVideoVersion } from '../../../backend/src/services/script-video-versions'
 export { listScriptVideoVersions, selectScriptVideoPlayback as scriptVideoCardPlayback } from '../../../backend/src/services/script-video-versions'
@@ -12,7 +13,7 @@ export type { ScriptVideoVersion } from '../../../backend/src/services/script-vi
 export { hasScriptVideoStoryboard, scriptVideoEpisodeProgress } from '../../../backend/src/services/script-video-episode-progress'
 export type { ScriptVideoEpisodeProgress } from '../../../backend/src/services/script-video-episode-progress'
 
-export type PreviewAsset = {
+export type PreviewAsset = ScriptVideoAssetImageFields & ScriptVideoAssetExtractionFields & {
   id: string
   name: string
   kind: 'character' | 'scene' | 'prop' | 'creature' | 'audio'
@@ -355,9 +356,19 @@ export function exportMarkdown(
         `| ${String(i + 1).padStart(2, '0')} | ${shot.duration}秒 | ${cell(shot.camera)} | ${cell(shot.action)} | ${cell(shot.dialogue) || '—'} |`,
       )
     })
+    const voiceSummary = scriptVideoCultivationVoiceSummary(card.shots)
+    if (voiceSummary) {
+      lines.push('', '### 人物声音统计（不计入视频时长）', '')
+      if (voiceSummary.length) {
+        lines.push('| 人物 | 固定音色或素材绑定 | 本段发声表现 | 口头对白条数 | 心声条数 |', '| --- | --- | --- | --- | --- |',
+          ...voiceSummary.map(role => `| ${cell(role.name)} | ${cell([...role.voices].join('、'))} | ${cell([...role.delivery].join('、'))} | ${role.dialogue} | ${role.innerVoice} |`),
+          '', `本段共 ${voiceSummary.length} 个配音角色，口头对白 ${voiceSummary.reduce((sum, role) => sum + role.dialogue, 0)} 条，心声 ${voiceSummary.reduce((sum, role) => sum + role.innerVoice, 0)} 条。`)
+      } else lines.push('本段无口头对白或心声。')
+    }
+    const storedPrompt = delivery?.prompt || card.prompt || buildCardPrompt(card, assets)
     const prompt = delivery && context.delivery?.provider === 'jimeng'
       ? formatJimengScriptPrompt(delivery.prompt, delivery.images.length + Number(!!delivery.openingFrame?.imageIndex) + delivery.lightingImages.length, delivery.voices.length)
-      : delivery?.prompt || card.prompt || buildCardPrompt(card, assets)
+      : renderScriptVideoCultivationTimeline(storedPrompt) ?? storedPrompt
     const fence = '`'.repeat(
       Math.max(
         3,

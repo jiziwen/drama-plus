@@ -14,6 +14,15 @@ test('mode filters unsupported workflows and providers before submission', () =>
   assert.equal(assetModelOptions(configs, 'text').some(o => o.model === 'wf-qwen-image'), false)
   assert.deepEqual(assetModelOptions(configs, 'text', true).map(o => o.key), ['1/wf-image', '2/gpt-image-2', '3/gpt-image-2'])
 })
+test('Midjourney fusion appears only in reference mode for both new and existing services', () => {
+  const models = ['mj_imagine', 'mj_blend']
+  const midjourney = [
+    { id: 8, is_active: true, provider: 'midjourney', model: models },
+    { id: 9, is_active: true, provider: 'openai', base_url: 'https://api.hllapi.vip/v1', model: models },
+  ]
+  assert.deepEqual(assetModelOptions(midjourney, 'text', true).map(option => option.key), ['8/mj_imagine', '9/mj_imagine'])
+  assert.deepEqual(assetModelOptions(midjourney, 'reference').filter(option => option.blend).map(option => option.key), ['8/mj_blend', '9/mj_blend'])
+})
 test('custom workflows must have an enabled reference input', () => {
   const custom = { id: 7, is_active: true, provider: 'comfyui', model: ['custom'], comfyui: { workflow: {}, referenceNode: '1', referencePrefix: 'image', maxReferences: 0 } }
   assert.equal(assetModelOptions([custom], 'reference').length, 0)

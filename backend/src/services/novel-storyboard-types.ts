@@ -52,7 +52,8 @@ export interface NovelAsset {
   prompt: string
   appearances: { chapter: number; segments: number[] }[]
   taskId?: number
-  imageStatus?: 'running' | 'ready' | 'failed'
+  imageStatus?: 'running' | 'ready' | 'failed' | 'delivery_pending'
+  imageCanRetryDelivery?: boolean
   image?: string
   imageError?: string
 }

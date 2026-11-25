@@ -80,6 +80,7 @@ test('settings page offers the supported official provider presets', () => {
   assert.match(providerPresetBlock('text'), /deepseek-v4-pro/)
   assert.doesNotMatch(providerPresetBlock('text'), /minimax/i)
   assert.doesNotMatch(providerPresetBlock('image'), /'ali'|minimax/i)
+  assert.match(providerPresetBlock('image'), /midjourney:.*https:\/\/api\.hllapi\.vip.*'mj_imagine',\s*'mj_blend'/)
   assert.match(providerPresetBlock('video'), /volcengine/)
   assert.match(providerPresetBlock('video'), /minimax/)
   assert.match(providerPresetBlock('video'), /aliyun/)
@@ -116,4 +117,7 @@ test('AICost is offered only for video and its preset starts without models', ()
     assert.ok(!context.providerSelectOptions().some(option => ['aicost', 'libtv'].includes(option.value)))
     assert.equal(context.providerPresets[type].aicost, undefined)
   }
+  assert.ok(context.providerSelectOptions().some(option => option.value === 'midjourney'))
+  cfgForm.service_type = 'video'
+  assert.ok(!context.providerSelectOptions().some(option => option.value === 'midjourney'))
 })

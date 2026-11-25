@@ -263,11 +263,14 @@
                 <textarea :value="assetPrompts[asset.id] ?? asset.prompt" rows="3" maxlength="2400"
                   :disabled="!project.assetsCurrent || asset.imageStatus === 'running'" @input="assetPrompts[asset.id] = ($event.target as HTMLTextAreaElement).value" />
               </label>
-              <p v-if="asset.imageError" class="novel-error" role="status">{{ asset.imageError }}</p>
+              <p v-if="asset.imageError && ['failed', 'delivery_pending'].includes(asset.imageStatus || '')"
+                :class="{ 'novel-error': asset.imageStatus === 'failed' }" role="status">{{ asset.imageError }}</p>
+              <button v-if="asset.imageStatus === 'delivery_pending' && asset.imageCanRetryDelivery && asset.taskId" class="btn" type="button"
+                :disabled="busy || !project.assetsCurrent" @click="retryImageDelivery(asset.taskId)">重试取图</button>
               <button class="btn" type="button" :disabled="busy || !project.assetsCurrent || asset.imageStatus === 'running' || !(assetPrompts[asset.id] ?? asset.prompt).trim()"
                 @click="send({ action: 'image', assetId: asset.id, prompt: assetPrompts[asset.id] ?? asset.prompt })">
                 <LoaderCircle v-if="asset.imageStatus === 'running'" class="novel-spin" :size="15" /><Sparkles v-else :size="15" />
-                {{ asset.imageStatus === 'running' ? '生图中' : asset.imageStatus === 'ready' ? '重新生图' : asset.imageStatus === 'failed' ? '重试生图' : '生成参考图' }}
+                {{ asset.imageStatus === 'running' ? '处理中' : asset.imageStatus === 'failed' ? '重试生图' : asset.taskId ? '重新生图' : '生成参考图' }}
               </button>
             </div>
           </article>
@@ -295,7 +298,7 @@
 import { ArrowLeft, ArrowRight, BookOpen, Check, CircleAlert, Clapperboard, Download, Images, LoaderCircle, Plus, RotateCcw, Sparkles, Trash2, Upload } from 'lucide-vue-next'
 import type { NovelAssetKind, NovelChapter, NovelCommand, NovelPace, NovelProject, NovelProjectSummary } from '../../../backend/src/services/novel-storyboard-types'
 import type { ProjectModelKind, ProjectModelOption, ProjectModelSelection } from '../../../backend/src/services/project-model-options'
-import { novelStoryboardAPI } from '~/composables/useApi'
+import { novelStoryboardAPI, taskAPI } from '~/composables/useApi'
 
 const route = useRoute()
 const router = useRouter()
@@ -573,6 +576,23 @@ function showAppearance(number: number) {
   selectChapter(number)
   chapterView.value = 'shots'
   view.value = 'chapters'
+}
+
+async function retryImageDelivery(taskId: number) {
+  if (!project.value || sending.value) return
+  const request = ++projectRequest
+  clearTimeout(pollTimer)
+  sending.value = true
+  error.value = ''
+  try {
+    await taskAPI.recover(taskId)
+  } catch (cause) {
+    if (live && request === projectRequest) error.value = (cause as Error).message
+  } finally {
+    sending.value = false
+    if (live && request === projectRequest) await reloadProject()
+    schedulePoll()
+  }
 }
 
 async function send(command: NovelCommand) {

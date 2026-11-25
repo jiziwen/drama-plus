@@ -1022,14 +1022,16 @@
                   <span class="video-task-sep">·</span>
                   <span>#{{ row.id }}</span>
                 </div>
-                <div v-if="row.errorMsg" class="video-task-error" :title="row.errorMsg">
-                  {{ mapError(row.errorMsg) }}
+                <div v-if="row.errorMsg" :class="row.status === 'delivery_pending' ? 'image-delivery-message' : 'video-task-error'" :title="row.errorMsg">
+                  {{ row.status === 'delivery_pending' ? row.errorMsg : mapError(row.errorMsg) }}
                   <div v-if="row.kind === 'video'" class="flex gap-2">
                     <button v-if="row.recoverable" class="btn btn-sm" @click.stop="recoverTask(row.id, row.storyboardId)">{{ t('episode.recovery.restore') }}</button>
                     <button class="btn btn-sm" @click.stop="copyTaskDiagnostics(row.id)">{{ t('episode.recovery.diagnostics') }}</button>
                   </div>
                   <div v-if="row.kind === 'video' && videoModerationHint(row.errorMsg)" class="video-task-error-hint">{{ videoModerationHint(row.errorMsg) }}</div>
                 </div>
+                <button v-if="row.kind === 'image' && row.recoverable" class="btn btn-sm"
+                  @click.stop="retryImageDelivery(row.id)">{{ t('assetGeneration.retryDelivery') }}</button>
               </div>
               <span :class="['video-task-status', 'is-' + genTaskStateClass(row.status)]">
                 <span :class="['dot', genTaskStateClass(row.status) === 'done' && 'ok', genTaskStateClass(row.status) === 'pending' && 'pending']" />
@@ -1119,7 +1121,8 @@
                 <AssetReferenceEditor :key="`${assetDetail.type}:${assetDetail.item.id}`" v-model="assetReferenceDraft"
                   :current-image="assetImageSrc(assetDetail.item)" :history="assetReferenceHistory"
                   :disabled="savingAssetDetail || isAssetImagePending(assetDetail.type, assetDetail.item.id)" @error="toastError" @uploading="assetReferenceUploading = $event" />
-                <label class="asset-detail-edit-field">
+                <p v-if="assetUsesBlend" class="field-hint">{{ t('assetGeneration.blendReferenceHint') }}</p>
+                <label v-else class="asset-detail-edit-field">
                   <span>{{ t('assetGeneration.editDescription') }}</span>
                   <textarea v-model="assetEditDraft" class="textarea asset-detail-textarea" rows="6" :placeholder="t('assetGeneration.editPlaceholder')" :disabled="savingAssetDetail" />
                 </label>
@@ -1687,6 +1690,8 @@ const assetReferenceUploading = ref(false)
 const assetDialogElement = ref(null)
 let assetDialogOpener = null
 const assetDetailModelOptions = computed(() => assetModelOptions(imageConfigs.value, assetGenerationMode.value, assetTextReferenceDraft.value.length > 0))
+const assetUsesBlend = computed(() => assetDetailModelOptions.value.some(option =>
+  option.key === assetGenerationModels.value[assetGenerationMode.value] && option.blend))
 const assetSelectedModelUnavailable = computed(() => !!assetGenerationModels.value[assetGenerationMode.value]
   && !assetDetailModelOptions.value.some(option => option.key === assetGenerationModels.value[assetGenerationMode.value]))
 const assetGenerationSelectOptions = computed(() => [
@@ -1972,7 +1977,8 @@ async function generateAssetDetail() {
     ? { generation_mode: mode, reference_images: [...assetReferenceDraft.value], edit_prompt: assetEditDraft.value.trim() }
     : { generation_mode: 'text', reference_images: [...assetTextReferenceDraft.value] }
   if (mode === 'reference' && !options.reference_images.length) { toast.error(t('assetGeneration.referenceRequired')); return }
-  if (mode === 'reference' && !options.edit_prompt) { toast.error(t('assetGeneration.editRequired')); return }
+  if (assetUsesBlend.value && options.reference_images.length !== 2) { toast.error(t('assetGeneration.blendReferenceHint')); return }
+  if (mode === 'reference' && !assetUsesBlend.value && !options.edit_prompt) { toast.error(t('assetGeneration.editRequired')); return }
   if (await saveAssetDetail(true)) await submitAssetImage(type, item.id, false, options)
 }
 
@@ -2111,6 +2117,13 @@ async function recoverTask(taskId, storyboardId) {
     pendingVideoIds.value = pendingVideoIds.value.filter(id => id !== storyboardId)
     toastError(error)
   }
+}
+
+async function retryImageDelivery(taskId) {
+  try {
+    await taskAPI.recover(taskId)
+    await refresh()
+  } catch (error) { toastError(error) }
 }
 
 function videoTaskStatusLabel(sb) {
@@ -2450,7 +2463,10 @@ async function loadGenTasks() {
         notifiedImageFailureIds.add(task.id)
         toastError(task.error_msg || task.errorMsg)
       }
-      if (task.type === 'image' && ['completed', 'failed'].includes(task.status)) submittedImageTaskIds.delete(task.id)
+      if (task.type === 'image' && task.status === 'delivery_pending' && submittedImageTaskIds.has(task.id)) {
+        toast.info(t('assetGeneration.deliveryPending'))
+      }
+      if (task.type === 'image' && ['completed', 'failed', 'delivery_pending'].includes(task.status)) submittedImageTaskIds.delete(task.id)
     }
     genTasks.value = nextTasks
     genMerges.value = data?.merges || []
@@ -2537,8 +2553,10 @@ const genTaskRows = computed(() => {
     status: t.status || 'processing',
     errorMsg: t.error_msg || '',
     storyboardId: t.storyboard_id,
-    recoverable: t.type === 'video' && t.error_code !== 'generation_failed' && !!(t.task_id || t.result_url),
-    previewUrl: t.local_path || t.result_url || '',
+    recoverable: t.type === 'image'
+      ? t.status === 'delivery_pending' && !!(t.local_path || t.result_url)
+      : t.type === 'video' && t.error_code !== 'generation_failed' && !!(t.task_id || t.result_url),
+    previewUrl: t.type === 'image' && t.status !== 'completed' ? '' : t.local_path || t.result_url || '',
     prompt: t.prompt || '',
     createdAt: t.created_at || '',
     completedAt: t.completed_at || '',
@@ -2567,6 +2585,7 @@ function genTaskKindLabel(kind) {
 function genTaskStatusLabel(status) {
   if (status === 'completed') return t('episode.status.done')
   if (status === 'failed') return t('episode.status.failed')
+  if (status === 'delivery_pending') return t('assetGeneration.deliveryPending')
   return t('episode.status.generating')
 }
 
@@ -2574,6 +2593,7 @@ function genTaskStatusLabel(status) {
 function genTaskStateClass(status) {
   if (status === 'completed') return 'done'
   if (status === 'failed') return 'failed'
+  if (status === 'delivery_pending') return 'waiting'
   return 'pending'
 }
 
@@ -5127,6 +5147,7 @@ button.video-task-metric.on { box-shadow: 0 0 0 2px var(--accent); }
   line-height: 1.45;
   color: var(--error);
 }
+.image-delivery-message { margin-top: 5px; font-size: 11px; color: var(--text-2); }
 .video-task-error-hint {
   margin-top: 3px;
   color: var(--accent-text, var(--accent));

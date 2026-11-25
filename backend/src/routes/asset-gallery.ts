@@ -36,7 +36,8 @@ function listAssets(projectId: number): GalleryAsset[] {
     .groupBy(task.characterId, task.sceneId, task.propId)
   const tasks = db.select({
     id: task.id, characterId: task.characterId, sceneId: task.sceneId, propId: task.propId,
-    status: task.status, error: task.errorMsg, prompt: task.prompt, model: task.model, configId: task.configId,
+    status: task.status, stage: task.stage, error: task.errorMsg, prompt: task.prompt, model: task.model, configId: task.configId,
+    resultUrl: task.resultUrl, localPath: task.localPath,
     aspect: sql<unknown>`case when json_valid(${task.params}) then json_extract(${task.params}, '$.galleryAspect') end`,
   }).from(task).where(inArray(task.id, recentTasks)).all()
   const byAsset = new Map<string, typeof tasks[number]>()
@@ -63,7 +64,10 @@ function listAssets(projectId: number): GalleryAsset[] {
         configId: (aspect ? recent?.configId : row.imageConfigId) ?? recent?.configId ?? null,
         image: row.imageUrl || row.localPath,
         aspect,
-        task: recent ? { id: recent.id, status: recent.status, error: recent.error } : null,
+        task: recent ? {
+          id: recent.id, status: recent.status, stage: recent.stage, error: recent.error,
+          canRetryDelivery: recent.status === 'delivery_pending' && Boolean(recent.resultUrl || recent.localPath),
+        } : null,
       }
     })
   })

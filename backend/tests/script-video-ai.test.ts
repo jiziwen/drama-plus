@@ -3,6 +3,7 @@ import test from 'node:test'
 import { mkdtemp, mkdir, rm, writeFile, symlink, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { createHash } from 'node:crypto'
 import {
   assertScriptVideoCards,
   assertScriptVideoFormal,
@@ -30,6 +31,8 @@ import {
   scriptVideoCharacterName,
 } from '../src/services/script-video-asset-identity.js'
 import { loadScriptVideoSkill } from '../src/services/script-video-skill.js'
+import { buildScriptVideoDelivery } from '../src/services/script-video-delivery.js'
+import { scriptVideoCultivationFinalShot, scriptVideoCultivationVoiceSummary } from '../src/services/script-video-cultivation.js'
 import {
   resolveScriptVideoMentions,
   getScriptVideoOutlineDurationIssues,
@@ -114,7 +117,7 @@ function assertContentWarning(data: Parameters<typeof assertScriptVideoCards>[0]
   assert.ok(getScriptVideoContentWarnings(data).some(issue => issue.code === code), code)
 }
 
-test('outline consumes the full original stage rules, sends only asset ID/name/kind, and emits editable outline cards', async () => {
+test('outline consumes shared planning instructions and emits editable outline cards', async () => {
   const result = await generateScriptVideoOutline(input, async (request) => {
     assert.equal(request.stage, 'outline')
     assert.equal(request.configId, 15)
@@ -126,13 +129,14 @@ test('outline consumes the full original stage rules, sends only asset ID/name/k
     ])
     assert.deepEqual(modelData.assets, [{ id: 'yuan', name: '旧院 门-清晨', kind: 'scene' }])
     assert.ok(!request.message.includes('blob:') && !request.message.includes('/Users/'))
-    assert.ok(request.instructions.includes('原版完整资料清单'))
+    assert.match(request.instructions, /剧本转视频分段大纲/u)
     assert.match(request.instructions, /大纲包含每段目标时长/u)
     assert.ok(
       request.instructions.includes(
-        await request.readSkill('references/sd25-v2.1/02-当前有效总规则.txt'),
+        await request.readSkill('分段大纲.md'),
       ),
     )
+    await assert.rejects(request.readSkill('SKILL.md'))
     await assert.rejects(request.readSkill('../.env'))
     await assert.rejects(
       request.readSkill('references/sd25-v2.1/scripts/check_storyboard_duration.py'),
@@ -148,6 +152,49 @@ test('outline consumes the full original stage rules, sends only asset ID/name/k
   assert.ok(
     !result.skillReads.some((p) => p.includes('v8-core') || p.includes('fight-choreography')),
   )
+})
+
+test('cultivation uses the full supplied skill and renders its timeline and voice lines from validated shots', async () => {
+  const file = 'cultivation/SD2.5_30秒连续3D动漫分镜第三版.txt'
+  const source = await readFile(new URL('../workspace/skills/script-to-video/' + file, import.meta.url))
+  assert.equal(createHash('sha256').update(source).digest('hex'), 'cfeab082728131a020972cf464df003815fdeab9dbcd52dd58681efe64854589')
+  const script = input.script.replace('小白：', '小白（OS）：')
+  await generateScriptVideoOutline({ ...input, script, storyboardMode: 'cultivation' }, async request => {
+    assert.match(request.instructions, /剧本转视频分段大纲/u)
+    assert.ok(!request.instructions.includes('连续3D动漫交互式分镜'))
+    return { cards: [outline] }
+  })
+  const draft = {
+    ...card,
+    shots: [
+      { ...card.shots[0], action: '小禾推门。\n情绪提示：神情谨慎。',
+        dialogue: '小禾【女｜青年感｜清亮女声｜谨慎｜轻声｜正常语速｜对白（1/1）｜中文普通话】：「我回来了。」\n音效：门轴轻响。' },
+      { ...card.shots[1], action: '小白从门外追上。\n情绪提示：眼神急切。',
+        dialogue: '小白 (OS)【男｜青年感｜清朗男声｜急切｜中等音量｜正常偏快｜OS（1/1）｜中文普通话】：「等等我！」\n音效：脚步停在门外。' },
+    ],
+  }
+  const result = await generateScriptVideoCards({ ...input, script, outline: [outline], storyboardMode: 'cultivation' }, async request => {
+    assert.equal(request.mode, 'episode')
+    assert.ok(request.instructions.includes(source.toString('utf8')))
+    assert.match(request.instructions, /修仙分镜项目适配/u)
+    assert.ok(!request.instructions.includes('原版完整资料清单'))
+    return { production, cards: [draft] }
+  })
+  const delivery = buildScriptVideoDelivery(result.cards[0], input.assets)
+  assert.match(delivery.prompt, /【0s-2\.2s】\n运镜：[^\n]+\n动作：[^\n]+\n【配音指令】：小禾｜女｜[^\n]+「我回来了。」\n声效：门轴轻响。\n情绪提示：神情谨慎。/u)
+  assert.match(delivery.prompt, /【2\.2s-4\.5s】[\s\S]+【配音指令】：小白｜男｜[^\n]+OS（1\/1）｜中文普通话｜「等等我！」/u)
+  assert.ok(!delivery.prompt.includes('人物声音统计'))
+  assert.deepEqual(scriptVideoCultivationFinalShot(delivery.prompt), { number: 2, start: 2.2, end: 4.5 })
+  assert.deepEqual(scriptVideoCultivationVoiceSummary(result.cards[0].shots)?.map(role => [role.name, role.dialogue, role.innerVoice]),
+    [['小禾', 1, 0], ['小白', 0, 1]])
+
+  const assets = [...input.assets, { id: 'he', name: '小禾', kind: 'character', image: 'blob:he',
+    voiceAudio: { name: '小禾原声', url: 'blob:voice' } }]
+  const voiced = { ...result.cards[0], assetIds: ['yuan', 'he'] }
+  voiced.prompt = renderScriptVideoPrompt(voiced, assets)
+  const withVoice = buildScriptVideoDelivery(voiced, assets, { model: 'doubao-seedance-2-5-260628', provider: 'volcengine' })
+  assert.equal(withVoice.voices[0]?.roles[0]?.id, 'he')
+  assert.match(withVoice.prompt, /【配音指令】：@图片\d+小禾｜女｜青年感｜[^｜]+音色参考@音频1｜/u)
 })
 
 test('formal generation enforces exact decimals, repaired candidates use same script/config and invalid drafts never escape', async () => {
@@ -766,10 +813,10 @@ test('script-to-video uses non-streaming Chat Completions, keeps tools and limit
       assert.deepEqual(drafted.cards[0].assetIds, ['yuan'])
       assert.equal(drafted.attempts, 1)
       assert.equal(requests.length, 1)
-      const stageSkill = await loadScriptVideoSkill('outline', { scene: input.script })
-      const rules = await stageSkill.readSkill('references/sd25-v2.1/02-当前有效总规则.txt')
+      const stageSkill = await loadScriptVideoSkill('outline', { scene: input.script, sharedOutline: true })
+      const rules = await stageSkill.readSkill('分段大纲.md')
       assert.ok(requests[0].messages.some(message =>
-        message.role === 'system' && message.content.includes('原版完整资料清单') &&
+        message.role === 'system' && message.content.includes('剧本转视频分段大纲') &&
         message.content.includes(rules),
       ))
       const outlineInput = JSON.parse(requests[0].messages.find(message => message.role === 'user')!.content)

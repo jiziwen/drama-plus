@@ -1,6 +1,7 @@
 import {readFileSync} from 'node:fs'
 import {test} from 'node:test'
 import assert from 'node:assert/strict'
+import {runInNewContext} from 'node:vm'
 const read=p=>readFileSync(new URL('../app/'+p,import.meta.url),'utf8')
 const detail=read('views/drama/detail.vue'),gallery=read('pages/assets.vue')
 test('episode deletion keeps explicit confirmation and the original API',()=>{
@@ -22,4 +23,19 @@ test('gallery uses persisted project detail and links to the full asset manager'
  assert.match(gallery,/thumbFallback/)
  assert.match(detail,/route.query.tab === 'assets'/)
  assert.match(detail,/definePageMeta\(\{ key: route => route.params.id/)
+})
+
+test('画廊将取图中断显示为待取回，并提供原任务的取图按钮', () => {
+  const start = gallery.indexOf('function assetStatus(')
+  const end = gallery.indexOf('function messageOf(', start)
+  const script = gallery.slice(start, end).replace('asset: GalleryAsset', 'asset')
+  const assetStatus = runInNewContext(script + '\nassetStatus', {
+    isRecovering: () => false,
+    isGenerating: asset => asset.task?.status === 'processing',
+  })
+  assert.equal(assetStatus({ task: { status: 'processing', stage: 'downloading' } }), '已生成，取图中')
+  assert.equal(assetStatus({ task: { status: 'delivery_pending', canRetryDelivery: true } }), '已生成，待取回')
+  assert.equal(assetStatus({ task: { status: 'failed' } }), '生成失败')
+  assert.match(gallery, /@click="retryImageDelivery\(asset\)"/)
+  assert.match(gallery, /await taskAPI\.recover\(task\.id\)/)
 })

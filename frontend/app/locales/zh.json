@@ -1,6 +1,9 @@
 {
   "assetGeneration": {
     "generateFailed": "图片生成失败，请查看任务详情",
+    "deliveryPending": "已生成，待取回",
+    "deliveryPendingHint": "图片已生成，可在资产画廊查看取图状态。",
+    "retryDelivery": "重试取图",
     "detail": "详情",
     "redraw": "重绘",
     "textMode": "文生图",
@@ -10,6 +13,7 @@
     "editDescription": "修改描述",
     "editPlaceholder": "描述希望修改的内容，以及需要保留的特征",
     "referenceRequired": "请添加至少一张参考图",
+    "blendReferenceHint": "Midjourney 图片融合需要两张参考图。",
     "editRequired": "请填写修改描述",
     "saveAndGenerate": "保存并生成",
     "saved": "已保存",

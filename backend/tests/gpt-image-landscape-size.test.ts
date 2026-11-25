@@ -7,7 +7,7 @@ import sharp from 'sharp'
 
 test('GPT Image 2.6 保持横屏尺寸并在任务完成后保存图片', async t => {
   const root = await mkdtemp(join(tmpdir(), 'gpt-image-landscape-'))
-  process.env.SQLITE_PATH = join(root, 'database.sqlite3')
+  process.env.SQLITE_PATH = ':memory:'
   process.env.HUOBAO_DATA_DIR = root
   const [{ OpenAIImageAdapter }, { db, schema }, { generateImage }, { eq }] = await Promise.all([
     import('../src/services/adapters/openai-image.js'),

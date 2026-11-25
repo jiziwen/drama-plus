@@ -1,21 +1,39 @@
 export type AssetGenerationMode = 'text' | 'reference'
-export interface AssetModelOption { key: string; model: string; configId: number; provider: string; configName: string }
+export interface AssetModelOption { key: string; model: string; configId: number; provider: string; configName: string; blend?: true }
 
 function models(config: any): string[] {
   if (Array.isArray(config.model)) return config.model.filter((x: unknown) => typeof x === 'string' && x)
   try { const value = JSON.parse(config.model); return Array.isArray(value) ? value : [value] } catch { return config.model ? [config.model] : [] }
 }
 
-export function assetModelOptions(configs: any[], mode: AssetGenerationMode = 'text', withReferences = false): AssetModelOption[] {
+function isMidjourneyModel(config: any, model: string): boolean {
+  const provider = String(config.provider || '').toLowerCase()
+  if (provider === 'midjourney') return true
+  if (provider !== 'openai' || !['mj_imagine', 'mj_blend'].includes(model)) return false
+  try { return new URL(config.base_url ?? config.baseUrl).hostname === 'api.hllapi.vip' } catch { return false }
+}
+
+function supportsAssetMode(config: any, model: string, mode: AssetGenerationMode, withReferences: boolean): boolean {
   const needsReferences = mode === 'reference' || withReferences
+  if (config.provider !== 'comfyui') return !needsReferences || (['openai', 'gemini'].includes(config.provider) && !/^dall-e/i.test(model))
+  const settings = config.comfyui || {}
+  if (settings.workflow) return !needsReferences || !!(settings.referenceNode && settings.referencePrefix && settings.maxReferences !== 0)
+  if (mode === 'text' && withReferences) return model === 'wf-image'
+  return mode === 'reference' ? ['wf-image', 'wf-qwen-image'].includes(model) : ['wf-image', 'wf-z-image', 'wf-z-scene'].includes(model)
+}
+
+export function assetModelOptions(configs: any[], mode: AssetGenerationMode = 'text', withReferences = false): AssetModelOption[] {
   return [...configs].filter(c => c.is_active ?? c.isActive).sort((a, b) => (b.priority || 0) - (a.priority || 0)).flatMap(config =>
-    models(config).filter(model => {
-      if (config.provider !== 'comfyui') return !needsReferences || (['openai', 'gemini'].includes(config.provider) && !/^dall-e/i.test(model))
-      const settings = config.comfyui || {}
-      if (settings.workflow) return !needsReferences || !!(settings.referenceNode && settings.referencePrefix && settings.maxReferences !== 0)
-      if (mode === 'text' && withReferences) return model === 'wf-image'
-      return mode === 'reference' ? ['wf-image', 'wf-qwen-image'].includes(model) : ['wf-image', 'wf-z-image', 'wf-z-scene'].includes(model)
-    }).map(model => ({ key: `${config.id}/${model}`, model, configId: Number(config.id), provider: config.provider, configName: config.name || config.provider })))
+    models(config).flatMap(model => {
+      const midjourney = isMidjourneyModel(config, model)
+      const blend = midjourney && model === 'mj_blend'
+      if (midjourney && model !== 'mj_imagine' && !(blend && mode === 'reference')) return []
+      if (!midjourney && !supportsAssetMode(config, model, mode, withReferences)) return []
+      return [{
+        key: `${config.id}/${model}`, model, configId: Number(config.id),
+        provider: config.provider, configName: config.name || config.provider, ...(blend && { blend: true as const }),
+      }]
+    }))
 }
 
 function fields(mode: AssetGenerationMode) { return mode === 'reference' ? ['reference_model', 'reference_config_id', 'referenceModel', 'referenceConfigId'] : ['image_model', 'image_config_id', 'imageModel', 'imageConfigId'] }

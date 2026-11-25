@@ -17,7 +17,7 @@ export function projectModelOptions(filters: { configId?: number; imageMode?: 't
   const configs = schema.aiServiceConfigs
   const rows = db.select({
     id: configs.id, name: configs.name, serviceType: configs.serviceType,
-    provider: configs.provider, model: configs.model, settings: configs.settings,
+    provider: configs.provider, baseUrl: configs.baseUrl, model: configs.model, settings: configs.settings,
   }).from(configs).where(and(eq(configs.isActive, true), inArray(configs.serviceType, projectModelKind.options),
     filters.configId === undefined ? undefined : eq(configs.id, filters.configId)))
     .orderBy(desc(configs.priority), configs.id).all()
@@ -33,7 +33,7 @@ export function projectModelOptions(filters: { configId?: number; imageMode?: 't
     return [...new Set(models)].flatMap(model => {
       if (typeof model !== 'string' || !model.trim()) return []
       if (kind === 'image' && filters.imageMode) {
-        try { assertImageMode({ provider, model, comfyui }, filters.imageMode) }
+        try { assertImageMode({ provider, baseUrl: row.baseUrl, model, comfyui }, filters.imageMode) }
         catch { return [] }
       }
       return [{ kind, configId: row.id, model, configName: row.name }]

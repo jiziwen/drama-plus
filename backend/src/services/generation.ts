@@ -13,10 +13,12 @@ import { getActiveConfig, getConfigById } from './ai.js'
 import { now } from '../utils/response.js'
 import { withImageTaskSubmission } from './image-submission.js'
 import { assertImageMode, resolveMediaConfig, validateReferenceImages } from './media-selection.js'
-import { downloadFile, fetchImageAsCompressedDataUrl, generateImageThumb, readImageAsCompressedDataUrl, readImageAsDataUrl, saveBase64Image } from '../utils/storage.js'
+import { downloadImage, fetchImageAsCompressedDataUrl, generateImageThumb, imageThumbnail, readImageAsCompressedDataUrl, readImageAsDataUrl, saveUploadedFile } from '../utils/storage.js'
+import { imageExtensionFromMetadata } from '../utils/reference-image-format.js'
 import { extractVideoPoster } from '../utils/video-poster.js'
 import { getImageAdapter, getVideoAdapter, videoAdapters } from './adapters/registry'
 import { aicostVideoSubmissionRejection } from './adapters/aicost-video.js'
+import { isMidjourneyBlend, isMidjourneyImageConfig } from './adapters/midjourney-image.js'
 import type { AIConfig, VideoGenerationRecord } from './adapters/types'
 import { logTaskError, logTaskPayload, logTaskProgress, logTaskStart, logTaskSuccess, logTaskWarn, redactUrl } from '../utils/task-logger.js'
 import { buildComfyWorkflow, comfyHeaders, submitComfyWorkflow, pollComfyWorkflow } from './comfyui.js'
@@ -71,6 +73,7 @@ interface GenerateImageParams {
   referenceImages?: string[]
   frameType?: string
   configId?: number
+  scriptVideoAsset?: { projectId: string; assetId: string; requestId: string }
 }
 
 export interface GenerateVideoParams {
@@ -111,7 +114,7 @@ export async function generateImage(params: GenerateImageParams): Promise<number
 async function enqueueImage(params: GenerateImageParams): Promise<number> {
   const config = await resolveMediaConfig('image', params)
   const referenceImages = params.referenceImages === undefined ? [] : validateReferenceImages(params.referenceImages)
-  assertImageMode(config, referenceImages.length ? 'reference' : 'text')
+  assertImageMode(config, referenceImages.length ? 'reference' : 'text', referenceImages.length)
   const size = params.galleryAspect ? galleryRequestSize(config, params.galleryAspect) : params.size
 
   const id = await createTask('image', config, {
@@ -121,13 +124,14 @@ async function enqueueImage(params: GenerateImageParams): Promise<number> {
     characterId: params.characterId,
     propId: params.propId,
     prompt: params.prompt,
-    model: params.model || config.model,
+    model: config.model,
   }, {
     size: size || (config.provider === 'comfyui' ? undefined : '1920x1080'),
     ...(params.galleryAspect && { galleryAspect: params.galleryAspect }),
     ...(params.requireLandscape16x9 && { requireLandscape16x9: true }),
     frameType: params.frameType,
     referenceImages,
+    ...(params.scriptVideoAsset && { scriptVideoAsset: params.scriptVideoAsset }),
   })
 
   logTaskStart('ImageTask', 'enqueue', {
@@ -317,7 +321,7 @@ async function createTask(
         .from(schema.storyboards).where(eq(schema.storyboards.id, fields.storyboardId)).get()
       if (!shot || shot.deletedAt) throw new Error('镜头不存在')
     }
-    if (params.galleryAspect) {
+    if (params.galleryAspect && !params.scriptVideoAsset) {
       const target = fields.characterId ? { table: schema.characters, id: fields.characterId }
         : fields.sceneId ? { table: schema.scenes, id: fields.sceneId }
           : fields.propId ? { table: schema.props, id: fields.propId } : null
@@ -460,10 +464,12 @@ async function processTask(id: number, config: AIConfig) {
     const publicMedia = !!process.env.PUBLIC_BASE_URL?.trim()
 
     if (type === 'image') {
-      const adapter = getImageAdapter(config.provider)
-      const supportsPublicImage = (url?: string) => !!adapter.supportsReferenceImageUrls?.(config, record.model || config.model, url)
-      const resolvedReferenceImages = await normalizeReferenceImages(params.referenceImages,
-        publicMedia && supportsPublicImage() ? supportsPublicImage : undefined)
+      const model = record.model || config.model
+      const adapter = getImageAdapter(config, model)
+      const supportsPublicImage = (url?: string) => !!adapter.supportsReferenceImageUrls?.(config, model, url)
+      const resolvedReferenceImages = isMidjourneyBlend({ ...config, model })
+        ? await resolvePublicMediaUrls(params.referenceImages, 'image', { matchImageExtension: true })
+        : await normalizeReferenceImages(params.referenceImages, publicMedia && supportsPublicImage() ? supportsPublicImage : undefined)
       ;({ url, method, headers, body } = adapter.buildGenerateRequest(config, {
         id: record.id,
         model: record.model,
@@ -529,24 +535,14 @@ async function processTask(id: number, config: AIConfig) {
     logTaskPayload(label, 'response payload', { id, provider: config.provider, result })
 
     if (type === 'image') {
-      const adapter = getImageAdapter(config.provider)
+      const adapter = getImageAdapter(config, record.model || config.model)
       const { isAsync, taskId, imageUrl } = adapter.parseGenerateResponse(result)
 
-      if (!isAsync && imageUrl) {
-        logTaskProgress(label, 'sync-complete', { id, imageUrl })
-        await handleImageComplete(record, imageUrl)
+      if (!isAsync) {
+        const base64 = adapter.extractImageBase64(result)?.data
+        if (!imageUrl && !base64) throw new Error('No image URL or base64 data in response')
+        await saveImageResult(record, { imageUrl, base64 })
         return
-      }
-
-      if (!isAsync && !imageUrl) {
-        // 同步模式但无 URL（Gemini 等返回 base64）
-        const b64 = adapter.extractImageBase64(result)
-        if (b64) {
-          logTaskProgress(label, 'sync-base64-complete', { id, mimeType: b64.mimeType })
-          await handleImageCompleteBase64(record, b64.data, b64.mimeType)
-          return
-        }
-        throw new Error('No image URL or base64 data in response')
       }
 
       await markPolling(id, taskId)
@@ -638,7 +634,7 @@ async function pollTaskResponse(record: SysTaskRecord, config: AIConfig, taskId:
   const profile = config.provider === 'aicost' && type === 'video'
     ? { ...POLL_PROFILES.video, intervalMs: 5_000, attempts: 600 }
     : POLL_PROFILES[type]
-  const adapter = type === 'image' ? getImageAdapter(config.provider) : getVideoAdapter(config.provider)
+  const adapter = type === 'image' ? getImageAdapter(config, record.model || config.model) : getVideoAdapter(config.provider)
   const startedAt = Date.now()
 
   for (let i = 0; i < profile.attempts; i++) {
@@ -678,19 +674,11 @@ async function pollTaskResponse(record: SysTaskRecord, config: AIConfig, taskId:
 
       if (pollResp.status === 'completed') {
         if (type === 'image') {
-          if (pollResp.imageUrl) {
-            logTaskSuccess(label, 'poll-complete', { id: record.id, taskId, imageUrl: pollResp.imageUrl })
-            await handleImageComplete(record, pollResp.imageUrl)
+          const imageUrl = pollResp.imageUrl
+          const base64 = (adapter as ReturnType<typeof getImageAdapter>).extractImageBase64(result)?.data
+          if (imageUrl || base64) {
+            await saveImageResult(record, { imageUrl, base64 })
             return
-          }
-          if (adapter.provider === 'gemini') {
-            // Gemini 可能返回 base64
-            const b64 = (adapter as ReturnType<typeof getImageAdapter>).extractImageBase64(result)
-            if (b64) {
-              logTaskSuccess(label, 'poll-base64-complete', { id: record.id, taskId, mimeType: b64.mimeType })
-              await handleImageCompleteBase64(record, b64.data, b64.mimeType)
-              return
-            }
           }
         } else {
           const delivery = resolveVideoDownload(config, taskId, pollResp.videoUrl)
@@ -810,7 +798,7 @@ async function pollComfyTask(record: SysTaskRecord, config: AIConfig, taskId: st
       return
     }
     if (result?.status === 'completed' && result.url) {
-      if (record.type === 'image') await handleImageComplete(record, result.url, comfyHeaders(config))
+      if (record.type === 'image') await saveImageResult(record, { imageUrl: result.url, headers: comfyHeaders(config) })
       else await handleVideoComplete(record, result.url, params.comfyui.duration, comfyHeaders(config))
       return
     }
@@ -819,88 +807,123 @@ async function pollComfyTask(record: SysTaskRecord, config: AIConfig, taskId: st
   await failTask(record.id, `ComfyUI 等待超时，上游任务可能仍在运行，请勿重复提交。${lastError}`, 'polling_timeout')
 }
 
-async function handleImageComplete(record: SysTaskRecord, imageUrl: string, headers?: Record<string, string>) {
-  const localPath = await downloadFile(imageUrl, 'images', headers)
-  if (!await validateGeneratedImageAspect(record, localPath)) return
-  // 列表页缩略图（前端按命名约定推导地址，失败不影响主流程）
-  await generateImageThumb(localPath)
-
-  await db.update(schema.sysTask)
-    .set({ resultUrl: imageUrl, localPath, status: 'completed', completedAt: now(), updatedAt: now() })
-    .where(eq(schema.sysTask.id, record.id))
-
-  logTaskSuccess('ImageTask', 'downloaded', { id: record.id, provider: record.provider, localPath })
-
-  await writeBackImageAssets(record, localPath)
-  scheduleRetiredUploadCleanup()
+class InvalidGeneratedImage extends Error {
+  constructor(message: string, public aspectMismatch = false) { super(message) }
 }
 
-async function handleImageCompleteBase64(record: SysTaskRecord, base64Data: string, mimeType: string) {
-  const localPath = await saveBase64Image(base64Data, mimeType, 'images')
-  if (!await validateGeneratedImageAspect(record, localPath)) return
-  await generateImageThumb(localPath)
-
-  await db.update(schema.sysTask)
-    .set({ localPath, status: 'completed', completedAt: now(), updatedAt: now() })
-    .where(eq(schema.sysTask.id, record.id))
-
-  logTaskSuccess('ImageTask', 'saved-base64', { id: record.id, provider: record.provider, mimeType, localPath })
-
-  await writeBackImageAssets(record, localPath)
-  scheduleRetiredUploadCleanup()
-}
-
-async function validateGeneratedImageAspect(record: SysTaskRecord, localPath: string) {
-  const params = parseTaskParams(record.params)
-  const galleryAspect = isGalleryImageAspect(params.galleryAspect) ? params.galleryAspect : undefined
-  if (!params.requireLandscape16x9 && !galleryAspect) return true
-  const absolute = getAbsolutePath(localPath)
-  const metadata = await sharp(absolute).metadata().catch(() => undefined)
-  const { width, height } = metadata?.autoOrient ?? metadata ?? {}
-  if (galleryAspect && width && height) {
-    const [w, h] = galleryAspect.split(':').map(Number)
-    const scale = Math.floor(Math.min(width / w, height / h))
-    if (width === w * scale && height === h * scale) return true
-    if (scale > 0) {
-      const temporary = `${absolute}.gallery-${record.id}${path.extname(absolute)}`
-      try {
-        await sharp(absolute).autoOrient().resize(w * scale, h * scale, { fit: 'cover', position: 'centre' }).toFile(temporary)
-        await rename(temporary, absolute)
-        return true
-      } catch {
-        await rm(temporary, { force: true }).catch(() => {})
+async function saveImageResult(record: SysTaskRecord, source: {
+  imageUrl?: string | null; base64?: string; headers?: Record<string, string>
+}) {
+  const { imageUrl, base64, headers } = source
+  const task = schema.sysTask
+  let localPath = record.localPath && fs.existsSync(getAbsolutePath(record.localPath)) ? record.localPath : null
+  let thumbnail: Buffer | undefined
+  // 上游已出图，先保存交付地址，下载或保存中断时可取回同一张图。
+  db.update(task).set({ status: 'processing', stage: base64 || localPath ? 'saving' : 'downloading',
+    resultUrl: imageUrl, localPath, errorMsg: null, errorCode: null, updatedAt: now() }).where(eq(task.id, record.id)).run()
+  try {
+    if (!localPath) {
+      let image: Awaited<ReturnType<typeof prepareGeneratedImage>> | undefined
+      if (typeof base64 === 'string' && base64) {
+        try {
+          image = await prepareGeneratedImage(record, Buffer.from(base64, 'base64'))
+        } catch (error) {
+          if (!(error instanceof InvalidGeneratedImage) || !imageUrl) throw error
+        }
       }
+      if (!image && imageUrl) {
+        if (base64) db.update(task).set({ stage: 'downloading', updatedAt: now() }).where(eq(task.id, record.id)).run()
+        image = await prepareGeneratedImage(record, await downloadImage(imageUrl, headers))
+      }
+      if (!image) throw new InvalidGeneratedImage('图片服务返回的文件无法读取，请重试或切换图片模型。')
+      localPath = await saveUploadedFile(image.buffer, 'images', 'result' + image.extension)
+      thumbnail = image.thumbnail
+      db.update(task).set({ localPath, stage: 'saving', updatedAt: now() }).where(eq(task.id, record.id)).run()
+    }
+
+    await generateImageThumb(localPath, thumbnail)
+    const completedPath = localPath
+    db.transaction(tx => {
+      writeBackImageAssets(tx, record, completedPath)
+      tx.update(task).set({ status: 'completed', stage: 'completed', completedAt: now(), updatedAt: now() })
+        .where(eq(task.id, record.id)).run()
+    })
+    logTaskSuccess('ImageTask', 'saved', { id: record.id, provider: record.provider, localPath })
+    scheduleRetiredUploadCleanup()
+  } catch (error) {
+    if (error instanceof InvalidGeneratedImage && (error.aspectMismatch || !imageUrl)) {
+      await failTask(record.id, error.message, 'image_aspect_invalid')
+    } else {
+      deferImageDelivery(record.id, error)
     }
   }
-  if (!galleryAspect && width && height && Math.abs(height - width * 9 / 16) <= 1) return true
-  await rm(absolute, { force: true }).catch(() => {})
-  const message = galleryAspect
-    ? '无法将模型返回的图片保存为所选比例，请重试或更换生图模型。'
-    : width && height
-    ? `图片为 ${width}×${height}，比例不符。请在右上角设置启用支持 16:9 横图的图片模型。`
-    : '图片服务返回的文件无法读取，请重试或切换图片模型。'
-  await failTask(record.id, message, 'image_aspect_invalid')
-  return false
 }
 
-// 图片完成后回写业务表：分镜(按 frameType)、角色、场景、道具
-async function writeBackImageAssets(record: SysTaskRecord, localPath: string) {
+function deferImageDelivery(id: number, error: unknown) {
+  logTaskWarn('ImageTask', 'delivery-pending', { id, error: safeTaskError(error) })
+  const timeout = error instanceof Error && ['TimeoutError', 'AbortError'].includes(error.name)
+  db.update(schema.sysTask).set({ status: 'delivery_pending', errorCode: 'image_delivery_pending',
+    errorMsg: timeout ? '图片已生成，原图下载超时。' : '图片已生成，暂未保存到资产。', updatedAt: now() })
+    .where(eq(schema.sysTask.id, id)).run()
+  scheduleRetiredUploadCleanup()
+}
+
+async function prepareGeneratedImage(record: SysTaskRecord, buffer: Buffer) {
   const params = parseTaskParams(record.params)
-  if (record.storyboardId) {
-    const sbUpdate: Record<string, any> = { updatedAt: now() }
-    if (params.frameType === 'first_frame') sbUpdate.firstFrameImage = localPath
-    else if (params.frameType === 'last_frame') sbUpdate.lastFrameImage = localPath
-    else sbUpdate.composedImage = localPath
-    await db.update(schema.storyboards).set(sbUpdate).where(eq(schema.storyboards.id, record.storyboardId))
+  const galleryAspect = isGalleryImageAspect(params.galleryAspect) ? params.galleryAspect : undefined
+  const image = sharp(buffer)
+  const metadata = await image.metadata().catch(() => undefined)
+  const { width, height } = metadata?.autoOrient ?? metadata ?? {}
+  if (!width || !height) throw new InvalidGeneratedImage('图片服务返回的文件无法读取，请重试或切换图片模型。')
+  const extension = imageExtensionFromMetadata(metadata, '')
+  let needsEncoding = !extension
+  if (galleryAspect) {
+    const [w, h] = galleryAspect.split(':').map(Number)
+    const scale = Math.floor(Math.min(width / w, height / h))
+    if (scale === 0) throw new InvalidGeneratedImage('模型返回的尺寸太小，无法裁成所选比例。', true)
+    if (width !== w * scale || height !== h * scale) {
+      image.autoOrient().resize(w * scale, h * scale, { fit: 'cover', position: 'centre' })
+      needsEncoding = true
+    }
+  } else if (params.requireLandscape16x9 && Math.abs(height - width * 9 / 16) > 1) {
+    throw new InvalidGeneratedImage(`图片为 ${width}×${height}，比例不符。请在右上角设置启用支持 16:9 横图的图片模型。`, true)
   }
-  if (record.characterId) {
-    await db.update(schema.characters).set({ imageUrl: localPath, updatedAt: now() }).where(eq(schema.characters.id, record.characterId))
+  if (!extension) image.png()
+  try {
+    const prepared = needsEncoding ? await image.toBuffer() : buffer
+    // 生成缩略图时同时验证像素可解码，避免把只有图片头的截断响应写成成品。
+    const thumbnail = await imageThumbnail(prepared).toBuffer()
+    return { buffer: prepared, extension: extension || '.png', thumbnail }
+  } catch {
+    throw new InvalidGeneratedImage('无法读取模型返回的原图。')
   }
-  if (record.sceneId) {
-    await db.update(schema.scenes).set({ imageUrl: localPath, status: 'completed', updatedAt: now() }).where(eq(schema.scenes.id, record.sceneId))
+}
+
+// 在同一事务里保存任务与资产。旧任务取回的原图留在历史记录中。
+function writeBackImageAssets(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], record: SysTaskRecord, localPath: string) {
+  const params = parseTaskParams(record.params)
+  const task = schema.sysTask
+  const newer = (field: 'storyboardId' | 'characterId' | 'sceneId' | 'propId', id: number) =>
+    tx.select({ params: task.params }).from(task).where(and(eq(task.type, 'image'), eq(task[field], id), gt(task.id, record.id))).all()
+  const frameField = (frameType: unknown) =>
+    frameType === 'first_frame' ? 'firstFrameImage' : frameType === 'last_frame' ? 'lastFrameImage' : 'composedImage'
+  const frame = frameField(params.frameType)
+  if (record.storyboardId && !newer('storyboardId', record.storyboardId)
+    .some(row => frameField(parseTaskParams(row.params).frameType) === frame)) {
+    tx.update(schema.storyboards).set({ [frame]: localPath, updatedAt: now() })
+      .where(and(eq(schema.storyboards.id, record.storyboardId), isNull(schema.storyboards.deletedAt))).run()
   }
-  if (record.propId) {
-    await db.update(schema.props).set({ imageUrl: localPath, updatedAt: now() }).where(eq(schema.props.id, record.propId))
+  if (record.characterId && !newer('characterId', record.characterId).length) {
+    tx.update(schema.characters).set({ imageUrl: localPath, updatedAt: now() })
+      .where(and(eq(schema.characters.id, record.characterId), isNull(schema.characters.deletedAt))).run()
+  }
+  if (record.sceneId && !newer('sceneId', record.sceneId).length) {
+    tx.update(schema.scenes).set({ imageUrl: localPath, status: 'completed', updatedAt: now() })
+      .where(and(eq(schema.scenes.id, record.sceneId), isNull(schema.scenes.deletedAt))).run()
+  }
+  if (record.propId && !newer('propId', record.propId).length) {
+    tx.update(schema.props).set({ imageUrl: localPath, updatedAt: now() })
+      .where(and(eq(schema.props.id, record.propId), isNull(schema.props.deletedAt))).run()
   }
 }
 
@@ -939,15 +962,46 @@ async function recoveryConfig(record: SysTaskRecord): Promise<AIConfig> {
   if (record.configId) {
     const config = await getConfigById(record.configId)
     if (config && config.provider === record.provider && config.baseUrl === record.configBaseUrl) return config
-    throw new Error('原视频服务配置已删除、停用或地址变更，请恢复原配置')
+    throw new Error(record.type === 'image' ? '原图片服务配置不可用，请恢复原配置' : '原视频服务配置已删除、停用或地址变更，请恢复原配置')
   }
   // 旧任务只在同厂商唯一配置时恢复，绝不任意换服务商查询。
-  const rows = (await db.select().from(schema.aiServiceConfigs)).filter(c => c.isActive && c.serviceType === 'video' && c.provider === record.provider)
+  const rows = (await db.select().from(schema.aiServiceConfigs)).filter(c => c.isActive && c.serviceType === record.type && c.provider === record.provider)
   if (rows.length === 1) {
     const config = await getConfigById(rows[0].id)
     if (config) return config
   }
   throw new Error('历史任务无法确定原服务配置，请先核对配置')
+}
+
+function midjourneyTaskId(record: SysTaskRecord): string | null {
+  const config = { provider: record.provider || '', baseUrl: record.configBaseUrl || '', model: record.model || '' }
+  return isMidjourneyImageConfig(config) ? record.taskId : null
+}
+
+export async function recoverImageTask(id: number): Promise<void> {
+  const record = db.select().from(schema.sysTask).where(eq(schema.sysTask.id, id)).get()
+  if (!record || record.type !== 'image') throw new Error('图片任务不存在')
+  if (activeTasks.has(id) || record.status === 'completed') return
+  if (record.status === 'canceled' || ['generation_failed', 'image_aspect_invalid'].includes(record.errorCode || '')) {
+    throw new Error('此任务没有可恢复的图片')
+  }
+  const hasLocalFile = record.localPath && fs.existsSync(getAbsolutePath(record.localPath))
+  if (!record.resultUrl && !hasLocalFile) {
+    const taskId = midjourneyTaskId(record)
+    if (!taskId) throw new Error('此任务未保留可取回的原图')
+    const config = await recoveryConfig(record)
+    runBackground(id, async () => {
+      await markPolling(id, taskId)
+      await pollTask(record, config, taskId)
+    })
+    return
+  }
+  const headers = record.provider === 'comfyui' && !hasLocalFile
+    ? comfyHeaders(await recoveryConfig(record)) : undefined
+  runBackground(id, () => withApiCallContext({
+    taskId: id, dramaId: record.dramaId || undefined, category: 'image',
+    provider: record.provider || undefined, model: record.model || undefined,
+  }, () => saveImageResult(record, { imageUrl: record.resultUrl, headers })))
 }
 
 export async function recoverVideoTask(id: number): Promise<void> {
@@ -1008,7 +1062,11 @@ export async function recoverVideoTask(id: number): Promise<void> {
 export async function resumeInterruptedTasks() {
   const tasks = await db.select().from(schema.sysTask).where(eq(schema.sysTask.status, 'processing')).orderBy(desc(schema.sysTask.id))
   for (const task of tasks) {
-    if (task.type === 'image' && task.provider === 'comfyui' && task.taskId) {
+    if (task.type === 'image' && (task.resultUrl || task.localPath || task.stage === 'saving')) {
+      try { await recoverImageTask(task.id) } catch (error) { deferImageDelivery(task.id, error) }
+    } else if (task.type === 'image' && midjourneyTaskId(task)) {
+      try { await recoverImageTask(task.id) } catch (error) { await failTask(task.id, safeTaskError(error), 'recovery_failed') }
+    } else if (task.type === 'image' && task.provider === 'comfyui' && task.taskId) {
       runBackground(task.id, async () => {
         const config = await getConfigById(task.configId!)
         if (!config || config.provider !== 'comfyui' || config.baseUrl !== task.configBaseUrl) throw new Error('原 ComfyUI 配置不可用，请恢复原配置')

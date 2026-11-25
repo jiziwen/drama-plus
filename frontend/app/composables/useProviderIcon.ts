@@ -43,6 +43,7 @@ const MODEL_PROVIDER_HINTS: [RegExp, string][] = [
   [/qwen|^wan[\d.-]/i, 'qwen'],
   [/glm|zhipu|chatglm/i, 'zhipu'],
   [/grok/i, 'xai'],
+  [/^mj_(imagine|blend)$/i, 'midjourney'],
   [/^(gpt|chatgpt|o[1-9])/i, 'openai'],
 ]
 

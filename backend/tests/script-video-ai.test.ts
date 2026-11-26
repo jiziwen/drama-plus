@@ -590,7 +590,7 @@ test('script-to-video uses non-streaming Chat Completions, keeps tools and limit
     })
     assert.equal(result.cards[0].title, outline.title)
     assert.equal(messages.length, 2)
-    assert.ok(messages.every(message => !message.stream), 'read_skill and submit_draft receive complete JSON replies')
+    assert.ok(messages.every(message => message.stream === false), 'read_skill and submit_draft explicitly request complete JSON replies')
     assert.equal(messages[0].model, 'fixture-text')
     assert.ok(messages[0].tools.some((tool) => tool.function.name === 'submit_draft'))
     assert.ok(
@@ -804,7 +804,7 @@ test('script-to-video uses non-streaming Chat Completions, keeps tools and limit
     assert.match(cultivationInstructions, /正式返回格式：调用 submit_draft 一次/u)
     assert.match(cultivationInstructions, /cards 每项必填/u)
     assert.match(cultivationInstructions, /shots 每项必填/u)
-    assert.ok(messages.every(message => !message.stream), 'all script-to-video stages send non-streaming requests')
+    assert.ok(messages.every(message => message.stream === false), 'all script-to-video stages send non-streaming requests')
 
     await t.test('AICost Haiku submits the outline with the named structured tool', async (t) => {
       const aicostConfig = db.insert(schema.aiServiceConfigs).values({

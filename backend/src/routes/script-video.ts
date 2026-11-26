@@ -255,11 +255,28 @@ function storyboardResumeKey(project: ScriptVideoProject, episodeId: string, bod
     textOptions,
   })).digest('hex')
 }
-async function storyboardBatchSize(configId?: number) {
+async function storyboardBatchSize(configId: number | undefined, job: ScriptVideoJob) {
+  const { checkpoint, progress } = job
+  const partial = checkpoint?.partialRaw
+  // A legacy attempt can use the current batching rule when it stopped before receiving any draft.
+  if (checkpoint && (
+    progress?.batchSize !== undefined || progress?.phase !== 'generating' || progress.completed ||
+    progress.repairAttempts || progress.segmentRepairAttempts ||
+    checkpoint.cards.length || checkpoint.production || checkpoint.timingPlan || checkpoint.candidate ||
+    partial?.cards.length || partial?.production !== undefined || partial?.placement?.length ||
+    checkpoint.repairAttempts || checkpoint.segmentRepairAttempts || checkpoint.repairFeedback?.length ||
+    checkpoint.reviewRepairs || checkpoint.repairIssues?.length || checkpoint.reviewDrafts?.length || checkpoint.reviewed
+  )) return progress?.batchSize
+
   const config = configId == null
     ? await getActiveConfig('text')
     : Number.isSafeInteger(configId) && configId > 0 ? await getConfigById(configId) : undefined
-  if (config && config.provider.toLowerCase() !== 'gemini' && isAicostHost(getTextProviderBaseUrl(config))) return 1
+  if (!config) return
+  const provider = config.provider.toLowerCase()
+  if (provider === 'gemini') return
+  const baseUrl = getTextProviderBaseUrl(config)
+  const host = URL.parse(baseUrl)?.hostname
+  if (provider === '302ai' || host === 'api.302.ai' || host === 'api.302ai.com' || isAicostHost(baseUrl)) return 1
 }
 function requireConfirmed(ep: any, action: Action) {
   if (!ep.confirmed || !String(ep.confirmedScript || '').trim())
@@ -1268,7 +1285,7 @@ export function createScriptVideoRoutes(
                 ...input,
                 outline: ep.cards,
               }, undefined, {
-                batchSize: await storyboardBatchSize(input.configId),
+                batchSize: await storyboardBatchSize(input.configId, job),
                 checkpoint: job.checkpoint,
                 onProgress: async (progress, checkpoint) => {
                   signal.throwIfAborted()

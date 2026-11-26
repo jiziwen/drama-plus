@@ -9,6 +9,16 @@ export function selectAgentOpenAIModel(provider: OpenAIProvider, model: string, 
   return official ? provider.responses(model) : provider.chat(model)
 }
 
+/** The SDK omits `stream` for JSON generation and sets it explicitly for chat streaming. */
+export function withExplicitOpenAIStream(base: typeof fetch): typeof fetch {
+  return async (input, init) => {
+    if (typeof init?.body !== 'string') return base(input, init)
+    const body = JSON.parse(init.body)
+    if (body.stream !== undefined) return base(input, init)
+    return base(input, { ...init, body: JSON.stringify({ ...body, stream: false }) })
+  }
+}
+
 /** Older SDK releases do not recognize GPT-6 reasoning capabilities yet. */
 export function adaptOfficialOpenAIFetch(base: typeof fetch): typeof fetch {
   return async (input, init) => {

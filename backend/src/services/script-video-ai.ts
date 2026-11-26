@@ -847,11 +847,10 @@ async function execute<T>(
       if (err instanceof ScriptVideoAIError) throw err
       if (isModelTimeout(err)) {
         const step =
-          task.stage === 'storyboard'
-            ? task.mode === 'episode'
-              ? '整集分镜'
-              : '整集复核'
-            : '本次请求'
+          task.stage !== 'storyboard' ? '本次请求'
+            : task.mode === 'continuity_review' ? '整集复核'
+            : task.batchSize === 1 ? `第${task.lockedCount + 1}段分镜`
+            : '整集分镜'
         throw new ScriptVideoAIError('MODEL_TIMEOUT', step + '的上游文字模型响应超时。', [], 504)
       }
       throw new ScriptVideoAIError(

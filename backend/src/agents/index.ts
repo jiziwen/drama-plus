@@ -13,7 +13,7 @@ import type { RequestContext } from '@mastra/core/request-context'
 import { createGoogleGenerativeAI } from '@ai-sdk/google'
 import { createOpenAI } from '@ai-sdk/openai'
 import { Agent as HttpAgent, EnvHttpProxyAgent } from 'undici'
-import { adaptAicostTextFetch, adaptOfficialOpenAIFetch, isAicostHaiku55, selectAgentOpenAIModel } from './openai-model.js'
+import { adaptAicostTextFetch, adaptOfficialOpenAIFetch, isAicostHaiku55, selectAgentOpenAIModel, withExplicitOpenAIStream } from './openai-model.js'
 import { getTextConfig, getTextProviderBaseUrl, getConfigById } from '../services/ai.js'
 import { resolveTextModelLimits } from '../services/script-video-output-limit.js'
 import { SCRIPT_VIDEO_TEXT_TIMEOUT_MS } from '../services/script-video-text-timeout.js'
@@ -362,10 +362,11 @@ async function getModel(fileModel: string | undefined, modelOverride?: string, t
     return { model: googleProvider(modelName), ...limits, aicostHaiku55: false }
   }
 
+  const openaiTransport = isOfficialOpenAIHost(resolvedBaseURL) ? adaptOfficialOpenAIFetch(transport) : transport
   const provider = createOpenAI({
     baseURL: resolvedBaseURL,
     apiKey: textConfig.apiKey,
-    fetch: bindApiCallFetch({ provider: providerName, model: modelName, category: 'text' }, isOfficialOpenAIHost(resolvedBaseURL) ? adaptOfficialOpenAIFetch(transport) : transport),
+    fetch: bindApiCallFetch({ provider: providerName, model: modelName, category: 'text' }, withExplicitOpenAIStream(openaiTransport)),
   } as any)
   return { model: selectAgentOpenAIModel(provider, modelName, resolvedBaseURL), ...limits, aicostHaiku55 }
 }

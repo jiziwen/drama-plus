@@ -972,19 +972,22 @@ test('AI and paid video jobs reject stale writes and prevent duplicate submissio
 
     const { db, schema } = await import('../src/db/index')
     const now = new Date().toISOString()
-    const [aicost, other] = db.insert(schema.aiServiceConfigs).values([
+    const [aicost, other, native302, legacy302Ai, legacy302Com] = db.insert(schema.aiServiceConfigs).values([
       { serviceType: 'text', provider: 'openai', name: 'AICost fixture', baseUrl: 'https://www.aicost.me/v1', apiKey: 'fixture', model: '["model-a"]', priority: 1000, createdAt: now, updatedAt: now },
-      { serviceType: 'text', provider: 'openai', name: 'Other fixture', baseUrl: 'https://api.302.ai/v1', apiKey: 'fixture', model: '["model-a"]', createdAt: now, updatedAt: now },
+      { serviceType: 'text', provider: 'openai', name: 'Other fixture', baseUrl: 'https://api.example.test/v1', apiKey: 'fixture', model: '["model-a"]', createdAt: now, updatedAt: now },
+      { serviceType: 'text', provider: '302ai', name: '302.AI fixture', baseUrl: 'https://router.example.test/v1', apiKey: 'fixture', model: '["model-a"]', createdAt: now, updatedAt: now },
+      { serviceType: 'text', provider: 'openai', name: '302.AI alias fixture', baseUrl: 'https://api.302.ai/v1', apiKey: 'fixture', model: '["model-a"]', createdAt: now, updatedAt: now },
+      { serviceType: 'text', provider: 'openai', name: '302.AI compatible fixture', baseUrl: 'https://api.302ai.com/v1', apiKey: 'fixture', model: '["model-a"]', createdAt: now, updatedAt: now },
     ]).returning({ id: schema.aiServiceConfigs.id }).all()
-    const batchSizes: Array<number | undefined> = []
+    const batchRuns: Array<{ size?: number; received?: number }> = []
     const batchedApp = createScriptVideoRoutes(restarted, { ...dependencies,
       generateScriptVideoCards: async (input, _runner, options) => {
-        batchSizes.push(options?.batchSize)
+        batchRuns.push({ size: options?.batchSize, received: options?.checkpoint?.partialRaw?.cards.length })
         return dependencies.generateScriptVideoCards(input)
       },
     })
-    for (const configId of [aicost.id, other.id, undefined]) {
-      const response = await batchedApp.request(endpoint, postOptions({ configId, model: 'model-a' }))
+    async function runStoryboard(app: typeof batchedApp, body: Record<string, unknown>) {
+      const response = await app.request(endpoint, postOptions({ model: 'model-a', ...body }))
       assert.equal(response.status, 201)
       const { data } = await response.json() as any
       let job = await restarted.getJob(partial.id, data.id)
@@ -992,9 +995,30 @@ test('AI and paid video jobs reject stale writes and prevent duplicate submissio
         await new Promise(resolve => setTimeout(resolve, 10))
         job = await restarted.getJob(partial.id, data.id)
       }
-      assert.equal(job.status, 'completed')
+      return job
     }
-    assert.deepEqual(batchSizes, [1, undefined, 1])
+    for (const configId of [aicost.id, other.id, native302.id, legacy302Ai.id, legacy302Com.id, undefined]) {
+      assert.equal((await runStoryboard(batchedApp, { configId })).status, 'completed')
+    }
+    assert.deepEqual(batchRuns.map(run => run.size), [1, undefined, 1, 1, 1, 1])
+
+    const legacy302App = createScriptVideoRoutes(restarted, { ...dependencies,
+      generateScriptVideoCards: async (input, _runner, options) => {
+        const cards = input.systemPrompt === '旧任务已收到分镜' ? input.outline.slice(0, 1) : []
+        await options!.onProgress!({
+          phase: 'generating', completed: cards.length, total: input.outline.length,
+        }, { cards: [], attempts: 1, partialRaw: { cards } })
+        throw Object.assign(new Error('整集分镜超时'), { name: 'ScriptVideoAIError', code: 'MODEL_TIMEOUT' })
+      },
+    })
+    for (const systemPrompt of ['旧任务尚未收到分镜', '旧任务已收到分镜']) {
+      const body = { configId: native302.id, storyboardMode: 'cultivation', systemPrompt }
+      const previous = await runStoryboard(legacy302App, body)
+      assert.equal(previous.code, 'MODEL_TIMEOUT')
+      const resumed = await runStoryboard(batchedApp, { ...body, resumeFromJobId: previous.id })
+      assert.equal(resumed.status, 'completed')
+    }
+    assert.deepEqual(batchRuns.slice(-2), [{ size: 1, received: 0 }, { size: undefined, received: 1 }])
   } finally {
     for (const store of stores.reverse()) await store.close()
     if (previousDb === undefined) delete process.env.SQLITE_PATH; else process.env.SQLITE_PATH = previousDb

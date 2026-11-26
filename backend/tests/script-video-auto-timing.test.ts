@@ -208,7 +208,7 @@ test('HTTP 524 during batched generation saves the accepted prefix and resumes w
   }, {
     batchSize: 1,
     onProgress: (_, checkpoint) => { saved = structuredClone(checkpoint) },
-  }), { code: 'MODEL_TIMEOUT' })
+  }), { code: 'MODEL_TIMEOUT', message: '第2段分镜的上游文字模型响应超时。' })
   assert.deepEqual(requested, [['mail-1'], ['mail-2']])
   assert.deepEqual(saved?.cards.map(card => card.id), ['mail-1'])
   assert.equal(saved?.repairAttempts, 0)

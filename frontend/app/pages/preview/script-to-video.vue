@@ -243,15 +243,24 @@
           v-bind="assetImportReport"
         />
         <div class="vp-material-grid">
-          <button
-            v-for="asset in assets.slice(0, 24)"
-            :key="asset.id"
-            @click="editAsset(asset.id)"
-          >
-            <span><ScriptVideoPreviewAssetImage :asset="asset" /></span
-            ><strong>{{ asset.name }}</strong
-            ><small>{{ kindLabel(asset.kind) }}<template v-if="asset.imagePrompt && (!asset.image || assetImageRunning(asset))"> · {{ assetImageStatusLabel(asset) }}</template></small>
-          </button>
+          <div v-for="asset in assets.slice(0, 24)" :key="asset.id" class="vp-material-card">
+            <button
+              v-if="asset.image"
+              type="button"
+              class="vp-material-thumb vp-asset-preview-trigger"
+              :aria-label="`查看${asset.name}大图`"
+              aria-haspopup="dialog"
+              title="点击查看大图"
+              @click="assetImagePreview?.open(asset.image, asset.name, $event.currentTarget)"
+            >
+              <ScriptVideoPreviewAssetImage :asset="asset" />
+            </button>
+            <button type="button" class="vp-material-edit" aria-haspopup="dialog" @click="editAsset(asset.id)">
+              <span v-if="!asset.image" class="vp-material-thumb"><ScriptVideoPreviewAssetImage :asset="asset" /></span>
+              <strong>{{ asset.name }}</strong>
+              <small>{{ kindLabel(asset.kind) }}<template v-if="asset.imagePrompt && (!asset.image || assetImageRunning(asset))"> · {{ assetImageStatusLabel(asset) }}</template></small>
+            </button>
+          </div>
         </div>
         <button class="btn vp-wide" @click="dialog = 'assets'">
           <Images :size="14" />管理全部 {{ assets.length }} 项资产
@@ -656,6 +665,7 @@
       hidden
       @change="importAssets"
     />
+    <AssetImagePreview ref="assetImagePreview" />
     <Teleport to="body"
       ><div
         v-if="dialog && (episodeOpen || dialog === 'project' || dialog === 'project-video-export')"
@@ -1003,7 +1013,18 @@
                     :class="{ focused: editingAssetId === asset.id }"
                     :title="asset.sourcePath || asset.name"
                   >
-                    <span class="vp-asset-edit-image"><ScriptVideoPreviewAssetImage :asset="asset" /></span>
+                    <button
+                      v-if="asset.image"
+                      type="button"
+                      class="vp-asset-edit-image vp-asset-preview-trigger"
+                      :aria-label="`查看${asset.name}大图`"
+                      aria-haspopup="dialog"
+                      title="点击查看大图"
+                      @click="assetImagePreview?.open(asset.image, asset.name, $event.currentTarget)"
+                    >
+                      <ScriptVideoPreviewAssetImage :asset="asset" />
+                    </button>
+                    <span v-else class="vp-asset-edit-image"><ScriptVideoPreviewAssetImage :asset="asset" /></span>
                     <div class="vp-asset-edit-fields">
                       <ScriptVideoAssetNameInput
                         :name="asset.name"
@@ -1424,6 +1445,7 @@ import {
 import { toast } from 'vue-sonner'
 import { useI18n } from 'vue-i18n'
 import { onBeforeRouteLeave } from 'vue-router'
+import AssetImagePreview from '~/components/AssetImagePreview.vue'
 import ScriptVideoEpisodePreview from '~/components/ScriptVideoEpisodePreview.vue'
 import { useScriptVideoEpisodeLock } from '~/composables/useScriptVideoEpisodeLock'
 import { useScriptVideoReferenceFrames } from '~/composables/useScriptVideoReferenceFrames'
@@ -1827,6 +1849,7 @@ const assetImageModelKey = ref('')
 const assetImageModels = shallowRef<(ProjectModelOption & { key: string })[]>([])
 const assetImageModelsLoading = ref(false)
 const assetImageModelsError = ref('')
+const assetImagePreview = ref<InstanceType<typeof AssetImagePreview>>()
 const selectedAssetImages = ref(new Set<string>())
 const assetImageSubmissions = reactive(new Set<string>())
 const batchAssetImageTargets = computed(() => assets.value.filter(asset => canGenerateAssetImage(asset) && (
@@ -5733,16 +5756,20 @@ onBeforeUnmount(() => {
   grid-template-columns: repeat(3, 1fr);
   gap: 15px;
 }
-.vp-material-grid button {
+.vp-material-card {
+  min-width: 0;
+}
+.vp-material-card > button {
+  display: block;
+  width: 100%;
   border: 0;
   padding: 0;
   background: none;
   text-align: left;
   color: var(--text-1);
   cursor: pointer;
-  min-width: 0;
 }
-.vp-material-grid button > span {
+.vp-material-card .vp-material-thumb {
   display: block;
   height: 85px;
   border: 1px solid var(--border);
@@ -6272,6 +6299,15 @@ onBeforeUnmount(() => {
   overflow: hidden;
   border-radius: 7px;
   border: 1px solid var(--border);
+}
+button.vp-asset-preview-trigger {
+  padding: 0;
+  background: transparent;
+  cursor: zoom-in;
+}
+.vp-asset-preview-trigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .vp-asset-edit-row.focused {
   border-color: var(--accent);

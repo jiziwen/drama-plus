@@ -63,7 +63,8 @@
       <article v-for="asset in visibleAssets" :key="`${asset.kind}-${asset.id}`" class="gallery-card card">
         <div class="gallery-art" :class="{ 'gallery-art-fit': asset.aspect }">
           <button v-if="imageOf(asset)" type="button" class="gallery-preview-trigger"
-            :aria-label="`查看${asset.name}大图`" aria-haspopup="dialog" title="点击查看大图" @click="openPreview(asset)">
+            :aria-label="`查看${asset.name}大图`" aria-haspopup="dialog" title="点击查看大图"
+            @click="imagePreview?.open(imageOf(asset), asset.name, $event.currentTarget)">
             <img :key="imageOf(asset)" :src="thumbOf(imageOf(asset))" :alt="asset.name" loading="lazy"
               @error="thumbFallback($event, imageOf(asset))" />
           </button>
@@ -97,15 +98,8 @@
       </article>
     </div>
 
+    <AssetImagePreview ref="imagePreview" />
     <Teleport to="body">
-      <dialog ref="previewDialog" class="gallery-image-dialog" :aria-label="`${previewAsset?.name ?? '资产'}大图`"
-        @click="closePreviewOnBackdrop" @close="previewAsset = null">
-        <div class="gallery-image-head">
-          <h2>{{ previewAsset?.name }}</h2>
-          <button type="button" class="btn btn-icon" aria-label="关闭大图" @click="previewDialog?.close()"><X :size="18" /></button>
-        </div>
-        <div class="gallery-image-body"><img v-if="previewAsset" :src="previewAsset.image" :alt="previewAsset.name" /></div>
-      </dialog>
       <dialog ref="editorDialog" class="gallery-editor" aria-labelledby="gallery-editor-title" @cancel="onEditorCancel" @close="onEditorClose">
         <form v-if="editor" @submit.prevent="submitEditor">
           <header class="gallery-editor-head">
@@ -171,6 +165,7 @@
 
 <script setup lang="ts">
 import { Search, Pencil, LoaderCircle, FolderKanban, Images, ArrowUpRight, UsersRound, Mountain, Box, Sparkles, X, Plus, RotateCcw, Trash2, Download } from 'lucide-vue-next'
+import AssetImagePreview from '~/components/AssetImagePreview.vue'
 import { galleryAssetAPI, listAllDramas, taskAPI } from '~/composables/useApi'
 import { thumbOf, thumbFallback } from '~/composables/useMedia'
 import { GALLERY_IMAGE_ASPECTS, type GalleryAsset, type GalleryAssetKind, type GalleryImageAspect } from '../../../backend/src/services/gallery-asset-types'
@@ -206,8 +201,7 @@ const error = ref('')
 const notice = ref('')
 const editor = ref<Editor | null>(null)
 const editorDialog = ref<HTMLDialogElement>()
-const previewDialog = ref<HTMLDialogElement>()
-const previewAsset = ref<{ name: string; image: string } | null>(null)
+const imagePreview = ref<InstanceType<typeof AssetImagePreview>>()
 const editorError = ref('')
 const saving = ref(false)
 const models = ref<ProjectModelOption[]>([])
@@ -236,21 +230,6 @@ const generationLabel = (asset: GalleryAsset) => asset.image || asset.task ? '�
 function imageOf(asset: GalleryAsset) {
   const source = asset.image || ''
   return source && !source.startsWith('/') && !/^https?:\/\//i.test(source) ? `/${source}` : source
-}
-
-async function openPreview(asset: GalleryAsset) {
-  const image = imageOf(asset)
-  if (!image || previewDialog.value?.open) return
-  previewAsset.value = { name: asset.name, image }
-  await nextTick()
-  previewDialog.value?.showModal()
-}
-
-function closePreviewOnBackdrop(event: MouseEvent) {
-  const dialog = previewDialog.value
-  if (!dialog || event.target !== dialog) return
-  const rect = dialog.getBoundingClientRect()
-  if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) dialog.close()
 }
 
 function assetStatus(asset: GalleryAsset) {
@@ -468,14 +447,6 @@ onBeforeUnmount(() => {
 .gallery-card-actions { flex-wrap: wrap; }
 .gallery-task-message { margin-top: 8px; color: var(--text-2); font-size: 11px; overflow-wrap: anywhere; }
 .gallery-editor-error, .gallery-failed { color: var(--action-danger); }
-
-.gallery-image-dialog { width: min(1200px, 94vw); max-width: 94vw; max-height: 92dvh; margin: auto; padding: 0; overflow: hidden; border: 1px solid var(--surface-outline-strong); border-radius: 14px; background: var(--surface-raised); color: var(--text-1); }
-.gallery-image-dialog::backdrop { background: rgb(0 0 0 / 75%); }
-.gallery-image-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--surface-outline); }
-.gallery-image-head h2 { min-width: 0; margin: 0; overflow-wrap: anywhere; font-size: 15px; color: var(--text-0); }
-.gallery-image-head button { flex-shrink: 0; }
-.gallery-image-body { display: grid; place-items: center; padding: 12px; overflow: auto; max-height: calc(92dvh - 58px); }
-.gallery-image-body img { display: block; max-width: 100%; max-height: calc(92dvh - 82px); object-fit: contain; }
 
 .gallery-editor { width: min(570px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); margin: auto; padding: 0; border: 1px solid var(--surface-outline-strong); border-radius: 15px; background: var(--surface-raised); color: var(--text-1); box-shadow: var(--shadow-elevated); }
 .gallery-editor::backdrop { background: rgb(0 0 0 / 58%); }

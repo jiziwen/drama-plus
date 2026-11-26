@@ -3008,7 +3008,7 @@ function assetImageRunning(asset: PreviewAsset) {
   return asset.imageStatus === 'generating' || assetImageSubmissions.has(`${currentProject.value.id}/${asset.id}`)
 }
 function canGenerateAssetImage(asset: PreviewAsset) {
-  return asset.kind !== 'audio' && !!asset.imagePrompt?.trim() && !assetImageRunning(asset) && !replacingImages.has(asset.id)
+  return asset.kind !== 'audio' && !!asset.imagePrompt?.trim() && !assetImageRunning(asset) && !replacingImages.value.has(asset.id)
 }
 function assetImageStatusLabel(asset: PreviewAsset) {
   if (assetImageRunning(asset)) return '生成中'
@@ -4873,21 +4873,34 @@ watch(() => pageVisible.value && episodeOpen.value && (
   onCleanup(() => { controller.abort(); clearTimeout(timer) })
 })
 let requestActivityRefresh: (() => void) | undefined
+type EpisodeActivity = {
+  revision: number
+  episodeRevision: number
+  jobs: ScriptVideoClientJob[]
+  activeCardIds: string[]
+  queuedCardIds?: string[]
+}
+function isEpisodeActivity(value: unknown): value is EpisodeActivity {
+  if (!value || typeof value !== 'object') return false
+  const activity = value as Partial<EpisodeActivity>
+  return Number.isFinite(activity.revision) && Number.isFinite(activity.episodeRevision) &&
+    Array.isArray(activity.jobs) && Array.isArray(activity.activeCardIds) &&
+    (activity.queuedCardIds === undefined || Array.isArray(activity.queuedCardIds))
+}
 watch(() => pageVisible.value && episodeOpen.value ? episodeKey.value : '', (scope, _, onCleanup) => {
   if (!scope) return
   const projectId = currentProject.value.id, episodeId = currentEpisode.value.id
   const ctrl = new AbortController()
   let timer: ReturnType<typeof setTimeout> | undefined
   let polling = false
-  type Activity = { revision: number; episodeRevision: number; tasks: Task[]; jobs: ScriptVideoClientJob[]; activeCardIds: string[]; queuedCardIds: string[] }
   async function poll() {
     if (polling || ctrl.signal.aborted) return
     polling = true
     clearTimeout(timer)
     try {
       const signal = AbortSignal.any([ctrl.signal, AbortSignal.timeout(8000)])
-      const status = await scriptVideoRequest<Activity>(`/projects/${projectId}/episodes/${episodeId}/activity`, 'GET', undefined, signal)
-      if (ctrl.signal.aborted || episodeKey.value !== scope) return
+      const status = await scriptVideoRequest<unknown>(`/projects/${projectId}/episodes/${episodeId}/activity`, 'GET', undefined, signal)
+      if (ctrl.signal.aborted || episodeKey.value !== scope || !isEpisodeActivity(status)) return
       sharedActivity.value = { scope, activeCardIds: status.activeCardIds, queuedCardIds: status.queuedCardIds || [] }
       const episode = currentEpisode.value
       const bodyChanged = status.episodeRevision > (episode._episodeRevision ?? -1)
@@ -4898,12 +4911,14 @@ watch(() => pageVisible.value && episodeOpen.value ? episodeKey.value : '', (sco
         const project = currentProject.value
         const previous = project.episodes[project.episodes.findIndex(item => item.id === episodeId) - 1]
         if (previous) {
-          const source = await scriptVideoRequest<Activity>(`/projects/${projectId}/episodes/${previous.id}/activity`, 'GET', undefined, signal)
+          const source = await scriptVideoRequest<unknown>(`/projects/${projectId}/episodes/${previous.id}/activity`, 'GET', undefined, signal)
           if (ctrl.signal.aborted || episodeKey.value !== scope) return
-          referenceSourceActivity.value = { scope, episodeId: previous.id, queuedCardIds: source.queuedCardIds || [] }
-          if (previous._loaded === false || source.episodeRevision > (previous._episodeRevision ?? -1))
-            await refreshProject(projectId, previous.id, signal, false)
-          if (ctrl.signal.aborted || episodeKey.value !== scope) return
+          if (isEpisodeActivity(source)) {
+            referenceSourceActivity.value = { scope, episodeId: previous.id, queuedCardIds: source.queuedCardIds || [] }
+            if (previous._loaded === false || source.episodeRevision > (previous._episodeRevision ?? -1))
+              await refreshProject(projectId, previous.id, signal, false)
+            if (ctrl.signal.aborted || episodeKey.value !== scope) return
+          }
         }
       }
       const active = status.jobs.find(job => job.action !== 'video' && ['queued','running'].includes(job.status))

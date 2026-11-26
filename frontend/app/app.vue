@@ -1,6 +1,6 @@
 <template>
   <div :inert="settingsOpen || undefined"><NuxtLayout :name="route.meta.layout === false ? false : isCinematic ? 'cinematic' : 'default'">
-    <NuxtPage />
+    <WorkspacePageOutlet />
   </NuxtLayout></div>
   <Toaster position="top-right" :duration="3000" :theme="resolvedTheme" />
   <SettingsPanel />

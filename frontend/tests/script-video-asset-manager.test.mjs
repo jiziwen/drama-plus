@@ -129,6 +129,32 @@ test('从引用打开编辑时清空旧搜索并切到目标分类，保证目�
   assert.equal(app.managedAssets.value.length, 5)
 })
 
+test('资产弹框在已有生图提示词和后台更新出图状态时都能显示批量目标', () => {
+  const imageGenerationController = ts.transpileModule([
+    section('const selectedAssetImages =', 'const assetManageSearch ='),
+    section('const replacingImages =', 'async function replaceAssetImage('),
+    section('function assetImageRunning(', 'function assetImageStatusLabel('),
+  ].join('\n'), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+  }).outputText
+  const assets = ref([{ id: 'gate', kind: 'scene', imagePrompt: '北城门' }])
+  const { batchAssetImageTargets, replacingImages } = runInNewContext(
+    imageGenerationController + '\n;({ batchAssetImageTargets, replacingImages })',
+    { assets, currentProject: ref({ id: 'project' }), computed, ref, reactive: vue.reactive },
+  )
+
+  const targetIds = () => Array.from(batchAssetImageTargets.value, asset => asset.id)
+  assert.deepEqual(targetIds(), ['gate'])
+  assets.value = [{ ...assets.value[0], imageStatus: 'generating' }]
+  assert.deepEqual(targetIds(), [])
+  assets.value = [{ ...assets.value[0], imageStatus: 'failed' }]
+  assert.deepEqual(targetIds(), ['gate'])
+  replacingImages.value.add('gate')
+  assert.deepEqual(targetIds(), [])
+  replacingImages.value.delete('gate')
+  assert.deepEqual(targetIds(), ['gate'])
+})
+
 test('资产名称保存保留 Unicode 原文，纯空输入回填原值，重名沿用编号', async () => {
   const renameController = ts.transpileModule([
     section('function uniqueName(', 'function validReferenceAudio('),

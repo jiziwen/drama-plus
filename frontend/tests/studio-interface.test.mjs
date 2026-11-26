@@ -74,6 +74,75 @@ function loadMiddleware(storage = new Map(), unavailable = false) {
   return exports.default
 }
 
+test('the workspace offers a retry when page rendering fails and remounts only on retry', async (t) => {
+  const filename = 'components/WorkspacePageOutlet.vue'
+  const { descriptor } = parse(read(filename), { filename })
+  const script = compileScript(descriptor, { id: 'workspace-page-test', inlineTemplate: true })
+  const { outputText } = ts.transpileModule(script.content, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+  })
+  const currentRoute = vue.shallowRef({ path: '/assets' })
+  const exports = {}
+  runInNewContext(outputText, { exports, require, useRouter: () => ({ currentRoute }) })
+
+  const makeNode = tag => ({ tag, children: [], props: {} })
+  const root = makeNode('root')
+  function remove(node) {
+    if (!node.parent) return
+    const siblings = node.parent.children
+    siblings.splice(siblings.indexOf(node), 1)
+    node.parent = null
+  }
+  const renderer = vue.createRenderer({
+    createElement: makeNode, createText: () => makeNode('#text'), createComment: () => makeNode('#comment'),
+    insert(node, parent, anchor) {
+      remove(node)
+      node.parent = parent
+      if (anchor) parent.children.splice(parent.children.indexOf(anchor), 0, node)
+      else parent.children.push(node)
+    },
+    remove, parentNode: node => node.parent,
+    nextSibling(node) {
+      const siblings = node.parent?.children
+      return siblings?.[siblings.indexOf(node) + 1] ?? null
+    },
+    patchProp(node, key, _, value) { node.props[key] = value },
+    setText() {}, setElementText() {},
+  })
+  const broken = vue.ref(false)
+  let mounts = 0
+  const error = new Error('Page rendering failed')
+  const errors = []
+  const app = renderer.createApp(exports.default)
+  app.config.errorHandler = captured => errors.push(captured)
+  app.component('NuxtPage', { setup() {
+    mounts++
+    return () => {
+      if (broken.value) throw error
+      return vue.h('article')
+    }
+  } })
+  app.mount(root)
+  t.after(() => app.unmount())
+  const elements = () => root.children.filter(node => !node.tag.startsWith('#'))
+
+  assert.deepEqual(elements().map(node => node.tag), ['article'])
+  currentRoute.value = { path: '/novel-to-script' }
+  await vue.nextTick()
+  assert.equal(mounts, 1)
+
+  broken.value = true
+  await vue.nextTick()
+  assert.deepEqual(errors, [error])
+  assert.deepEqual(elements().map(node => node.tag), ['section'])
+  const retry = elements()[0].children.find(node => node.tag === 'button').props.onClick
+  broken.value = false
+  retry()
+  await vue.nextTick()
+  assert.deepEqual(elements().map(node => node.tag), ['article'])
+  assert.equal(mounts, 2)
+})
+
 test('existing business routes preserve preview, query and hash; classic is a real exit', () => {
   const route = loadMiddleware()
   for (const path of ['/', '/assets', '/settings', '/drama/42', '/drama/42/episode/3']) {

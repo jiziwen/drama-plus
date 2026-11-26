@@ -71,9 +71,9 @@ test('settings page offers official default model IDs', () => {
   assert.doesNotMatch(settingsPage, /speech-2\.8-hd/)
 })
 
-test('CLI video configs expose account details and text, ComfyUI and AICost offer a connection test', () => {
+test('CLI video configs expose account details and text, ComfyUI, AICost and 302.AI offer a connection test', () => {
   assert.match(settingsPage, /v-if="isServerVideoCli\(c\.provider\)" class="btn btn-ghost btn-sm" @click="startEditCfg\(c\)">\{\{ t\('settings\.jimeng\.viewAccount'\) \}\}/)
-  assert.match(settingsPage, /v-else-if="st\.type === 'text' \|\| \['comfyui', 'aicost'\]\.includes\(c\.provider\)" class="btn btn-ghost btn-sm" @click="testExistingCfg\(c\)">\{\{ t\('settings\.ai\.test'\) \}\}/)
+  assert.match(settingsPage, /v-else-if="st\.type === 'text' \|\| \['comfyui', 'aicost', '302ai'\]\.includes\(c\.provider\)" class="btn btn-ghost btn-sm" @click="testExistingCfg\(c\)">\{\{ t\('settings\.ai\.test'\) \}\}/)
 })
 
 test('settings page offers the supported official provider presets', () => {
@@ -116,8 +116,17 @@ test('AICost is offered only for video and its preset starts without models', ()
     cfgForm.service_type = type
     assert.ok(!context.providerSelectOptions().some(option => ['aicost', 'libtv'].includes(option.value)))
     assert.equal(context.providerPresets[type].aicost, undefined)
+    assert.equal(context.providerSelectOptions().find(option => option.value === '302ai')?.label, '302.AI')
+    context.applyProviderPreset(type, '302ai')
+    assert.equal(cfgForm.provider, '302ai')
+    assert.equal(cfgForm.base_url, 'https://api.302ai.com/v1')
+    assert.equal(cfgForm.models[0], type === 'text' ? 'gpt-4o-mini' : 'gpt-image-2')
   }
   assert.ok(context.providerSelectOptions().some(option => option.value === 'midjourney'))
   cfgForm.service_type = 'video'
   assert.ok(!context.providerSelectOptions().some(option => option.value === 'midjourney'))
+  assert.equal(context.providerSelectOptions().find(option => option.value === '302ai')?.label, '302.AI')
+  context.applyProviderPreset('video', '302ai')
+  assert.equal(cfgForm.base_url, 'https://api.302ai.com')
+  assert.equal(cfgForm.models.length, 0)
 })

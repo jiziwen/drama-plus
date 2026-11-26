@@ -15,7 +15,7 @@ function isMidjourneyModel(config: any, model: string): boolean {
 
 function supportsAssetMode(config: any, model: string, mode: AssetGenerationMode, withReferences: boolean): boolean {
   const needsReferences = mode === 'reference' || withReferences
-  if (config.provider !== 'comfyui') return !needsReferences || (['openai', 'gemini'].includes(config.provider) && !/^dall-e/i.test(model))
+  if (config.provider !== 'comfyui') return !needsReferences || (['openai', 'gemini', '302ai'].includes(config.provider) && !/^dall-e/i.test(model))
   const settings = config.comfyui || {}
   if (settings.workflow) return !needsReferences || !!(settings.referenceNode && settings.referencePrefix && settings.maxReferences !== 0)
   if (mode === 'text' && withReferences) return model === 'wf-image'

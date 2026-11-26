@@ -123,6 +123,13 @@ function validateVideoRequest(body: any, provider?: string, model?: string): str
     }
     const total = imgs + vids + auds + Number(first) + Number(last) + Number(file) + Number(link)
     if (total > 20) return 'Wan 3.0 input.media 最多 20 项'
+  } else if ((provider || '').toLowerCase() === '302ai') {
+    if (imgs > 1 || auds || file || link) return '302.AI 统一视频接口仅支持一张输入图片或首尾帧，暂不支持音频及其他参考素材'
+    if (imgs && (first || last)) return '302.AI 参考图片与首尾帧不能同时使用'
+    if (vids > 1) return '302.AI 统一视频接口仅支持一个参考视频'
+    if (last && !first) return '302.AI 尾帧需要搭配首帧'
+    if (vids && (imgs || first || last)) return '302.AI 视频参考与图片不能同时使用'
+    if (vids && !/^https?:\/\//i.test(body.reference_video_urls[0])) return '302.AI 参考视频需要公网 URL'
   } else if ((provider || '').toLowerCase() === 'aicost') {
     const limits = model && aicostVideoModelCapabilities(model)
     if (limits && (

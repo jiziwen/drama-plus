@@ -53,7 +53,9 @@ test('reference limits and prompt indices use the target shot even when another 
   const local = { id: 1, video_model: 'wf-minimax-h3', video_config_id: 10 }
   const cloud = { id: 2, video_model: 'wan3.0-video', video_config_id: 20 }
   const gateway = { id: 3, video_model: 'model-fixed-1440p', video_config_id: 30 }
+  const service302 = { id: 4, video_model: 'custom-model', video_config_id: 31 }
   configs.push({ id: 30, provider: 'aicost', name: 'gateway', is_active: true, model: [gateway.video_model] })
+  configs.push({ id: 31, provider: '302ai', name: '302.AI', is_active: true, model: [service302.video_model] })
   ctx.aicostVideoModelCapabilities = model => model === gateway.video_model ? { maxReferences: 5, resolutions: ['1440p'] } : null
   ctx.selectedSb.value = local
   ctx.getStoryboardScene = () => ({ location: 'scene', image_url: 'scene.png' })
@@ -64,6 +66,7 @@ test('reference limits and prompt indices use the target shot even when another 
   assert.equal(ctx.getShotReferenceImages(local).length, 4)
   assert.equal(ctx.getShotReferenceImages(cloud).length, 10)
   assert.equal(ctx.getShotReferenceImages(gateway).length, 5)
+  assert.equal(ctx.getShotReferenceImages(service302).length, 1)
   assert.equal(ctx.getShotReferenceIndexMap(cloud).c8, 10)
   assert.equal(ctx.getShotReferenceIndexMap(gateway).c3, 5)
   assert.equal(ctx.getShotReferenceIndexMap(local).c3, undefined)

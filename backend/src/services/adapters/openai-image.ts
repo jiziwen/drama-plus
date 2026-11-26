@@ -36,6 +36,9 @@ export class OpenAIImageAdapter implements ImageProviderAdapter {
 
   buildGenerateRequest(config: AIConfig, record: ImageGenerationRecord): ProviderRequest {
     const model = record.model || config.model || 'gpt-image-2'
+    if (config.provider.toLowerCase() === '302ai' && !/^gpt-image-(?:2|1(?:\.5|-mini)?)(?:$|-\d{4}-\d{2}-\d{2}$)/i.test(model)) {
+      throw new Error('302.AI 图片服务目前支持 GPT Image 系列模型')
+    }
     const isGptImage = model.startsWith('gpt-image-')
     const isGptImage2 = /^gpt-image-2(?:-\d{4}-\d{2}-\d{2}|\.(?:5|6)-(?:sunburst|flare)(?:-\d{4}-\d{2}-\d{2})?)?$/i.test(model)
     const size = isGptImage2
@@ -47,6 +50,9 @@ export class OpenAIImageAdapter implements ImageProviderAdapter {
     // 有参考图走 edits，无参考图走纯文生图 generations。
     const refs = this.parseReferenceImages(record.referenceImages)
     if (refs.length) {
+      if (config.provider.toLowerCase() === '302ai' && refs.length > 1) {
+        throw new Error('302.AI GPT Image 编辑目前支持一张参考图')
+      }
       return this.buildEditsRequest(config, model, record.prompt, size, refs)
     }
 
@@ -115,7 +121,7 @@ export class OpenAIImageAdapter implements ImageProviderAdapter {
       if (!parsed?.mimeType.startsWith('image/')) throw new Error('参考图片无法解析为可上传的文件')
       const buffer = Buffer.from(parsed.data, 'base64')
       const ext = parsed.mimeType === 'image/png' ? 'png' : parsed.mimeType === 'image/webp' ? 'webp' : 'jpg'
-      form.append('image[]', new Blob([buffer], { type: parsed.mimeType }), `reference-${index + 1}.${ext}`)
+      form.append(config.provider.toLowerCase() === '302ai' ? 'image' : 'image[]', new Blob([buffer], { type: parsed.mimeType }), `reference-${index + 1}.${ext}`)
     }
 
     return {

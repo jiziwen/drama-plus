@@ -122,6 +122,13 @@ function buildProbe(serviceType: string, provider: string, baseUrl: string, mode
     }
   }
 
+  if (p === '302ai') {
+    const url = new URL(joinProviderUrl(baseUrl, '/v1', '/models'))
+    if (serviceType === 'text') url.searchParams.set('llm', '1')
+    url.searchParams.set('include_custom_models', '1')
+    return { method: 'GET', url: url.toString(), headers: bearerHeaders(apiKey), body: undefined }
+  }
+
   if (p === 'openai' || p === 'aicost') {
     return {
       method: 'GET',
@@ -330,7 +337,9 @@ app.post('/test', async (c) => {
     const isVideoListProbe = ['volcengine', 'aicost'].includes(body.provider.toLowerCase()) && body.service_type === 'video'
     const isMidjourneyProbe = body.service_type === 'image'
       && isMidjourneyImageConfig({ provider: body.provider, baseUrl: body.base_url, model })
-    const successMessage = isMidjourneyProbe ? '连接与 API Key 验证通过（只读查询，未提交绘图）'
+    const is302Probe = body.provider.toLowerCase() === '302ai'
+    const successMessage = is302Probe ? '连接与 API Key 验证通过（只读查询；模型生成权限尚未验证）'
+      : isMidjourneyProbe ? '连接与 API Key 验证通过（只读查询，未提交绘图）'
       : isVideoListProbe ? '连接与 API Key 验证通过（只读查询，未生成视频；模型生成权限尚未验证）'
         : '端点可访问，认证与路径基本正常'
     const payload = {
@@ -350,7 +359,7 @@ app.post('/test', async (c) => {
               ? '请求被拒绝，请查看接口返回的具体错误'
               : '测试未通过，请检查 Base URL、代理、额度或接口返回的错误',
       // 查询结果可能包含历史任务和媒体地址，连接成功时无需展示。
-      response_preview: resp.ok && (isVideoListProbe || isMidjourneyProbe) ? '' : text.slice(0, 240),
+      response_preview: resp.ok && (isVideoListProbe || isMidjourneyProbe || is302Probe) ? '' : text.slice(0, 240),
     }
     if (resp.ok) {
       logTaskSuccess('AIConfig', 'probe-done', {

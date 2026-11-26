@@ -9,13 +9,15 @@ const source = readFileSync(new URL('../src/routes/aiConfigs.ts', import.meta.ur
 const helpers = source.slice(source.indexOf('function bearerHeaders('), source.indexOf('// GET /ai-configs?'))
 const route = source.slice(source.indexOf("app.post('/test',"), source.indexOf('// GET /ai-configs/:id'))
 
-async function probe(status: number, response = '') {
+async function probe(status: number, response = '', body: Record<string, unknown> = { service_type: 'video', provider: 'volcengine', base_url: 'https://ark.cn-beijing.volces.com/api/plan/v3', model: ['doubao-seedance-2.0-mini'], api_key: 'test-key' }) {
   let handler: any
   let request: any
   const context = {
     URL, joinProviderUrl,
     app: { post: (_path: string, fn: any) => { handler = fn } },
     isOfficialProvider: () => true,
+    isMidjourneyImageConfig: () => false,
+    withApiCallContext: (_meta: unknown, fn: () => unknown) => fn(),
     redactUrl: (url: string) => url,
     logTaskProgress: () => {}, logTaskSuccess: () => {}, logTaskError: () => {},
     success: (_c: any, payload: any) => payload,
@@ -25,9 +27,42 @@ async function probe(status: number, response = '') {
     },
   }
   runInNewContext(ts.transpileModule(helpers + route, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, context)
-  const result = await handler({ req: { json: async () => ({ service_type: 'video', provider: 'volcengine', base_url: 'https://ark.cn-beijing.volces.com/api/plan/v3', model: ['doubao-seedance-2.0-mini'], api_key: 'test-key' }) } })
+  const result = await handler({ req: { json: async () => body } })
   return { result, request }
 }
+
+test('302 text probe uses its documented read-only model listing with bearer auth', async () => {
+  for (const baseUrl of ['https://api.302.ai', 'https://api.302.ai/v1/', 'https://api.302ai.com', 'https://api.302ai.com/v1/']) {
+    const { request, result } = await probe(200, '{"data":[{"id":"test"}]}', {
+      service_type: 'text', provider: '302ai', base_url: baseUrl, model: ['test'], api_key: 'test-key',
+    })
+    assert.equal(request.method, 'GET')
+    assert.equal(request.url, `${new URL(baseUrl).origin}/v1/models?llm=1&include_custom_models=1`)
+    assert.equal(request.headers.Authorization, 'Bearer test-key')
+    assert.equal(request.body, undefined)
+    assert.equal(result.ok, true)
+    assert.equal(result.response_preview, '')
+    assert.match(result.message, /模型生成权限尚未验证/)
+  }
+})
+
+test('302 image probe does not limit listing to text models', async () => {
+  const { request } = await probe(200, '{}', {
+    service_type: 'image', provider: '302ai', base_url: 'https://api.302ai.com/v1', model: ['gpt-image-1'], api_key: 'test-key',
+  })
+  assert.equal(request.url, 'https://api.302ai.com/v1/models?include_custom_models=1')
+  assert.equal(request.headers.Authorization, 'Bearer test-key')
+})
+
+test('302 video probe checks credentials through the authenticated model listing', async () => {
+  const { request, result } = await probe(200, '{}', {
+    service_type: 'video', provider: '302ai', base_url: 'https://api.302ai.com/v1/', model: ['test'], api_key: 'test-key',
+  })
+  assert.equal(request.url, 'https://api.302ai.com/v1/models?include_custom_models=1')
+  assert.equal(request.method, 'GET')
+  assert.equal(request.headers.Authorization, 'Bearer test-key')
+  assert.equal(result.ok, true)
+})
 
 test('video probe validates auth with a read-only request and hides historical media', async () => {
   const { result, request } = await probe(200, '{"items":[{"video_url":"private-history"}]}')

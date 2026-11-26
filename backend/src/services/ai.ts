@@ -33,9 +33,9 @@ export function parseConfigTemperature(settingsRaw: string | null | undefined): 
 }
 
 export const officialProviders: Record<ServiceType, readonly string[]> = {
-  text: ['openai', 'gemini', 'volcengine'],
-  image: ['openai', 'gemini', 'volcengine', 'comfyui', 'midjourney'],
-  video: ['volcengine', 'minimax', 'aliyun', 'comfyui', 'aicost', 'jimeng', 'libtv'],
+  text: ['openai', 'gemini', 'volcengine', '302ai'],
+  image: ['openai', 'gemini', 'volcengine', 'comfyui', 'midjourney', '302ai'],
+  video: ['volcengine', 'minimax', 'aliyun', 'comfyui', 'aicost', 'jimeng', 'libtv', '302ai'],
 }
 
 export function isOfficialProvider(serviceType?: string | null, provider?: string | null): boolean {
@@ -54,7 +54,7 @@ function hasVideoModel(model: string | null): boolean {
 export function getTextProviderBaseUrl(config: AIConfig) {
   const provider = config.provider.toLowerCase()
 
-  if (provider === 'openai') {
+  if (provider === 'openai' || provider === '302ai') {
     return joinProviderUrl(config.baseUrl, '/v1', '')
   }
 

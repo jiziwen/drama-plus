@@ -196,7 +196,9 @@ function openaiThinkingOffPatch(baseURL: string): Record<string, any> {
 }
 
 function createThinkingOffFetch(providerName: string, baseURL: string, base: typeof fetch): typeof fetch | undefined {
-  if (!thinkingOffEnabled || isOfficialTextHost(baseURL)) return undefined
+  // 302 supports many model families through one endpoint; gateway-specific
+  // thinking parameters may be rejected by the selected upstream model.
+  if (!thinkingOffEnabled || providerName === '302ai' || isOfficialTextHost(baseURL)) return undefined
   const openaiPatch = openaiThinkingOffPatch(baseURL)
 
   return async (input: any, init?: any) => {
@@ -343,7 +345,7 @@ async function getModel(fileModel: string | undefined, modelOverride?: string, t
     : thinkingOffFetch
   // The script-to-video writer gives the SDK the selected model's output
   // capability, so the SDK chooses the correct parameter for its API dialect.
-  const fetchImpl = standardParameters || isOfficialOpenAIHost(resolvedBaseURL)
+  const fetchImpl = standardParameters || providerName === '302ai' || isOfficialOpenAIHost(resolvedBaseURL)
     ? tempFetch
     : createMaxTokensFetch(providerName, tempFetch)
   const limits = standardParameters

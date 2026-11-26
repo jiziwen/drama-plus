@@ -23,6 +23,10 @@ test('Midjourney fusion appears only in reference mode for both new and existing
   assert.deepEqual(assetModelOptions(midjourney, 'text', true).map(option => option.key), ['8/mj_imagine', '9/mj_imagine'])
   assert.deepEqual(assetModelOptions(midjourney, 'reference').filter(option => option.blend).map(option => option.key), ['8/mj_blend', '9/mj_blend'])
 })
+test('302.AI GPT Image is available for reference image generation', () => {
+  const config = { id: 10, is_active: true, provider: '302ai', model: ['gpt-image-2'] }
+  assert.deepEqual(assetModelOptions([config], 'reference').map(option => option.key), ['10/gpt-image-2'])
+})
 test('custom workflows must have an enabled reference input', () => {
   const custom = { id: 7, is_active: true, provider: 'comfyui', model: ['custom'], comfyui: { workflow: {}, referenceNode: '1', referencePrefix: 'image', maxReferences: 0 } }
   assert.equal(assetModelOptions([custom], 'reference').length, 0)

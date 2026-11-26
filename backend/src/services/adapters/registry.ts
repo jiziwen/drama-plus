@@ -10,11 +10,13 @@ import { VolcEngineVideoAdapter } from './volcengine-video'
 import { MiniMaxVideoAdapter } from './minimax-video'
 import { AliyunWanVideoAdapter } from './aliyun-wan-video'
 import { AICostVideoAdapter } from './aicost-video'
+import { ThreeZeroTwoVideoAdapter } from './302ai-video'
 import type { AIConfig, ImageProviderAdapter, VideoProviderAdapter } from './types'
 
 // 图片 Adapter 注册表
 export const imageAdapters: Record<string, ImageProviderAdapter> = {
   openai: new OpenAIImageAdapter(),
+  '302ai': new OpenAIImageAdapter(),
   gemini: new GeminiImageAdapter(),
   midjourney: new MidjourneyImageAdapter(),
   volcengine: new VolcEngineImageAdapter(),
@@ -26,6 +28,7 @@ export const videoAdapters: Record<string, VideoProviderAdapter> = {
   minimax: new MiniMaxVideoAdapter(),
   aliyun: new AliyunWanVideoAdapter(),
   aicost: new AICostVideoAdapter(),
+  '302ai': new ThreeZeroTwoVideoAdapter(),
 }
 
 /**

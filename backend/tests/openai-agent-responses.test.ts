@@ -36,7 +36,28 @@ test('official agent serializes tool calls and results using Responses', async (
 test('compatible endpoints keep Chat Completions', () => {
   const provider = createOpenAI({ apiKey: 'test-key' })
   assert.equal(selectAgentOpenAIModel(provider, 'model', 'https://example.com/v1').provider, 'openai.chat')
+  assert.equal(selectAgentOpenAIModel(provider, 'model', 'https://api.302.ai/v1').provider, 'openai.chat')
+  assert.equal(selectAgentOpenAIModel(provider, 'model', 'https://api.302ai.com/v1').provider, 'openai.chat')
   assert.equal(selectAgentOpenAIModel(provider, 'model', 'https://api.openai.com.example.com/v1').provider, 'openai.chat')
+})
+
+test('302 chat sends the selected model and bearer key to the chat completions endpoint', async () => {
+  let request: { url: string; headers: Headers; body: any } | undefined
+  const provider = createOpenAI({
+    apiKey: 'test-key', baseURL: 'https://api.302ai.com/v1',
+    fetch: async (url, init) => {
+      request = { url: String(url), headers: new Headers(init?.headers), body: JSON.parse(String(init?.body)) }
+      return Response.json({ id: 'test', object: 'chat.completion', created: 1, model: 'gpt-4o',
+        choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })
+    },
+  })
+  const model = selectAgentOpenAIModel(provider, 'gpt-4o', 'https://api.302ai.com/v1')
+  await model.doGenerate({ prompt: [{ role: 'user', content: [{ type: 'text', text: 'hello' }] }] })
+  assert.equal(request?.url, 'https://api.302ai.com/v1/chat/completions')
+  assert.equal(request?.headers.get('authorization'), 'Bearer test-key')
+  assert.equal(request?.body.model, 'gpt-4o')
+  assert.equal(request?.body.messages[0].content, 'hello')
 })
 
 test('only Haiku 5.5 on AICost uses the provider sampling defaults', async () => {

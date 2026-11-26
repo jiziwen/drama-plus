@@ -41,7 +41,7 @@ test('text agents keep OpenAI provider routing for non-Gemini configs', () => {
 
   assert.match(agents, /createOpenAI/)
   assert.match(agents, /const provider = createOpenAI\(/)
-  assert.match(agents, /return provider\.chat\(modelName\)/)
+  assert.match(agents, /selectAgentOpenAIModel/)
 })
 
 test('text provider base URL handling uses official Gemini v1beta endpoint', () => {
@@ -56,9 +56,9 @@ test('backend rejects unsupported providers at DB and route boundaries', () => {
   const route = read('src/routes/aiConfigs.ts')
 
   assert.match(ai, /officialProviders/)
-  assert.match(ai, /text:\s*\[\s*'openai',\s*'gemini',\s*'volcengine'\s*\]/)
-  assert.match(ai, /image:\s*\[\s*'openai',\s*'gemini',\s*'volcengine',\s*'comfyui',\s*'midjourney'\s*\]/)
-  assert.match(ai, /video:\s*\[\s*'volcengine',\s*'minimax',\s*'aliyun',\s*'comfyui',\s*'aicost'\s*\]/)
+  assert.match(ai, /text:\s*\[\s*'openai',\s*'gemini',\s*'volcengine',\s*'302ai'\s*\]/)
+  assert.match(ai, /image:\s*\[\s*'openai',\s*'gemini',\s*'volcengine',\s*'comfyui',\s*'midjourney',\s*'302ai'\s*\]/)
+  assert.match(ai, /video:\s*\[\s*'volcengine',\s*'minimax',\s*'aliyun',\s*'comfyui',\s*'aicost',\s*'jimeng',\s*'libtv',\s*'302ai'\s*\]/)
   assert.doesNotMatch(ai, /'deepseek'/)
   assert.doesNotMatch(ai, /'ali'/)
   assert.doesNotMatch(ai, /'vidu'/)

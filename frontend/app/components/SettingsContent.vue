@@ -107,7 +107,7 @@
                 </div>
                 <div class="config-actions">
                 <button v-if="isServerVideoCli(c.provider)" class="btn btn-ghost btn-sm" @click="startEditCfg(c)">{{ t('settings.jimeng.viewAccount') }}</button>
-                <button v-else-if="st.type === 'text' || ['comfyui', 'aicost'].includes(c.provider)" class="btn btn-ghost btn-sm" @click="testExistingCfg(c)">{{ t('settings.ai.test') }}</button>
+                <button v-else-if="st.type === 'text' || ['comfyui', 'aicost', '302ai'].includes(c.provider)" class="btn btn-ghost btn-sm" @click="testExistingCfg(c)">{{ t('settings.ai.test') }}</button>
                 <label class="config-switch">
                   <input type="checkbox" class="sr-only" :checked="c.is_active" @change="toggleCfg(c)">
                   <span class="switch" :class="{ on: c.is_active }"></span>
@@ -546,6 +546,8 @@
               <button type="button" class="btn btn-sm" :disabled="!modelInput.trim()" @click="addModel">{{ t('common.add') }}</button>
             </div>
             <span v-if="!isServerVideoCli(cfgForm.provider)" class="field-hint">{{ t('settings.cfg.modelsHint') }}</span>
+            <span v-if="cfgForm.provider === '302ai' && cfgForm.service_type === 'image'" class="field-hint">{{ t('settings.cfg.image302Hint') }}</span>
+            <span v-if="cfgForm.provider === '302ai' && cfgForm.service_type === 'video'" class="field-hint">{{ t('settings.cfg.video302Hint') }}</span>
           </div>
           <label v-if="cfgForm.service_type === 'text'" class="field">
             <span class="field-label">Temperature <span class="dim">({{ t('settings.cfg.tempHint') }})</span></span>
@@ -970,6 +972,7 @@ const providers = ['gemini', 'openai', 'volcengine', 'minimax', 'aliyun', 'comfy
 const providerSelectOptions = computed(() => {
   const available = providers.filter(provider => provider !== 'comfyui' || cfgForm.service_type !== 'text')
     .map(provider => ({ label: provider === 'comfyui' ? 'ComfyUI' : provider, value: provider }))
+  if (['text', 'image', 'video'].includes(cfgForm.service_type)) available.push({ label: '302.AI', value: '302ai' })
   if (cfgForm.service_type === 'image') available.push({ label: '火灵灵 · Midjourney', value: 'midjourney' })
   if (cfgForm.service_type === 'video') available.push({ label: 'AICost', value: 'aicost' }, { label: '即梦积分', value: 'jimeng' }, { label: 'LibTV', value: 'libtv' })
   return available
@@ -983,11 +986,13 @@ const providerPresets = {
   text: {
     gemini: { label: 'Gemini 官方', baseUrl: 'https://generativelanguage.googleapis.com', models: ['gemini-3.8-flash', 'gemini-3.1-pro-preview', 'gemini-3-flash-preview'] },
     openai: { label: 'OpenAI 官方', baseUrl: 'https://api.openai.com', models: ['deepseek-v4-pro', 'gpt-5.6-terra'] },
+    '302ai': { label: '302.AI', baseUrl: 'https://api.302ai.com/v1', models: ['gpt-4o-mini'] },
   },
   image: {
     comfyui: { label: 'ComfyUI · Work-Fisher', baseUrl: 'http://127.0.0.1:8188', models: ['wf-image', 'wf-z-image', 'wf-z-scene', 'wf-qwen-image'] },
     gemini: { label: 'Gemini 官方', baseUrl: 'https://generativelanguage.googleapis.com', models: ['gemini-3-pro-image', 'gemini-3.1-flash-image'] },
     openai: { label: 'OpenAI 官方', baseUrl: 'https://api.openai.com', models: ['gpt-image-2'] },
+    '302ai': { label: '302.AI', baseUrl: 'https://api.302ai.com/v1', models: ['gpt-image-2'] },
     midjourney: { label: '火灵灵 · Midjourney', baseUrl: 'https://api.hllapi.vip', models: ['mj_imagine', 'mj_blend'] },
   },
   video: {
@@ -996,6 +1001,7 @@ const providerPresets = {
     volcengine: { label: 'Seedance 2.0 / 2.5 官方', baseUrl: 'https://ark.cn-beijing.volces.com', models: ['doubao-seedance-2-0-mini-260615', 'doubao-seedance-2-0-fast-260128', 'doubao-seedance-2-0-260128', 'doubao-seedance-2-5-260628', 'doubao-seedance-2-5-flash-261115'] },
     agentPlan: { provider: 'volcengine', label: '火山 Agent Plan', baseUrl: 'https://ark.cn-beijing.volces.com/api/plan/v3', models: ['doubao-seedance-2.0-mini', 'doubao-seedance-2.0-fast', 'doubao-seedance-2.0'] },
     minimax: { label: 'MiniMax H3 官方', baseUrl: 'https://api.minimaxi.com', models: ['MiniMax-H3'] },
+    '302ai': { label: '302.AI', baseUrl: 'https://api.302ai.com', models: [] },
     aicost: { label: 'AICost', baseUrl: 'https://www.aicost.me', models: [] },
     jimeng: { label: '即梦积分 · 官方 CLI', baseUrl: '', models: ['jimeng-seedance-2.5'] },
     libtv: { label: 'LibTV · 官方 CLI', baseUrl: '', models: libtvVideoModels },
@@ -1041,7 +1047,7 @@ async function loadCfgs() { try { cfgs.value = await aiConfigAPI.list() } catch 
 // 默认解析规则与工作台/后端一致：启用配置中优先级最高者的模型列表首位
 function defaultModelOf(type) {
   const active = cfgs.value.filter(c => c.service_type === type && c.is_active
-    && (c.provider !== 'aicost' || c.model?.length))
+    && (!['aicost', '302ai'].includes(c.provider) || c.model?.length))
   if (!active.length) return null
   const top = [...active].sort((a, b) => (b.priority || 0) - (a.priority || 0))[0]
   const first = Array.isArray(top.model) ? top.model[0] : null

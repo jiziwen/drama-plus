@@ -62,8 +62,8 @@
 import { computed, nextTick, onMounted, ref } from 'vue'
 import { RefreshCw, X } from 'lucide-vue-next'
 import { apiCallLogAPI } from '~/composables/useApi'
-const providers = ['comfyui', 'openai', 'gemini', 'volcengine', 'minimax', 'aliyun', 'aicost', 'midjourney']
-const providerLabels = { aicost: 'AICost', midjourney: '火灵灵 · Midjourney' }
+const providers = ['comfyui', 'openai', 'gemini', 'volcengine', 'minimax', 'aliyun', 'aicost', 'midjourney', '302ai']
+const providerLabels = { aicost: 'AICost', midjourney: '火灵灵 · Midjourney', '302ai': '302.AI' }
 const providerOptions = [{ value: '', label: '全部' }, ...providers.map(value => ({ value, label: providerLabels[value] || value }))]
 const statusOptions = [{ value: '', label: '全部' }, { value: 'success', label: '成功' }, { value: 'error', label: '失败' }, { value: 'pending', label: '进行中' }]
 const provider = ref(''), status = ref(''), keyword = ref(''), taskId = ref(''), page = ref(1)

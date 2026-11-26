@@ -2323,6 +2323,7 @@ const comfyVideoSizeLabel = computed(() => videoSizeForConfig(selectedVideoConfi
 function shotReferenceLimit(sb) {
   const config = shotVideoConfig(sb)
   const model = shotVideoSelection(sb).model
+  if (config?.provider === '302ai') return 1
   if (config?.provider === 'aicost') return aicostVideoModelCapabilities(model || configModels(config)[0] || '')?.maxReferences ?? Infinity
   return config?.provider === 'comfyui' ? config.comfyui?.maxReferences ?? 6
     : config?.provider === 'aliyun' || model?.startsWith('wan3.0-video') ? 10 : 9

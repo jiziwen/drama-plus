@@ -155,6 +155,122 @@ test('资产弹框在已有生图提示词和后台更新出图状态时都能�
   assert.deepEqual(targetIds(), ['gate'])
 })
 
+const deletionController = ts.transpileModule([
+  section('function releaseAssetImage(', 'function saveAudioEdit('),
+  section('const assetDeleteDialog =', 'const sharedActivity ='),
+].join('\n'), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+}).outputText
+
+function deletionManager(initialAssets, afterSave = () => {}) {
+  const project = { id: 'project', assets: initialAssets }
+  const currentProject = ref(project)
+  const assets = computed(() => currentProject.value.assets)
+  const selectedAssetImages = ref(new Set())
+  const saves = [], errors = [], successes = [], released = []
+  const confirmation = {
+    open: false,
+    isConnected: true,
+    showModal() { this.open = true },
+    close() { this.open = false },
+  }
+  const state = runInNewContext(controller + '\n' + deletionController + `\n;({
+    assetManageSearch, assetManageKind, managedAssets, assetDeleteDialog, deletingAssets,
+    requestAllAssetDeletion, confirmAssetDeletion,
+  })`, {
+    computed, ref, assets, currentProject, selectedAssetImages, Error,
+    useId: () => 'confirmation', nextTick: vue.nextTick,
+    alive: true, episodeOpen: ref(true), requireSharedProjectEdit: () => true,
+    URL: { revokeObjectURL: url => released.push(url) },
+    saveProjectNow: async id => {
+      saves.push({ id, count: project.assets.length })
+      await afterSave(saves.length, currentProject)
+    },
+    toast: { error: message => errors.push(message), success: message => successes.push(message) },
+  })
+  state.assetDeleteDialog.value = confirmation
+  return { ...state, project, currentProject, assets, selectedAssetImages, confirmation, saves, errors, successes, released }
+}
+
+test('删除全部按确认时的项目范围覆盖所有分类，保留之后新增的资产及其批量选择', async () => {
+  const assets = [
+    { id: 'guard', kind: 'character', name: '守卫', image: 'blob:guard' },
+    { id: 'gate', kind: 'scene', name: '北城门', image: '/static/gate.png' },
+    { id: 'cup', kind: 'prop', name: '毒酒碗', image: '/static/cup.png' },
+    { id: 'beast', kind: 'creature', name: '妖兽', image: '/static/beast.png' },
+    { id: 'voice', kind: 'audio', name: '旁白', image: '' },
+  ]
+  const app = deletionManager(assets)
+  app.assetManageKind.value = 'scene'
+  app.assetManageSearch.value = '北城门'
+  assert.deepEqual(visibleIds(app), ['gate'])
+  app.selectedAssetImages.value.add('guard').add('beast')
+
+  await app.requestAllAssetDeletion()
+  assert.equal(app.confirmation.open, true)
+  assert.equal(app.assets.value.length, 5)
+  assert.deepEqual(app.saves, [])
+
+  const added = { id: 'new', kind: 'scene', name: '城外', image: '/static/new.png' }
+  app.assets.value.push(added)
+  app.selectedAssetImages.value.add(added.id)
+  await app.confirmAssetDeletion()
+
+  assert.equal(app.confirmation.open, false)
+  assert.deepEqual(app.assets.value.map(asset => asset.id), ['new'])
+  assert.deepEqual([...app.selectedAssetImages.value], ['new'])
+  assert.deepEqual(app.released, ['blob:guard'])
+  assert.deepEqual(app.saves, [{ id: 'project', count: 1 }])
+  assert.deepEqual(app.successes, ['已从项目资产移除 5 项资产'])
+  assert.deepEqual(app.errors, [])
+})
+
+function generatedAssetList(length) {
+  return Array.from({ length }, (_, index) => ({ id: `asset-${index}`, kind: 'prop', name: `道具 ${index}`, image: '' }))
+}
+
+test('删除超过同步单次改动上限的资产时，按批保存直至清空', async () => {
+  const app = deletionManager(generatedAssetList(10_001))
+  await app.requestAllAssetDeletion()
+  await app.confirmAssetDeletion()
+
+  assert.deepEqual(app.saves.map(save => save.count), [9_001, 8_001, 7_001, 6_001, 5_001, 4_001, 3_001, 2_001, 1_001, 1, 0])
+  assert.equal(app.assets.value.length, 0)
+  assert.equal(app.deletingAssets.value, false)
+  assert.deepEqual(app.successes, ['已从项目资产移除 10001 项资产'])
+  assert.deepEqual(app.errors, [])
+})
+
+test('批量删除第二次同步失败时停止，保留尚未处理的资产与选择', async () => {
+  const app = deletionManager(generatedAssetList(2_003), saveNumber => {
+    if (saveNumber === 2) throw new Error('网络断开')
+  })
+  app.selectedAssetImages.value.add('asset-1200').add('asset-2002')
+  await app.requestAllAssetDeletion()
+  await app.confirmAssetDeletion()
+
+  assert.deepEqual(app.saves.map(save => save.count), [1_003, 3])
+  assert.deepEqual(app.assets.value.map(asset => asset.id), ['asset-2000', 'asset-2001', 'asset-2002'])
+  assert.deepEqual([...app.selectedAssetImages.value], ['asset-2002'])
+  assert.equal(app.deletingAssets.value, false)
+  assert.deepEqual(app.successes, [])
+  assert.deepEqual(app.errors, ['删除未全部完成。网络断开'])
+})
+
+test('批次之间切换项目时停止删除，保留原项目的剩余资产', async () => {
+  const other = { id: 'other', assets: generatedAssetList(3) }
+  const app = deletionManager(generatedAssetList(1_001), (_, project) => { project.value = other })
+  await app.requestAllAssetDeletion()
+  await app.confirmAssetDeletion()
+
+  assert.deepEqual(app.saves, [{ id: 'project', count: 1 }])
+  assert.deepEqual(app.project.assets.map(asset => asset.id), ['asset-1000'])
+  assert.equal(other.assets.length, 3)
+  assert.equal(app.deletingAssets.value, false)
+  assert.deepEqual(app.successes, [])
+  assert.deepEqual(app.errors, ['删除未全部完成。项目已切换，请重新确认剩余资产'])
+})
+
 test('资产名称保存保留 Unicode 原文，纯空输入回填原值，重名沿用编号', async () => {
   const renameController = ts.transpileModule([
     section('function uniqueName(', 'function validReferenceAudio('),

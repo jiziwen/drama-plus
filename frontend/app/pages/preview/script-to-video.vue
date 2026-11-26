@@ -688,14 +688,19 @@
               }}</span>
               <h2>{{ dialogTitle }}</h2>
             </div>
-            <button
-              ref="modalClose"
-              class="btn btn-icon"
-              aria-label="关闭对话框"
-              @click="dialog = null"
-            >
-              <X :size="17" />
-            </button>
+            <div class="vp-modal-header-actions">
+              <button v-if="dialog === 'assets'" type="button" class="btn vp-confirm-delete" :disabled="!canEditSharedProject || !assets.length || deletingAssets" aria-haspopup="dialog" @click="requestAllAssetDeletion">
+                <Trash2 :size="14" />删除全部资产
+              </button>
+              <button
+                ref="modalClose"
+                class="btn btn-icon"
+                aria-label="关闭对话框"
+                @click="dialog = null"
+              >
+                <X :size="17" />
+              </button>
+            </div>
           </header>
           <template v-if="dialog === 'script'">
             <div class="vp-modal-body">
@@ -1112,7 +1117,7 @@
                         :aria-label="`删除资产 ${asset.name}`"
                         aria-haspopup="dialog"
                         title="删除资产"
-                        :disabled="!canEditSharedProject || assetImageRunning(asset)"
+                        :disabled="!canEditSharedProject || deletingAssets || assetImageRunning(asset)"
                         @click="requestAssetDeletion(asset)"
                       >
                         <Trash2 :size="14" />
@@ -1397,8 +1402,11 @@
         :aria-describedby="assetDeleteMessageId"
         @close="pendingAssetDeletion = undefined"
       >
-        <h2 :id="assetDeleteTitleId">删除资产</h2>
-        <p :id="assetDeleteMessageId">确定从项目资产中删除「{{ pendingAssetDeletion?.name }}」吗？使用了它的片段可能需要重新选择素材。</p>
+        <h2 :id="assetDeleteTitleId">{{ pendingAssetDeletion?.kind === 'all' ? '删除全部资产' : '删除资产' }}</h2>
+        <p :id="assetDeleteMessageId">
+          <template v-if="pendingAssetDeletion?.kind === 'all'">确定删除本项目的全部 {{ pendingAssetDeletion.ids.length }} 项资产吗？包含所有分类和当前未显示的资产。使用了它们的片段可能需要重新选择素材。</template>
+          <template v-else>确定从项目资产中删除「{{ pendingAssetDeletion?.name }}」吗？使用了它的片段可能需要重新选择素材。</template>
+        </p>
         <div class="vp-asset-delete-actions">
           <button type="button" class="btn" autofocus @click="assetDeleteDialog?.close()">取消</button>
           <button type="button" class="btn vp-confirm-delete" @click="confirmAssetDeletion">确认删除</button>
@@ -4793,28 +4801,52 @@ function renameAsset(asset: PreviewAsset, value: string) {
 const assetDeleteDialog = ref<HTMLDialogElement>()
 const assetDeleteTitleId = useId()
 const assetDeleteMessageId = useId()
-const pendingAssetDeletion = ref<{ projectId: string; id: string; name: string }>()
+const deletingAssets = ref(false)
+const pendingAssetDeletion = ref<
+  { kind: 'single'; projectId: string; id: string; name: string } |
+  { kind: 'all'; projectId: string; ids: string[] }
+>()
 async function requestAssetDeletion(asset: PreviewAsset) {
   const confirmation = assetDeleteDialog.value
-  if (!confirmation || confirmation.open || !requireSharedProjectEdit()) return
-  pendingAssetDeletion.value = { projectId: currentProject.value.id, id: asset.id, name: asset.name }
+  if (!confirmation || confirmation.open || deletingAssets.value || !requireSharedProjectEdit()) return
+  pendingAssetDeletion.value = { kind: 'single', projectId: currentProject.value.id, id: asset.id, name: asset.name }
+  await nextTick()
+  if (confirmation.isConnected && !confirmation.open) confirmation.showModal()
+}
+async function requestAllAssetDeletion() {
+  const confirmation = assetDeleteDialog.value
+  if (!confirmation || confirmation.open || deletingAssets.value || !requireSharedProjectEdit() || !assets.value.length) return
+  pendingAssetDeletion.value = { kind: 'all', projectId: currentProject.value.id, ids: assets.value.map(asset => asset.id) }
   await nextTick()
   if (confirmation.isConnected && !confirmation.open) confirmation.showModal()
 }
 async function confirmAssetDeletion() {
   const pending = pendingAssetDeletion.value
   const project = currentProject.value
-  if (!pending || pending.projectId !== project.id || !requireSharedProjectEdit()) return
+  if (!pending || deletingAssets.value || pending.projectId !== project.id || !requireSharedProjectEdit()) return
   assetDeleteDialog.value?.close()
-  const asset = project.assets.find(item => item.id === pending.id)
-  if (!asset) return
-  releaseAssetImage(asset)
-  project.assets = project.assets.filter(item => item.id !== asset.id)
+  const ids = new Set(pending.kind === 'all' ? pending.ids : [pending.id])
+  const removed = project.assets.filter(asset => ids.has(asset.id))
+  if (!removed.length) return
+  let removedCount = 0
+  deletingAssets.value = true
   try {
-    await saveProjectNow(project.id)
-    toast.success(`已从项目资产移除 ${asset.name}`)
+    for (let offset = 0; offset < removed.length; offset += 1000) {
+      if (!alive || currentProject.value.id !== project.id || !episodeOpen.value) throw new Error('项目已切换，请重新确认剩余资产')
+      const batchIds = new Set(removed.slice(offset, offset + 1000).map(asset => asset.id))
+      const batch = project.assets.filter(asset => batchIds.has(asset.id))
+      batch.forEach(releaseAssetImage)
+      project.assets = project.assets.filter(asset => !batchIds.has(asset.id))
+      batch.forEach(asset => selectedAssetImages.value.delete(asset.id))
+      await saveProjectNow(project.id)
+      removedCount += batch.length
+    }
+    toast.success(pending.kind === 'all' ? `已从项目资产移除 ${removedCount} 项资产` : `已从项目资产移除 ${pending.name}`)
   } catch (error) {
-    toast.error(error instanceof Error ? error.message : '资产删除失败')
+    const message = error instanceof Error ? error.message : '资产删除失败'
+    toast.error(pending.kind === 'all' ? `删除未全部完成。${message}` : message)
+  } finally {
+    deletingAssets.value = false
   }
 }
 const sharedActivity = ref<{ scope: string; activeCardIds: string[]; queuedCardIds: string[] }>({ scope: '', activeCardIds: [], queuedCardIds: [] })
@@ -6232,6 +6264,11 @@ onBeforeUnmount(() => {
   gap: 10px;
   padding: 17px 26px;
   border-top: 1px solid var(--border);
+}
+.vp-modal-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 .vp-modal-script {
   height: 320px;

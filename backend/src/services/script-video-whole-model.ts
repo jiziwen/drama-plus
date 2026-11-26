@@ -9,11 +9,18 @@ type ResolveModel = (model?: string, configId?: number) => Promise<{
   maxOutputTokens?: number
 }>
 
+const submitDraftDescriptions = {
+  episode: '一次交付本次要求的完整内容。时间表调整时先写 timingPlan，然后写本次需要的 production 和 cards。',
+  repair: '一次提交本轮定点修复。用 patches 填写指定片段的变更，制作规格有误时同时提交 production。',
+  continuity_review: '一次提交整集衔接复核，填写 passed、continuityReview 和 issues。',
+}
+
 export type ScriptVideoWholeModelRequest = {
   instructions: string
   message: string
   signal?: AbortSignal
   schema: z.ZodType
+  mode?: keyof typeof submitDraftDescriptions
   model?: string
   configId?: number
   stylePrefix?: string
@@ -134,7 +141,7 @@ export async function runScriptVideoWholeModel(
       tools: [
         {
           type: 'function', name: 'submit_draft', strict: false,
-          description: '一次交付本次要求的完整内容。时间表调整时先写 timingPlan，然后写本次需要的 production 和 cards。',
+          description: submitDraftDescriptions[request.mode ?? 'episode'],
           inputSchema: inputSchema(request.schema),
         },
         {

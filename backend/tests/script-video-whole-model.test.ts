@@ -135,6 +135,25 @@ test('clarification from the single response is surfaced without a tool-return s
   assert.equal(local.requests(), 1)
 })
 
+test('repair and continuity review describe their own submit_draft fields to the provider', async () => {
+  for (const [mode, schema, expected] of [
+    ['repair', z.object({ patches: z.array(z.object({})) }), /\bpatches\b/u],
+    ['continuity_review', z.object({
+      passed: z.boolean(), continuityReview: z.string(), issues: z.array(z.object({})),
+    }), /\bpassed\b.*\bcontinuityReview\b.*\bissues\b/u],
+  ] as const) {
+    const local = localProvider()
+    const response = runScriptVideoWholeModel({ ...request, mode, schema }, local.resolveModel)
+    await local.started
+    local.reply(Response.json(completion(toolCall('{}'))))
+    await response
+    const [tool] = local.sent().tools as Array<{ function: { name: string; description: string } }>
+    assert.equal(tool.function.name, 'submit_draft')
+    assert.match(tool.function.description, expected)
+    assert.doesNotMatch(tool.function.description, /\b(?:timingPlan|cards)\b/u)
+  }
+})
+
 test('plain JSON output from compatible endpoints also preserves the actual card index', async () => {
   const local = localProvider()
   const saved: number[] = []

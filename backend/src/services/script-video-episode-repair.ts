@@ -55,8 +55,6 @@ export function applyEpisodePatch(
   const reject = (message: string): never => {
     throw new ScriptVideoAIError('REPAIR_SCOPE', message)
   }
-  if (patch.production && !issues.some((issue) => !issue.cardId))
-    reject('本轮没有整集制作规格问题，请只修改报告中指出的片段。')
   const cards = [...candidate.cards]
   const allowed = new Set(issues.flatMap((issue) => (issue.cardId ? [issue.cardId] : [])))
   const seen = new Set<string>()
@@ -98,7 +96,10 @@ export function applyEpisodePatch(
     cards[index] = edited
   }
   const placement = candidate.placement?.filter((issue) => !seen.has(issue.cardId))
-  return { production: patch.production ?? candidate.production, cards, placement }
+  const production = issues.some((issue) => !issue.cardId)
+    ? patch.production ?? candidate.production
+    : candidate.production
+  return { production, cards, placement }
 }
 
 // Prefer source paragraphs that actually contain the cited speech or outline anchors.

@@ -462,10 +462,16 @@ test('script-to-video uses non-streaming Chat Completions, keeps tools and limit
   const old = { db: process.env.SQLITE_PATH, mysql: process.env.MYSQL_AUTO_IMPORT }
   process.env.SQLITE_PATH = path.join(dir, 'fixture.sqlite3')
   process.env.MYSQL_AUTO_IMPORT = 'false'
+  type ToolParameters = {
+    description?: string
+    properties?: Record<string, ToolParameters>
+    required?: string[]
+    items?: ToolParameters
+  }
   const messages: Array<{
     model: string
     stream?: boolean
-    tools: { function: { name: string } }[]
+    tools: { function: { name: string; description?: string; parameters?: ToolParameters } }[]
     max_tokens?: number
     max_completion_tokens?: number
     messages: { role: string; content: string }[]
@@ -738,6 +744,9 @@ test('script-to-video uses non-streaming Chat Completions, keeps tools and limit
     const repaired = await generateScriptVideoCards({ ...config, outline: [outline] })
     assert.equal(repaired.attempts, 2)
     assert.deepEqual(messages.slice(start).map(m => m.max_tokens), [fixtureMaxOutput, fixtureMaxOutput])
+    const repairTool = messages[start + 1].tools.find(tool => tool.function.name === 'submit_draft')?.function
+    assert.ok(repairTool?.parameters?.properties?.patches)
+    assert.equal(repairTool.parameters.properties.production, undefined)
     assert.equal(queriedModels.filter(id => id === 'fixture-text').length, 1)
 
     await generateScriptVideoCards({ ...config, model: 'claude-haiku-5-5', outline: [outline] })
@@ -762,6 +771,39 @@ test('script-to-video uses non-streaming Chat Completions, keeps tools and limit
     const review = await reviewScriptVideoEpisode({ ...config, cards: complete.cards, production: complete.production })
     assert.equal(review.passed, true)
     assert.equal(messages.length, beforeRevision + 2)
+
+    const beforeCultivation = messages.length
+    queuedDrafts.push({ production, cards: [{
+      ...card,
+      shots: [
+        { ...card.shots[0], action: '小禾推门。\n情绪提示：神色谨慎。',
+          visualAssetIds: ['yuan'], speakerAssetIds: [],
+          dialogue: '小禾【女｜青年感｜清亮女声｜谨慎｜轻声｜正常语速｜对白（1/1）｜普通话】：「我回来了。」\n音效：门轴轻响。' },
+        { ...card.shots[1], action: '小白从门外追上。\n情绪提示：眼神急切。',
+          visualAssetIds: ['yuan'], speakerAssetIds: [],
+          dialogue: '小白【男｜青年感｜清朗男声｜急切｜中等音量｜正常语速｜对白（1/1）｜普通话】：「等等我！」\n音效：脚步停在门外。' },
+      ],
+    }] })
+    const cultivation = await generateScriptVideoCards({ ...config, outline: [outline], storyboardMode: 'cultivation' })
+    assert.equal(cultivation.attempts, 1)
+    assert.equal(messages.length, beforeCultivation + 1)
+    const cultivationRequest = messages[beforeCultivation]
+    const cultivationTool = cultivationRequest.tools.find(tool => tool.function.name === 'submit_draft')?.function
+    assert.match(cultivationTool?.description ?? '', /production.*cards/u)
+    const cultivationParameters = cultivationTool?.parameters
+    assert.ok(cultivationParameters?.required?.includes('production'))
+    assert.ok(cultivationParameters.required.includes('cards'))
+    const cardParameters = cultivationParameters.properties?.cards?.items
+    assert.ok(cardParameters?.required?.includes('characters'))
+    const shotParameters = cardParameters.properties?.shots?.items
+    assert.ok(shotParameters?.required?.includes('visualAssetIds'))
+    assert.ok(shotParameters.required.includes('speakerAssetIds'))
+    assert.match(shotParameters.properties?.action?.description ?? '', /情绪提示/u)
+    assert.match(shotParameters.properties?.dialogue?.description ?? '', /音效/u)
+    const cultivationInstructions = cultivationRequest.messages.find(message => message.role === 'system')?.content ?? ''
+    assert.match(cultivationInstructions, /正式返回格式：调用 submit_draft 一次/u)
+    assert.match(cultivationInstructions, /cards 每项必填/u)
+    assert.match(cultivationInstructions, /shots 每项必填/u)
     assert.ok(messages.every(message => !message.stream), 'all script-to-video stages send non-streaming requests')
 
     await t.test('AICost Haiku submits the outline with the named structured tool', async (t) => {

@@ -2,10 +2,18 @@
  * The running server reads the source through script-video-style-source.ts.
  * JS template literals normalize physical line endings; restore the original CRLF.
  * The shared module runs in the browser as well as the backend, without filesystem access. */
+type ScriptVideoCustomStyleId = `custom-${string}`
+
 export type ScriptVideoStylePreset = {
-  id: 'cool' | 'warm' | 'custom'
+  id: 'cool' | 'warm' | 'custom' | ScriptVideoCustomStyleId
   name: string
   prefix: string
+}
+export const SCRIPT_VIDEO_CUSTOM_STYLE_LIMIT = 50
+export const SCRIPT_VIDEO_CUSTOM_STYLE_NAME_LIMIT = 60
+
+export function isScriptVideoCustomStyleId(value: unknown): value is ScriptVideoCustomStyleId {
+  return typeof value === 'string' && /^custom-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value)
 }
 const cool = `冷色调
 
@@ -77,13 +85,15 @@ export function getScriptVideoStylePreset(id: string): ScriptVideoStylePreset | 
 export function isScriptVideoStylePreset(value: unknown): value is ScriptVideoStylePreset {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
   const obj = value as Record<string, unknown>
+  const namedCustom = isScriptVideoCustomStyleId(obj.id)
   return (
-    (obj.id === 'cool' || obj.id === 'warm' || obj.id === 'custom') &&
+    (obj.id === 'cool' || obj.id === 'warm' || obj.id === 'custom' || namedCustom) &&
     typeof obj.name === 'string' &&
     !!obj.name.trim() &&
     typeof obj.prefix === 'string' &&
     obj.prefix.length > 0 &&
-    obj.prefix.length <= 20000
+    obj.prefix.length <= 20000 &&
+    (!namedCustom || (obj.name.length <= SCRIPT_VIDEO_CUSTOM_STYLE_NAME_LIMIT && !!obj.prefix.trim()))
   )
 }
 

@@ -20,6 +20,7 @@ runInNewContext(outputText, {exports: exported, require: name => {
 }})
 
 const character = {id: 'hero', name: '守卫', kind: 'character', image: '/static/uploads/hero.png'}
+const voiceExample = '青年年龄感｜清朗青年男声，中低音区、略带松弛感｜清冷克制，措辞端正，句尾收稳｜中等音量｜正常语速｜中文普通话'
 function render(props = {asset: character}) {
   const events = []
   const emit = (...args) => events.push(args)
@@ -96,6 +97,7 @@ test('角色声音显示缺少 Mini 配置，启用后默认选择并提交该�
   assert.equal(current.find(n => n.type === 'select').props.disabled, false)
   assert.equal(current.find(n => n.type === 'button' && n.children === '开始生成').props.disabled, true)
   const fields = current.filter(n => n.type === 'textarea')
+  assert.equal(fields[0].props.placeholder, voiceExample)
   fields[0].props['onUpdate:modelValue']('温暖的青年女声')
   fields[1].props['onUpdate:modelValue']('你好，我来了。')
   current = nodes()
@@ -118,16 +120,17 @@ test('角色声音显示缺少 Mini 配置，启用后默认选择并提交该�
 
 test('打开试音直接预填已有剧本提取描述，点击生成前不提交任务', () => {
   const option = { key: '7/jimeng', label: '即梦', configId: 7, model: 'jimeng', resolution: '720p' }
-  const asset = {...character, voiceDescription: {text: '声音清亮', sourceLabel: '剧本提取'}}
+  const asset = {...character, voiceDescription: {text: voiceExample, sourceLabel: '剧本提取'}}
   const {nodes, redraw, events} = render({asset, generationOptions: [option]})
   nodes.find(n => n.type === 'button' && n.children === '生成角色声音').props.onClick()
   assert.deepEqual(events, [])
   const form = redraw()
+  assert.equal(form.find(n => n.type === 'textarea').directives[0][1], voiceExample)
   assert.equal(form.find(n => n.type === 'button' && n.children === '开始生成').props.disabled, false)
   assert.ok(form.some(n => n.type === 'small' && n.children === '描述来源：剧本提取'))
   redraw().find(n => n.type === 'button' && n.children === '开始生成').props.onClick()
   assert.deepEqual(JSON.parse(JSON.stringify(events)), [['generate', {
-    configId: 7, model: 'jimeng', description: '声音清亮', dialogue: '这也不会那也不会，你到底是怎么修炼到现在的。',
+    configId: 7, model: 'jimeng', description: voiceExample, dialogue: '这也不会那也不会，你到底是怎么修炼到现在的。',
   }]])
 })
 
@@ -211,6 +214,24 @@ test('之前手动保存的声音描述可直接复用', () => {
   assert.equal(generate.props.disabled, false)
   generate.props.onClick()
   assert.equal(events[0][1].description, '声音清亮')
+})
+
+test('试音区显示各易装身份及其对应的剧本提取描述', () => {
+  const variants = [
+    { disguise: 'male_as_female', ageStage: 'adult', label: '守卫 · 成年 · 男扮女装', description: '成年感｜轻细女声｜压低声音，收尾轻｜轻声｜正常语速｜中文普通话' },
+    { disguise: 'female_as_male', ageStage: 'unknown', label: '守卫 · 女扮男装', description: '年龄感自然｜偏低男声｜简短利落｜中等音量｜正常语速｜中文普通话' },
+  ]
+  for (const { disguise, ageStage, label, description } of variants) {
+    const asset = {
+      ...character,
+      voiceProfile: { id: disguise, character: character.name, ageStage, disguise, clues: [], conflicts: [] },
+      voiceDescription: { text: description, sourceLabel: '剧本提取' },
+    }
+    const { nodes, redraw } = render({ asset })
+    assert.ok(nodes.some(node => node.type === 'small' && node.children === label))
+    nodes.find(node => node.type === 'button' && node.children === '生成角色声音').props.onClick()
+    assert.equal(redraw().find(node => node.type === 'textarea').directives[0][1], description)
+  }
 })
 
 test('失败时显示原因，保留试音输入并允许重新生成', async () => {

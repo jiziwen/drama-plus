@@ -82,6 +82,22 @@ test('preserves local selections, busy state, additions and deletions', () => {
   assert.equal(merged.project.episodes[1]!.cards[1]!.id,'local')
 })
 
+test('合并跨页面首次新增的自定义风格，单个风格和所选风格按完整快照合并', () => {
+  const ink = { id: 'custom-00000000-0000-4000-8000-000000000001', name: '水墨', prefix: '淡墨' }
+  const clay = { id: 'custom-00000000-0000-4000-8000-000000000002', name: '黏土', prefix: '手作纹理' }
+  const settings = (preset: typeof ink) => ({ stylePreset: preset, customStylePresets: { [preset.id]: preset } })
+  const saved: ReturnType<typeof base> & { settings?: ReturnType<typeof settings> } = base()
+  const both = mergeScriptVideoProject(saved, { ...saved, settings: settings(ink) }, { ...saved, settings: settings(clay) })
+  assert.deepEqual(both.project.settings?.customStylePresets, { [ink.id]: ink, [clay.id]: clay })
+  assert.deepEqual(both.project.settings?.stylePreset, ink)
+  const renamed = { ...ink, name: '工笔水墨' }, repainted = { ...ink, prefix: '泼墨' }
+  const conflict = mergeScriptVideoProject(
+    { ...saved, settings: settings(ink) }, { ...saved, settings: settings(renamed) }, { ...saved, settings: settings(repainted) },
+  )
+  assert.deepEqual(conflict.project.settings, settings(renamed))
+  assert.deepEqual(conflict.conflicts, ['settings.stylePreset', `settings.customStylePresets.${ink.id}`])
+})
+
 test('deletion concurrent with a content change is surfaced without discarding local intent', () => {
   const b=base(), l=structuredClone(b), r=structuredClone(b)
   l.episodes[0]!.cards=[]

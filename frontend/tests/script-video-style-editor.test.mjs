@@ -22,6 +22,7 @@ runInNewContext(outputText, {
   require: name => {
     if (name === 'vue') return vue
     if (name.endsWith('/script-video-style')) return style
+    if (name.endsWith('/scriptVideoClient')) return { createScriptVideoUuid: () => crypto.randomUUID() }
     throw new Error('Unexpected component import ' + name)
   },
 })
@@ -52,6 +53,7 @@ test('选择风格时发送独立项目快照，不裁剪空行或改写任何�
       props.modelValue = value
     },
     useId: () => 'test-group',
+    ref: vue.ref,
     computed: getter => ({get value() { return getter() }}),
     formatScriptVideoStylePreset: style.formatScriptVideoStylePreset,
   }
@@ -81,6 +83,7 @@ test('已选内置风格可直接使用最新预设，点击前保留旧快照�
       defineProps: () => props,
       defineEmits: () => (event, value) => { events.push([event, value]); props.modelValue = value },
       useId: () => 'test-group',
+      ref: vue.ref,
       computed: getter => ({ get value() { return getter() } }),
       formatScriptVideoStylePreset: style.formatScriptVideoStylePreset,
     })
@@ -97,6 +100,40 @@ test('已选内置风格可直接使用最新预设，点击前保留旧快照�
     assert.equal(controls.latestPreset.value, undefined)
     assert.equal(saved.prefix, oldPrefix)
   }
+})
+
+test('项目风格可以新增、编辑和删除自定义项，删除后回到冷色调', async () => {
+  const id = 'custom-00000000-0000-4000-8000-000000000001'
+  const keep = { id: 'custom-00000000-0000-4000-8000-000000000002', name: '定格动画', prefix: '羊毛毡质感' }
+  const props = { modelValue: presets[0], presets, customPresets: { [keep.id]: keep } }
+  const original = props.customPresets
+  const render = () => renderToString(createSSRApp({ render: () => h(component.default, props) }))
+  assert.match(await render(), /新增自定义风格/u)
+  const script = descriptor.scriptSetup.content.replace(/^import .*$/gm, '')
+  const { outputText } = ts.transpileModule(script, { compilerOptions: { target: ts.ScriptTarget.ES2022 } })
+  const controls = runInNewContext(outputText + '\n;({ addCustomPreset, editCustomPreset, removeCustomPreset })', {
+    defineProps: () => props,
+    defineEmits: () => (event, value) => { props[event.slice('update:'.length)] = value },
+    useId: () => 'test-group',
+    ref: vue.ref,
+    nextTick: vue.nextTick,
+    computed: getter => ({ get value() { return getter() } }),
+    createScriptVideoUuid: () => id.slice('custom-'.length),
+    formatScriptVideoStylePreset: style.formatScriptVideoStylePreset,
+  })
+  await controls.addCustomPreset()
+  controls.editCustomPreset('name', { target: { value: '水墨动画' } })
+  controls.editCustomPreset('prefix', { target: { value: '宣纸纹理\n淡墨层次' } })
+  assert.equal(props.modelValue.id, id)
+  assert.equal(props.customPresets[id].prefix, '宣纸纹理\n淡墨层次')
+  assert.equal(original[id], undefined)
+  assert.match(await render(), /水墨动画.*风格名称.*风格提示词.*删除此风格/su)
+
+  controls.removeCustomPreset()
+  assert.equal(props.modelValue.id, 'cool')
+  assert.equal(props.customPresets[id], undefined)
+  assert.equal(props.customPresets[keep.id], keep)
+  assert.doesNotMatch(await render(), /删除此风格/u)
 })
 
 test('当前内置快照和自定义风格均不显示更新按钮或自动替换前缀', async () => {

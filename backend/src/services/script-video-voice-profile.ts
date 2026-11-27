@@ -13,11 +13,23 @@ const evidence = z.object({
 })
 const ageEvidence = evidence.extend({ stage: knownAgeStage })
 const clueFields = {
-  facet: z.enum(['register', 'timbre', 'pace', 'articulation', 'accent', 'delivery']),
+  facet: z.enum(['register', 'timbre', 'pace', 'articulation', 'accent', 'delivery', 'volume']),
   value: z.string().trim().min(1).max(32),
   source: z.enum(['explicit', 'habit']),
 }
 const clue = z.object({ ...clueFields, evidence: z.array(evidence).min(1).max(8) })
+const voiceDesignPart = z.string().trim().min(1).max(40).regex(/^[^｜|\r\n]+$/u).optional().catch(undefined)
+const voiceDesign = z.object({
+  ageFeel: voiceDesignPart,
+  timbre: voiceDesignPart,
+  delivery: voiceDesignPart,
+  volume: voiceDesignPart,
+  pace: voiceDesignPart,
+  accent: voiceDesignPart,
+})
+const voiceDisguise = z.enum(['male_as_female', 'female_as_male'])
+type VoiceDisguise = z.infer<typeof voiceDisguise>
+export const scriptVideoVoiceDisguiseLabels: Record<VoiceDisguise, string> = { male_as_female: '男扮女装', female_as_male: '女扮男装' }
 
 export const scriptVideoVoiceProfileDraftSchema = z.object({
   key: z.string().min(1).max(400),
@@ -28,6 +40,8 @@ export const scriptVideoVoiceProfileDraftSchema = z.object({
   clues: z.array(clue).max(12),
   conflicts: z.array(clue).max(48),
   observations: z.array(clue).max(48).optional(),
+  design: voiceDesign.optional(),
+  disguise: voiceDisguise.optional(),
 })
 
 export type ScriptVideoVoiceProfileDraft = z.infer<typeof scriptVideoVoiceProfileDraftSchema>
@@ -35,7 +49,13 @@ type KnownAgeStage = z.infer<typeof knownAgeStage>
 type Evidence = z.infer<typeof evidence>
 type AgeEvidence = z.infer<typeof ageEvidence>
 type Clue = z.infer<typeof clue>
-type VoiceObservation = { character?: string; age?: AgeEvidence; clues: Clue[] }
+type VoiceObservation = {
+  character?: string
+  age?: AgeEvidence
+  clues: Clue[]
+  design?: z.infer<typeof voiceDesign>
+  disguise?: VoiceDisguise
+}
 type VoiceAppearance<T> = {
   item: T
   identity?: string
@@ -49,6 +69,8 @@ const modelVoice = z.object({
   character: character.optional().catch(undefined),
   age: z.object({ stage: knownAgeStage, quote: evidence.shape.quote.trim().min(1) }).optional().catch(undefined),
   clues: z.array(z.unknown()).optional().catch(undefined),
+  design: voiceDesign.optional().catch(undefined),
+  disguise: voiceDisguise.optional().catch(undefined),
 })
 const modelClue = z.object({ ...clueFields, quote: evidence.shape.quote.trim().min(1) })
 const explicitHabit = /一向|向来|总是|始终|惯常|说话习惯|平时|常年|素来|习惯于/u
@@ -58,8 +80,32 @@ const clueValueKey = (value: string) => normalize(value).replace(/^[\p{P}]+|[\p{
 const compare = (left: string, right: string) => left < right ? -1 : left > right ? 1 : 0
 const subject = (identity?: string) => identity?.split(/[｜|]/u, 1)[0]?.trim() || undefined
 
-export const scriptVideoVoiceProfileKey = (character: string, ageStage: ScriptVideoVoiceAgeStage) =>
-  `${normalize(character)}:${ageStage}`
+export const scriptVideoVoiceProfileKey = (character: string, ageStage: ScriptVideoVoiceAgeStage, disguise?: VoiceDisguise) =>
+  disguise ? `${normalize(character)}:${ageStage}:${disguise}` : `${normalize(character)}:${ageStage}`
+
+export function scriptVideoVoiceDisguiseFromLabel(label?: string) {
+  return voiceDisguise.options.find(disguise => label?.includes(scriptVideoVoiceDisguiseLabels[disguise]))
+}
+
+const ageFeelByStage: Record<ScriptVideoVoiceAgeStage, string> = {
+  child: '儿童年龄感', teen: '青少年年龄感', adult: '成年年龄感', older_adult: '老年年龄感', unknown: '年龄感贴合角色',
+}
+
+export function formatScriptVideoVoiceDescription(draft: ScriptVideoVoiceProfileDraft) {
+  const { design, clues, ageStage, ageConflict, disguise } = draft
+  const supported = (...facets: Clue['facet'][]) =>
+    [...new Set(facets.flatMap(facet => clues.filter(item => item.facet === facet).map(item => item.value)))].join('，')
+  const disguiseVoice = disguise === 'male_as_female' ? '女声伪装，音色自然'
+    : disguise === 'female_as_male' ? '男声伪装，音色自然' : '自然声线，音色清晰'
+  return [
+    ageConflict?.length ? '年龄感待确认' : design?.ageFeel || ageFeelByStage[ageStage],
+    supported('timbre', 'register') || design?.timbre || disguiseVoice,
+    supported('delivery', 'articulation') || design?.delivery || '自然说话，咬字清楚',
+    supported('volume') || design?.volume || '中等音量',
+    supported('pace') || design?.pace || '正常语速',
+    supported('accent') || design?.accent || '中文普通话',
+  ].map(part => part.replace(/[｜|\r\n]+/gu, '，')).join('｜')
+}
 
 export function readScriptVideoVoiceObservation(
   value: unknown,
@@ -67,7 +113,7 @@ export function readScriptVideoVoiceObservation(
 ): VoiceObservation | undefined {
   const result = modelVoice.safeParse(value)
   if (!result.success) return
-  const { character, age } = result.data
+  const { character, age, design, disguise } = result.data
   const locate = (quote: string): Evidence | undefined => {
     const index = chunk.text.indexOf(quote)
     if (index === -1) return
@@ -82,7 +128,8 @@ export function readScriptVideoVoiceObservation(
     const excerpt = locate(quote)
     return excerpt && clueValueKey(details.value) ? [{ ...details, evidence: [excerpt] }] : []
   })
-  return { character: subject(character), age: age && ageQuote ? { ...ageQuote, stage: age.stage } : undefined, clues }
+  return { character: subject(character), age: age && ageQuote ? { ...ageQuote, stage: age.stage } : undefined, clues,
+    ...(design && { design }), ...(disguise && { disguise }) }
 }
 
 function compareEvidence(left: Evidence, right: Evidence) {
@@ -138,18 +185,33 @@ function mergeClues(values: readonly Clue[]) {
 export function mergeScriptVideoVoiceDrafts(drafts: readonly ScriptVideoVoiceProfileDraft[]): ScriptVideoVoiceProfileDraft {
   const [first] = drafts
   if (!first) throw new Error('缺少角色声音资料。')
-  if (drafts.some(draft => draft.key !== first.key || draft.ageStage !== first.ageStage)) {
-    throw new Error('不能合并不同人物或年龄阶段的声音资料。')
+  if (drafts.some(draft => draft.key !== first.key || draft.ageStage !== first.ageStage || draft.disguise !== first.disguise)) {
+    throw new Error('不能合并不同人物、年龄阶段或易装造型的声音资料。')
   }
   const ageConflict = knownAgeStages.filter(stage => drafts.some(draft => draft.ageConflict?.includes(stage)))
   const allAgeEvidence = drafts.flatMap(draft => draft.ageEvidence ?? [])
   const ageEvidence = knownAgeStages.flatMap(stage => mergeEvidence(allAgeEvidence.filter(item => item.stage === stage), 4))
+  const design = ageConflict.length > 1 ? undefined : bestVoiceDesign(drafts)
   return {
     key: first.key, character: first.character, ageStage: first.ageStage,
     ...(ageConflict.length > 1 && { ageConflict }),
     ...(ageEvidence.length && { ageEvidence }),
+    ...(design && { design }),
+    ...(first.disguise && { disguise: first.disguise }),
     ...mergeClues(drafts.flatMap(draft => [...draft.clues, ...draft.conflicts, ...draft.observations ?? []])),
   }
+}
+
+function bestVoiceDesign(items: readonly { design?: z.infer<typeof voiceDesign> }[]) {
+  let best: z.infer<typeof voiceDesign> | undefined
+  let bestLength = 0
+  for (const { design } of items) {
+    const length = design ? Object.values(design).filter(Boolean).length : 0
+    if (length <= bestLength) continue
+    best = design
+    bestLength = length
+  }
+  return best
 }
 
 export function reconcileScriptVideoVoiceProfiles<T>(appearances: readonly VoiceAppearance<T>[]): Map<T, ScriptVideoVoiceProfileDraft> {
@@ -177,7 +239,10 @@ export function reconcileScriptVideoVoiceProfiles<T>(appearances: readonly Voice
     const visualSubject = subject(appearance.identity)
     const explicit = appearance.existing?.character || statedCharacter(appearance)
     const character = appearance.existing?.character ?? (visualSubject && canonicalByVisualSubject.get(normalize(visualSubject))) ?? explicit
-    return character ? [{ appearance, character, explicit: Boolean(explicit) }] : []
+    const disguise = appearance.existing?.disguise ?? scriptVideoVoiceDisguiseFromLabel(appearance.identity)
+      ?? scriptVideoVoiceDisguiseFromLabel(appearance.names[0])
+      ?? appearance.observations.find(observation => observation.disguise)?.disguise
+    return character ? [{ appearance, character, explicit: Boolean(explicit), disguise }] : []
   })
   const subjects = new Set(identities.map(({ character, explicit }) => explicit ? normalize(character) : undefined).filter(Boolean))
   const aliases = new Map<string, Set<string>>()
@@ -198,7 +263,8 @@ export function reconcileScriptVideoVoiceProfiles<T>(appearances: readonly Voice
   for (const identity of identities) {
     const base = normalize(identity.character)
     const owners = aliases.get(base)
-    const key = owners?.size === 1 ? [...owners][0] : base
+    const owner = owners?.size === 1 ? [...owners][0] : base
+    const key = JSON.stringify([owner, identity.disguise])
     const family = families.get(key) ?? []
     family.push(identity)
     families.set(key, family)
@@ -206,6 +272,7 @@ export function reconcileScriptVideoVoiceProfiles<T>(appearances: readonly Voice
 
   const result = new Map<T, ScriptVideoVoiceProfileDraft>()
   for (const family of families.values()) {
+    const { disguise } = family[0]
     const character = family.find(({ appearance }) => appearance.existing)?.appearance.existing?.character
       ?? family.find(({ explicit }) => explicit)?.character ?? family[0].character
     const lockedUnknown = ({ existing, existingLocked }: VoiceAppearance<T>) =>
@@ -223,14 +290,16 @@ export function reconcileScriptVideoVoiceProfiles<T>(appearances: readonly Voice
       const inferFamilyAge = !lockedUnknown(appearance) && (!hasLockedUnknown || familyAges.length > 1)
       const availableAges = ages.length || !inferFamilyAge ? ages : familyAges
       const stage = availableAges.length === 1 ? availableAges[0] : 'unknown'
-      const key = family.find(({ appearance }) => appearance.existing?.ageStage === stage && !appearance.existing.ageConflict?.length)
+      const key = family.find(({ appearance: { existing } }) => existing && existing.disguise === disguise &&
+        existing.ageStage === stage && !existing.ageConflict?.length)
         ?.appearance.existing?.key
-        ?? scriptVideoVoiceProfileKey(character, stage)
+        ?? scriptVideoVoiceProfileKey(character, stage, disguise)
       const group = byProfile.get(key) ?? { items: [], drafts: [] }
       const ageEvidence = appearance.observations.flatMap(observation => observation.age ? [observation.age] : [])
       if (availableAges.length > 1) {
         const draft: ScriptVideoVoiceProfileDraft = {
           key, character, ageStage: 'unknown', ageConflict: availableAges, ageEvidence, clues: [], conflicts: [],
+          ...(disguise && { disguise }),
         }
         const existing = appearance.existing
         if (existing?.ageConflict?.length && existing.key === key) draft.ageEvidence = [...existing.ageEvidence ?? [], ...ageEvidence]
@@ -238,11 +307,14 @@ export function reconcileScriptVideoVoiceProfiles<T>(appearances: readonly Voice
         continue
       }
       group.items.push(appearance.item)
+      if (appearance.existing?.key === key) group.drafts.push(appearance.existing)
+      const design = bestVoiceDesign(appearance.observations)
       group.drafts.push({
         key, character, ageStage: stage, ageEvidence,
         clues: appearance.observations.flatMap(observation => observation.clues), conflicts: [],
+        ...(design && { design }),
+        ...(disguise && { disguise }),
       })
-      if (appearance.existing?.key === key) group.drafts.push(appearance.existing)
       byProfile.set(key, group)
     }
     for (const { items, drafts } of byProfile.values()) {

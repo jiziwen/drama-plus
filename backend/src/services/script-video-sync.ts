@@ -1,5 +1,7 @@
 /** Browser-safe changes for the script/video editor. IDs address entities so a
  * stale page can never replace another episode, task, or generated video. */
+import { isScriptVideoCustomStyleId } from './script-video-style.js'
+
 export type ScriptVideoChange = {
   target: 'project' | 'asset' | 'episode' | 'card' | 'shot'
   id?: string
@@ -40,6 +42,9 @@ function safePath(target: ScriptVideoChange['target'], key: string) {
   const parts = key.split('.')
   if (!parts.length || parts.some(part => !part || forbidden.has(part) || part.startsWith('_')) || !editable(target, parts[0]!))
     throw new Error('不可修改的保存字段')
+  if (target === 'project' && parts[0] === 'settings' && parts[1] === 'customStylePresets' && parts.length > 2 &&
+    (parts.length !== 3 || !isScriptVideoCustomStyleId(parts[2])))
+    throw new Error('自定义风格保存字段无效')
   return parts
 }
 function clean(target: ScriptVideoChange['target'], value: Document) {
@@ -153,6 +158,22 @@ function fieldsChanged(target: ScriptVideoChange['target'], before: Document, af
       if (key.startsWith('_') || forbidden.has(key)) continue
       const name = prefix ? `${prefix}.${key}` : key
       if (same(a[key], b[key])) continue
+      if (target === 'project' && name === 'settings' &&
+        (a[key] === undefined || object(a[key])) && (b[key] === undefined || object(b[key]))) {
+        visit(a[key] || {}, b[key] || {}, name)
+        continue
+      }
+      if (target === 'project' && name === 'settings.stylePreset') {
+        setChoice(name, a[key], b[key])
+        continue
+      }
+      if (target === 'project' && name === 'settings.customStylePresets' &&
+        (a[key] === undefined || object(a[key])) && (b[key] === undefined || object(b[key]))) {
+        const prev = a[key], next = b[key]
+        for (const id of new Set([...Object.keys(prev || {}), ...Object.keys(next || {})]))
+          setChoice(`${name}.${id}`, prev?.[id], next?.[id])
+        continue
+      }
       // A frame choice is one value, but different reference rows can be
       // edited independently, even when the first override creates the map.
       if (target === 'card' && name === 'referenceFrameSettings') {

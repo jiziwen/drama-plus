@@ -41,6 +41,32 @@ test('project settings are independently updated without resubmitting task or pl
   assert.equal(result.episodes[0]!.cards[0]!.version, 1)
 })
 
+test('custom style edits replace one preset per ID and preserve changes to other presets', () => {
+  const base = fixture()
+  const first = { id: 'custom-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', name: '黑白风格', prefix: '黑白光影' }
+  const second = { id: 'custom-bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', name: '水墨风格', prefix: '水墨淡彩' }
+  const a = { ...base, settings: { ...base.settings, customStylePresets: { [first.id]: first }, stylePreset: first } }
+  const b = { ...base, settings: { ...base.settings, customStylePresets: { [second.id]: second }, stylePreset: second } }
+  assert.deepEqual(diffScriptVideoChanges(base, a), [{
+    target: 'project', fields: { [`settings.customStylePresets.${first.id}`]: first, 'settings.stylePreset': first }, unset: [],
+  }])
+  const saved = applyScriptVideoChanges(applyScriptVideoChanges(base, diffScriptVideoChanges(base, a)), diffScriptVideoChanges(base, b))
+  assert.deepEqual(saved.settings, {
+    ...base.settings, customStylePresets: { [first.id]: first, [second.id]: second }, stylePreset: second,
+  })
+  const withoutFirst = { ...a, settings: { ...base.settings, customStylePresets: {} } }
+  const [deletion] = diffScriptVideoChanges(a, withoutFirst)
+  assert.deepEqual(deletion?.unset, [`settings.customStylePresets.${first.id}`, 'settings.stylePreset'])
+  assert.deepEqual(applyScriptVideoChanges(saved, [{ target: 'project', unset: [`settings.customStylePresets.${first.id}`] }])
+    .settings.customStylePresets, { [second.id]: second })
+
+  const revised = { ...first, name: '新版黑白风格', prefix: '高反差黑白光影' }
+  const edited = { ...a, settings: { ...a.settings, customStylePresets: { [first.id]: revised }, stylePreset: revised } }
+  assert.deepEqual(diffScriptVideoChanges(a, edited), [{
+    target: 'project', fields: { [`settings.customStylePresets.${first.id}`]: revised, 'settings.stylePreset': revised }, unset: [],
+  }])
+})
+
 test('summary-only episodes never emit body updates and concurrent additions survive reordering', () => {
   const base = fixture(), current = structuredClone(base)
   current.episodes[1]!.script = ''

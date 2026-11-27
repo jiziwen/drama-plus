@@ -789,8 +789,14 @@
           <template v-else-if="dialog === 'style'">
             <form @submit.prevent="saveProjectStyle">
               <div class="vp-modal-body">
-                <p class="vp-modal-description">{{ styleProjectTitle }} · 保存后，所选风格内容会同步到本项目已有的视频提示词，各集后续生成也会使用同一预设。</p>
-                <ScriptVideoStylePresetEditor v-model="projectStyleDraft" :presets="stylePresets" />
+                <p class="vp-modal-description">{{ styleProjectTitle }} · 保存后同步已有视频提示词的风格前缀，后续资产提取和视频生成使用所选风格。</p>
+                <ScriptVideoStylePresetEditor
+                  v-model="projectStyleDraft"
+                  v-model:custom-presets="projectCustomStylesDraft"
+                  :presets="stylePresets"
+                  :disabled="savingStyle || !canEditSharedProject"
+                />
+                <p v-if="!validProjectStyle" class="vp-modal-description" role="status">请为每个自定义风格填写名称和提示词。</p>
               </div>
               <footer class="vp-project-form-footer">
                 <button type="button" class="btn" @click="dialog = null">取消</button>
@@ -1583,6 +1589,7 @@ import {
   scriptVideoJobError,
   waitScriptVideoJob,
   ScriptVideoRequestError,
+  createScriptVideoUuid,
   type ScriptVideoClientJob,
   type ScriptVideoJobProgress,
   type ScriptVideoRevisionCandidate,
@@ -1676,6 +1683,7 @@ type PreviewProject = {
     combatEnabled?: boolean
     textSelection?: string
     stylePreset?: ScriptVideoStylePreset
+    customStylePresets?: Record<string, ScriptVideoStylePreset>
   }
   title: string
   assets: PreviewAsset[]
@@ -1973,6 +1981,8 @@ const newProjectTitle = ref('')
 const stylePresets = shallowRef<readonly ScriptVideoStylePreset[]>(SCRIPT_VIDEO_STYLE_PRESETS)
 const newProjectStyle = ref<ScriptVideoStylePreset>(getScriptVideoStylePreset('cool')!)
 const projectStyleDraft = ref<ScriptVideoStylePreset>(getScriptVideoStylePreset('cool')!)
+const projectCustomStylesDraft = ref<Record<string, ScriptVideoStylePreset>>({})
+let projectCustomStylesBaseline: Record<string, ScriptVideoStylePreset> = {}
 let projectStyleBaseline: ScriptVideoStylePreset | undefined
 let stylePresetRequest: Promise<void> | undefined
 function sameStylePreset(first?: ScriptVideoStylePreset, second?: ScriptVideoStylePreset) {
@@ -2118,7 +2128,8 @@ function pendingAudioEdits(projectId: string) {
 }
 const styleProjectTitle = computed(() => projects.value.find(project => project.id === styleProjectId.value)?.title || '')
 const validNewProjectStyle = computed(() => isScriptVideoStylePreset(newProjectStyle.value))
-const validProjectStyle = computed(() => isScriptVideoStylePreset(projectStyleDraft.value))
+const validProjectStyle = computed(() => isScriptVideoStylePreset(projectStyleDraft.value) &&
+  Object.values(projectCustomStylesDraft.value).every(preset => isScriptVideoStylePreset(preset) && !!preset.prefix.trim()))
 const selectedCard = computed(
   () =>
     cards.value.find((card) => card.id === selectedCardId.value) ||
@@ -3378,7 +3389,13 @@ function openProjectDialog() {
 function openStyleDialog() {
   if (!requireSharedProjectEdit()) return
   styleProjectId.value = currentProject.value.id
-  projectStyleDraft.value = { ...(currentProject.value.settings?.stylePreset || stylePresets.value.find(preset => preset.id === 'cool')!) }
+  const settings = currentProject.value.settings
+  const active = { ...(settings?.stylePreset || stylePresets.value.find(preset => preset.id === 'cool')!) }
+  projectCustomStylesBaseline = { ...settings?.customStylePresets }
+  projectCustomStylesDraft.value = { ...projectCustomStylesBaseline }
+  if (active.id === 'custom') active.id = `custom-${createScriptVideoUuid()}`
+  if (active.id.startsWith('custom-')) projectCustomStylesDraft.value[active.id] ??= active
+  projectStyleDraft.value = active
   projectStyleBaseline = { ...projectStyleDraft.value }
   dialog.value = 'style'
   void loadStylePresets()
@@ -3388,13 +3405,33 @@ async function saveProjectStyle() {
   const project = projects.value.find(item => item.id === styleProjectId.value)
   if (!project) return
   savingStyle.value = true
-  const style = { ...projectStyleDraft.value }
-  project.settings = { ...project.settings, stylePreset: style }
+  const previousSettings = project.settings
+  const existing = previousSettings?.customStylePresets
+  const customStylePresets = { ...existing }
+  for (const id of Object.keys(projectCustomStylesBaseline)) {
+    if (!Object.hasOwn(projectCustomStylesDraft.value, id)) delete customStylePresets[id]
+  }
+  for (const [id, draft] of Object.entries(projectCustomStylesDraft.value)) {
+    if (!sameStylePreset(draft, projectCustomStylesBaseline[id])) {
+      customStylePresets[id] = { ...draft, name: draft.name.trim() }
+    }
+  }
+  const selected = projectStyleDraft.value
+  const style = customStylePresets[selected.id] ??
+    (selected.id.startsWith('custom-') ? { ...(project.settings?.stylePreset || stylePresets.value[0]!) } : { ...selected })
+  project.settings = {
+    ...project.settings, stylePreset: style,
+    ...((existing || Object.keys(customStylePresets).length > 0) && { customStylePresets }),
+  }
   try {
     await saveProjectNow(project.id)
     dialog.value = null
     toast.success('项目风格已保存，视频提示词前缀已同步')
   } catch (error: any) {
+    if (error instanceof ScriptVideoRequestError && error.code === 'STYLE_PRESET_CHANGED') {
+      project.settings = { ...project.settings, stylePreset: previousSettings?.stylePreset, customStylePresets: existing }
+      await refreshProject(project.id).catch(() => {})
+    }
     toast.error(error.message || '风格保存失败，请重试')
   } finally {
     savingStyle.value = false

@@ -15,7 +15,8 @@ test('一键提取把场景四宫格写入项目资产，保留已有角色的�
   const directory = await mkdtemp(join(tmpdir(), 'script-video-asset-extract-'))
   const store = new ScriptVideoStore(directory)
   try {
-    const project = await store.create('整剧')
+    const style = { id: `custom-${randomUUID()}` as const, name: '水墨动画', prefix: '宣纸纹理、淡墨层次。' }
+    const project = await store.create('整剧', style)
     const app = new Hono()
     const gate = Promise.withResolvers<void>()
     let calls = 0
@@ -30,7 +31,8 @@ test('一键提取把场景四宫格写入项目资产，保留已有角色的�
         assert.deepEqual(input.sources.map(source => source.episodeNumber), [1, 2])
         await gate.promise
         return extractScriptVideoAssets(input, async ({ message }) => {
-          const { episode } = JSON.parse(message)
+          const { episode, style: extractionStyle } = JSON.parse(message)
+          assert.equal(extractionStyle, style.prefix)
           const role = {
             reuseId: 'existing-role', kind: 'character', name: '林青', assetIdentity: '林青', aliases: ['小林'],
             imagePrompt: '模型版',
@@ -137,7 +139,7 @@ test('跨集提取合并声音字段，重提取继续复用已保存的音色',
     assert.equal(daily.voiceDescription.sourceLabel, '剧本提取')
     assert.match(daily.voiceDescription.text, /声音低沉/u)
     assert.match(daily.voiceDescription.text, /咬字利落/u)
-    assert.equal(child.voiceDescription.text, '嗓音清亮')
+    assert.equal(child.voiceDescription.text, '儿童年龄感｜嗓音清亮｜自然说话，咬字清楚｜中等音量｜正常语速｜中文普通话')
 
     const audio = { url: '/static/uploads/ning.mp3', name: '确认的声音' }
     const description = { text: '确认的成年音色', sourceLabel: '手动编辑' }
@@ -150,6 +152,82 @@ test('跨集提取合并声音字段，重提取继续复用已保存的音色',
     assert.equal(again.voiceProfile.id, daily.voiceProfile.id)
     assert.deepEqual(again.voiceAudio, audio)
     assert.deepEqual(again.voiceDescription, description)
+  } finally {
+    await store.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('一键提取为方闲补齐六段描述，分别保存男女易装的声线并保留已有媒体', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'script-video-extract-voice-design-'))
+  const store = new ScriptVideoStore(directory)
+  try {
+    const project = await store.create('方闲的故事')
+    const app = new Hono()
+    const audio = { url: '/static/uploads/fang-xian.mp3', name: '方闲的参考音频' }
+    const previousProfile = { id: randomUUID(), key: '方闲:unknown', character: '方闲', ageStage: 'unknown' as const, clues: [], conflicts: [] }
+    await store.mutateAssets(project.id, () => ({
+      assets: [
+        { id: 'fang-xian', kind: 'character', name: '方闲', image: '/static/uploads/fang-xian.png', voiceAudio: audio,
+          voiceProfile: previousProfile },
+        { id: 'fang-xian-disguise', kind: 'character', name: '方闲（男扮女装）', assetIdentity: '方闲｜男扮女装',
+          image: '/static/uploads/disguise.png', voiceAudio: audio, voiceProfile: previousProfile,
+          voiceDescription: { text: '此前从常态造型继承的描述', sourceLabel: '剧本提取' } },
+      ],
+      result: undefined,
+    }))
+    const design = { ageFeel: '青年年龄感', timbre: '清朗青年男声，中低音区、略带松弛感',
+      delivery: '清冷克制，措辞端正，句尾收稳', volume: '中等音量', pace: '正常语速', accent: '中文普通话' }
+    registerScriptVideoAssetExtractionRoutes(app, store,
+      (c, error) => c.json({ message: String(error) }, error instanceof ScriptVideoStoreError ? error.status : 500),
+      input => extractScriptVideoAssets(input, async () => JSON.stringify({ assets: [
+        { kind: 'character', name: '方闲', assetIdentity: '方闲', imagePrompt: '青年剑修', reuseId: 'existing-fang-xian',
+          voice: { character: '方闲', design } },
+        { kind: 'character', name: '方闲（礼服）', assetIdentity: '方闲｜礼服', imagePrompt: '青年剑修的礼服' },
+        { kind: 'character', name: '陆掌柜', assetIdentity: '陆掌柜', imagePrompt: '镇上掌柜' },
+        { kind: 'character', name: '方闲（男扮女装）', assetIdentity: '方闲｜男扮女装', imagePrompt: '女客装束',
+          voice: { character: '方闲', design: { ...design, timbre: '清亮女声，尾音轻柔' } } },
+        { kind: 'character', name: '云娘', assetIdentity: '云娘', imagePrompt: '青年女客',
+          voice: { character: '云娘', design: { ...design, timbre: '清亮女声' } } },
+        { kind: 'character', name: '云娘', assetIdentity: '云娘', imagePrompt: '扮作少年',
+          voice: { character: '云娘', disguise: 'female_as_male', design: { ...design, timbre: '清润少年男声' } } },
+        { kind: 'prop', name: '账簿', assetIdentity: '账簿', imagePrompt: '蓝布封面账簿' },
+      ] })),
+    )
+    const path = `/projects/${project.id}/assets/extract`
+    const response = await app.request(path, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sources: [{ title: '第1集',
+        script: '方闲走进客店，把账簿交给陆掌柜。方闲换上礼服。方闲男扮女装赴宴，云娘女扮男装作陪。', episodeNumber: 1 }] }) })
+    assert.equal(response.status, 201)
+    let job = (await (await app.request(path)).json()).data
+    for (let attempt = 0; job.status === 'running' && attempt < 100; attempt++) {
+      await pause(10)
+      job = (await (await app.request(path)).json()).data
+    }
+    assert.equal(job.status, 'completed', job.error)
+    const assets = (await store.summary(project.id)).assets
+    const lead = assets.find(asset => asset.id === 'fang-xian')!
+    const costume = assets.find(asset => asset.name === '方闲（礼服）')!
+    assert.deepEqual(lead.voiceAudio, audio)
+    assert.equal(lead.image, '/static/uploads/fang-xian.png')
+    assert.equal(lead.voiceProfile?.ageStage, 'unknown')
+    assert.deepEqual(lead.voiceProfile?.clues, [])
+    assert.equal(lead.voiceDescription?.text, '青年年龄感｜清朗青年男声，中低音区、略带松弛感｜清冷克制，措辞端正，句尾收稳｜中等音量｜正常语速｜中文普通话')
+    assert.deepEqual(costume.voiceDescription, lead.voiceDescription)
+    assert.equal(costume.voiceProfile?.id, lead.voiceProfile?.id)
+    const disguisedLead = assets.find(asset => asset.id === 'fang-xian-disguise')!
+    const disguisedYun = assets.find(asset => asset.name === '云娘（女扮男装）')!
+    const yun = assets.find(asset => asset.name === '云娘')!
+    assert.equal(disguisedLead.voiceProfile?.disguise, 'male_as_female')
+    assert.notEqual(disguisedLead.voiceProfile?.id, lead.voiceProfile?.id)
+    assert.equal(disguisedLead.voiceDescription?.text.split('｜')[1], '清亮女声，尾音轻柔')
+    assert.deepEqual(disguisedLead.voiceAudio, audio)
+    assert.equal(disguisedYun.voiceProfile?.disguise, 'female_as_male')
+    assert.notEqual(disguisedYun.voiceProfile?.id, yun.voiceProfile?.id)
+    assert.equal(disguisedYun.voiceDescription?.text.split('｜')[1], '清润少年男声')
+    assert.equal(yun.voiceDescription?.text.split('｜')[1], '清亮女声')
+    assert.equal(assets.find(asset => asset.name === '陆掌柜')?.voiceDescription?.text.split('｜').length, 6)
+    assert.equal(assets.find(asset => asset.name === '账簿')?.voiceDescription, undefined)
   } finally {
     await store.close()
     await rm(directory, { recursive: true, force: true })

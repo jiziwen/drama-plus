@@ -20,9 +20,9 @@ type Session = { id: string; release?: () => void; reloadMarker?: boolean }
 type BrowserSession = { active?: Session; pending?: Promise<string>; hidden: boolean }
 const browserSessions = new WeakMap<Window, BrowserSession>()
 
-function newSessionId(browser: typeof window) {
+export function createScriptVideoUuid(random = globalThis.crypto) {
   // getRandomValues is also available when using the service over LAN HTTP.
-  const bytes = browser.crypto.getRandomValues(new Uint8Array(16))
+  const bytes = random.getRandomValues(new Uint8Array(16))
   bytes[6] = (bytes[6]! & 0x0f) | 0x40
   bytes[8] = (bytes[8]! & 0x3f) | 0x80
   const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
@@ -95,7 +95,7 @@ async function openBrowserSession(browser: typeof window, previous?: Session): P
   }
   if (storage) {
     const saved = savedId && SESSION_ID_PATTERN.test(savedId) ? await claimSession(browser, savedId, true) : undefined
-    const id = saved?.id ?? newSessionId(browser)
+    const id = saved?.id ?? createScriptVideoUuid(browser.crypto)
     const session = saved ?? await claimSession(browser, id, false)
     if (session) {
       try {
@@ -107,7 +107,7 @@ async function openBrowserSession(browser: typeof window, previous?: Session): P
     }
     return { id }
   }
-  return { id: newSessionId(browser) }
+  return { id: createScriptVideoUuid(browser.crypto) }
 }
 
 export function scriptVideoSession(): string | Promise<string> | undefined {

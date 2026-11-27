@@ -16,7 +16,7 @@ function section(startMarker, endMarker) {
 const script = ts.transpileModule([
   section('const stylePresets =', 'const creatingProject ='),
   section('async function refreshProject(', 'function persistDraft('),
-  section('function openProjectDialog(', 'async function saveProjectStyle('),
+  section('function openProjectDialog(', 'async function createProject('),
 ].join('\n'), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
 
 function setup(request) {
@@ -27,14 +27,17 @@ function setup(request) {
   const dialog = ref(null)
   const context = {
     ref, shallowRef, SCRIPT_VIDEO_STYLE_PRESETS, getScriptVideoStylePreset, isScriptVideoStylePreset,
-    alive: true, requestController: new AbortController(), AbortSignal,
+    alive: true, requestController: new AbortController(), AbortSignal, createScriptVideoUuid: () => crypto.randomUUID(),
     currentProject, dialog, sharedLoaded, serverSnapshots, newProjectTitle: ref(''), styleProjectId: ref(''),
     requireSharedProjectEdit: () => true,
+    projects: ref([currentProject.value]), savingStyle: ref(false), validProjectStyle: ref(true),
+    saveProjectNow: async () => {},
+    toast: { success() {}, error: error => { throw new Error(error) } },
     scriptVideoRequest: async path => { calls.push(path); return request(path) },
     materialize: summary => summary,
     acceptProject: project => serverSnapshots.set(project.id, project),
   }
-  const controls = runInNewContext(script + '\n;({ stylePresets, newProjectStyle, projectStyleDraft, loadStylePresets, refreshProject, openProjectDialog, openStyleDialog })', context)
+  const controls = runInNewContext(script + '\n;({ stylePresets, newProjectStyle, projectStyleDraft, projectCustomStylesDraft, loadStylePresets, refreshProject, openProjectDialog, openStyleDialog, saveProjectStyle })', context)
   return { ...controls, calls, context, currentProject, dialog }
 }
 const latestPresets = () => SCRIPT_VIDEO_STYLE_PRESETS.map(preset => ({ ...preset, prefix: preset.prefix + '\r\n运行期更新。' }))
@@ -89,6 +92,33 @@ test('共享版本刷新才并行加载预设，单分集刷新不新增预设�
   assert.deepEqual(new Set(app.calls), new Set(['/style-presets', '/projects/project?view=summary']))
 })
 
+test('项目风格草稿可取消，保存时同时提交自定义列表和所选风格并保留其他页面新增的项', async () => {
+  const app = setup(() => SCRIPT_VIDEO_STYLE_PRESETS)
+  const old = { id: 'custom-00000000-0000-4000-8000-000000000001', name: '旧风格', prefix: '旧提示词。' }
+  const next = { id: 'custom-00000000-0000-4000-8000-000000000002', name: '  水墨  ', prefix: '淡墨与留白。' }
+  const remote = { id: 'custom-00000000-0000-4000-8000-000000000003', name: '定格动画', prefix: '手作羊毛毡。' }
+  app.currentProject.value.settings = { stylePreset: old, customStylePresets: { [old.id]: old } }
+  app.openStyleDialog()
+  app.projectCustomStylesDraft.value = {}
+  app.dialog.value = null
+  app.openStyleDialog()
+  assert.equal(app.projectCustomStylesDraft.value[old.id].prefix, old.prefix)
+  assert.equal(app.projectStyleDraft.value.id, old.id)
+
+  app.projectCustomStylesDraft.value = { [next.id]: next }
+  app.projectStyleDraft.value = next
+  app.currentProject.value.settings.customStylePresets[remote.id] = remote
+  await app.saveProjectStyle()
+  const saved = JSON.parse(JSON.stringify(app.currentProject.value.settings))
+  const normalized = { ...next, name: '水墨' }
+  assert.deepEqual(saved, { stylePreset: normalized, customStylePresets: { [remote.id]: remote, [next.id]: normalized } })
+  assert.equal(app.dialog.value, null)
+
+  app.openStyleDialog()
+  assert.equal(app.projectStyleDraft.value.id, next.id)
+  assert.deepEqual(Object.keys(app.projectCustomStylesDraft.value), [remote.id, next.id])
+})
+
 test('预设接口不可用或响应无效时保留已有预设和草稿', async () => {
   for (const request of [() => { throw new Error('离线') }, () => [{ id: 'custom', name: '错误返回', prefix: '无效' }]]) {
     const app = setup(request)
@@ -105,7 +135,7 @@ test('窗口回到前台和页面重新可见时刷新预设，后台保持静�
   let requests = 0
   const document = { visibilityState: 'visible', addEventListener: (name, callback) => documentListeners.set(name, callback) }
   const window = { addEventListener: (name, callback) => windowListeners.set(name, callback) }
-  const visibilityScript = ts.transpileModule(section('function refreshVisibleStyles()', 'let requestActivityRefresh:'),
+  const visibilityScript = ts.transpileModule(section('function refreshVisibleStyles()', 'watch(selectedProjectId'),
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
   runInNewContext(visibilityScript, {
     document, window, pageVisible, loadStylePresets: () => { requests++; return Promise.resolve() },

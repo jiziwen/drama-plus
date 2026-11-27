@@ -15,6 +15,8 @@ import { SCRIPT_VIDEO_TEXT_TIMEOUT_MS } from './script-video-text-timeout.js'
 import {
   readScriptVideoVoiceObservation,
   reconcileScriptVideoVoiceProfiles,
+  scriptVideoVoiceDisguiseFromLabel,
+  scriptVideoVoiceDisguiseLabels,
   type ScriptVideoVoiceAgeStage,
   type ScriptVideoVoiceProfileDraft,
 } from './script-video-voice-profile.js'
@@ -128,10 +130,12 @@ const instructions = [
   '只返回有效 JSON，格式为 {"assets":[{"kind":"character|scene|prop|creature 中的一个","name":"资产名","assetIdentity":"主体或主体｜版本","aliases":["同一资产的别名"],"imagePrompt":"完整中文生图词","reuseId":"确认复用时填已知项 id，否则省略"}],"incomplete":false}。本段没有符合的资产时返回空 assets 数组。',
   '各资产可加 occurrences 数组，每项形如 {"label":"剧本中的实际称呼","quote":"包含这个称呼的简短原文"}。label 必须是 script 中逐字使用的名字、主体名或已确认的别名。quote 从 script 逐字连续复制，最多 160 字，范围限于能确认该造型、拍摄空间、道具或生物实际出现，或角色实际发声的当前场次。仅被谈及、计划、想象或画外提到的对象不要记为出现。每个场次每种称呼选一处不同的完整短句，重句时多取相邻原文让引文能唯一定位；不加集号、场号或编造证据，previous 不能当引文。无法确认时省略。',
   '同一称呼对应多套造型、不同年龄或地点的不同时段时，引文取能区分具体版本的原文，例如换装、伤妆、内外景、日夜或形态变化。只出现通用称呼、没有版本线索时，保留资产条目并省略这条版本出现证据。',
-  '只给 character 可选加 voice，例 {"character":"全剧稳定的人物主体名","age":{"stage":"adult","quote":"本段支持年龄阶段的原文"},"clues":[{"facet":"pace","value":"语速从容偏慢","source":"explicit","quote":"本段声音设定的原文"}]}。',
+  '每项 character 都要填 voice，包括主角、复用角色、只有对白或没有明确嗓音设定的角色。非人物资产省略 voice。例 {"character":"全剧稳定的人物主体名","design":{"ageFeel":"青年年龄感","timbre":"清朗青年男声，中低音区、略带松弛感","delivery":"清冷克制，措辞端正，句尾收稳","volume":"中等音量","pace":"正常语速","accent":"中文普通话"}}。',
+  'voice.design 六项都要填写，依次写听感年龄、音色与音区、稳定的表达与收句方式、音量、语速、语言与口音。每项最多 40 字，不加项名、换行或竖线。上面的示例只说明格式。优先用剧本明确设定，缺少设定时根据人物身份、性格、常态对白写可直接试音的建议。无可靠依据的音量、语速和口音可用中等音量、正常语速、中文普通话。不要只写人物性格或照抄示例。同一人物同一年龄的换装、别名和后续出场沿用已知的声音设计，除非剧本有新的明确设定。',
   'voice.character 默认与 assetIdentity 的「主体」一致，同一人物的绰号和换装使用同一个主体，优先沿用 known.voice.character。确有明确不同年龄的出场版本，例如童年回忆，应给不同的视觉版本并使用同一个声音主体。age.stage 只能填 child、teen、adult、older_adult，青年和普通成年归为 adult。根据本段原文中明确的年龄、人生阶段或年龄版称呼填写 age，外貌推测、变装和年龄未知时省略。',
   '同名的不同人物要使用可区分的主体名。年龄阶段以角色此时实际呈现的年龄为准。修仙角色寿元增加但仍呈现同一年龄时，沿用现有声线。',
-  '每条声音线索只写一个短语并提供 script 中逐字一致的简短引文。facet 取 register（音高）、timbre（音色）、pace（语速）、articulation（咬字）、accent（口音）、delivery（稳定说话方式）。人物明确设定用 explicit，可望跨场景复现的说话习惯用 habit。同一含义沿用 known.voice.clues 的措辞，无线索就省略。表演情绪、单场哭喊或压低嗓音、模仿、伪装、服装身份与外貌都不能作为稳定声线。previous 和 known 用于关联人物，不从中复制引文。',
+  '男扮女装和女扮男装使用独立视觉版本，assetIdentity 的版本中写明「男扮女装」或「女扮男装」。voice.character 保持本人姓名，voice.disguise 分别填 male_as_female 或 female_as_male。六项描述针对易装时实际使用的说话方式，优先采用该造型的声音设定，原文未明确时提供贴合伪装身份的试音建议。常态造型省略 disguise，普通换装继续共用常态声音。',
+  'voice.age 形如 {"stage":"adult","quote":"本段支持年龄阶段的原文"}。voice.clues 每项包含 facet、value、source、quote。facet 取 register（音区）、timbre（音色）、pace（语速）、articulation（咬字）、accent（口音）、delivery（稳定说话方式）、volume（音量）。人物明确设定用 explicit，可望跨场景复现的说话习惯用 habit。每条线索只写一个短语并保留 script 中逐字一致的简短引文。同一含义沿用 known.voice.clues 的措辞，缺少原文时只写 design。表演情绪、单场哭喊或压低嗓音、临时模仿和外貌不能作为稳定声线。previous 和 known 用于关联人物，不从中复制引文。',
 ].join('\n')
 
 const normalize = (value: string) => value.normalize('NFKC').toLowerCase().replace(/\s+/gu, '')
@@ -278,6 +282,8 @@ function memoryForChunk(chunk: Chunk, known: KnownAsset[]) {
         character: profile?.character ?? asset.voice.find(observation => observation.character)?.character,
         ageStage: profile?.ageStage ?? lastVoice?.age?.stage,
         clues: (profile?.clues.length ? profile.clues : lastVoice?.clues)?.slice(0, 6).map(({ facet, value }) => ({ facet, value })),
+        design: profile?.design ?? lastVoice?.design,
+        disguise: profile?.disguise ?? lastVoice?.disguise,
       } }),
       ...(score > 0 && remaining >= 1800 && {
         imagePrompt: (asset.extracted?.imagePrompt || asset.existing?.imagePrompt)?.slice(0, 520),
@@ -405,7 +411,12 @@ function variant(identity: string) {
   return normalize(identity).split('|').slice(1).join('|')
 }
 
-function matchAsset(candidate: AssetCandidate, known: KnownAsset[], visibleIds: Set<string>) {
+function matchAsset(
+  candidate: AssetCandidate,
+  known: KnownAsset[],
+  visibleIds: Set<string>,
+  disguise: ReturnType<typeof scriptVideoVoiceDisguiseFromLabel>,
+) {
   const sameKind = known.filter(asset => asset.kind === candidate.kind)
   const identity = normalize(candidate.assetIdentity)
   const name = normalize(candidate.name)
@@ -414,6 +425,11 @@ function matchAsset(candidate: AssetCandidate, known: KnownAsset[], visibleIds: 
   const requested = sameKind.find(asset => asset.lookupId === candidate.reuseId && visibleIds.has(asset.lookupId))
   const candidateVariant = variant(candidate.assetIdentity)
   const compatible = (asset: KnownAsset) => {
+    if (asset.kind === 'character') {
+      const knownDisguise = asset.existing?.voiceProfile?.disguise ?? scriptVideoVoiceDisguiseFromLabel(asset.identity)
+        ?? scriptVideoVoiceDisguiseFromLabel(asset.names[0]) ?? asset.voice.find(voice => voice.disguise)?.disguise
+      if (knownDisguise !== disguise && (knownDisguise || normalize(asset.names[0]) !== name)) return false
+    }
     const knownVariant = asset.identity ? variant(asset.identity) : ''
     return !asset.identity || !candidateVariant || knownVariant === candidateVariant
   }
@@ -422,7 +438,7 @@ function matchAsset(candidate: AssetCandidate, known: KnownAsset[], visibleIds: 
   if (names.length === 1) return names[0]
   const aliases = new Set([candidate.name, candidate.assetIdentity, ...candidate.aliases].map(normalize))
   const byAlias = sameKind.filter(asset =>
-    variant(asset.identity ?? '') === candidateVariant && asset.names.some(label => aliases.has(normalize(label))),
+    variant(asset.identity ?? '') === candidateVariant && compatible(asset) && asset.names.some(label => aliases.has(normalize(label))),
   )
   return byAlias.length === 1 ? byAlias[0] : undefined
 }
@@ -474,7 +490,18 @@ function addCandidate(
   visibleIds: Set<string>,
   scenes: SourceScenes,
 ) {
-  let asset = matchAsset(candidate, known, visibleIds)
+  const voice = candidate.kind === 'character' ? readScriptVideoVoiceObservation(candidate.voice, chunk) : undefined
+  const disguise = candidate.kind === 'character' ? scriptVideoVoiceDisguiseFromLabel(candidate.assetIdentity)
+    ?? scriptVideoVoiceDisguiseFromLabel(candidate.name) ?? voice?.disguise : undefined
+  if (disguise && !variant(candidate.assetIdentity)) {
+    const label = scriptVideoVoiceDisguiseLabels[disguise]
+    candidate = {
+      ...candidate,
+      name: candidate.name.includes(label) ? candidate.name : `${candidate.name}（${label}）`,
+      assetIdentity: `${candidate.assetIdentity}｜${label}`,
+    }
+  }
+  let asset = matchAsset(candidate, known, visibleIds, disguise)
   if (!asset) {
     asset = { lookupId: String(known.length + 1), kind: candidate.kind, names: [candidate.name], voice: [] }
     known.push(asset)
@@ -485,10 +512,7 @@ function addCandidate(
     if (!names.has(normalize(name))) names.set(normalize(name), name)
   }
   asset.names = [...names.values()].slice(0, 41)
-  if (candidate.kind === 'character') {
-    const observation = readScriptVideoVoiceObservation(candidate.voice, chunk)
-    if (observation) asset.voice.push(observation)
-  }
+  if (voice) asset.voice.push(voice)
   const { source } = chunk
   const prior = asset.extracted
   const occurrences = mergeScriptVideoAssetOccurrences(prior?.occurrences, readAssetOccurrences(candidate, asset, chunk, scenes))

@@ -1,7 +1,7 @@
 <template>
   <section v-if="asset.kind === 'character'" class="sv-character-voice" :aria-label="asset.name + '的角色声音'">
     <template v-if="voiceProfile">
-      <small>{{ voiceProfile.character }} · {{ voiceProfile.ageStage === 'unknown' && !ageChoices.length ? '常态音色' : voiceAgeLabels[voiceProfile.ageStage] }}</small>
+      <small>{{ voiceProfileLabel }}</small>
       <small v-if="episodeSources.length">剧本来源：{{ episodeSources.join('、') }}</small>
       <small v-if="asset.voiceDescription?.text && !showGenerate" class="sv-voice-summary">声音描述：{{ asset.voiceDescription.text }}</small>
       <details v-if="voiceProfile.conflicts.length" class="sv-voice-conflicts">
@@ -97,7 +97,13 @@
       <small v-if="generationMessage" role="status">{{ generationMessage }}</small>
       <small v-else-if="!generationOptions?.length && !generationLoading">请在模型设置中检查即梦积分或 LibTV 账号与模型可用性。</small>
       <label>声音描述
-        <textarea v-model.trim="voiceDescription" rows="2" maxlength="500" :disabled="disabled || generating" placeholder="例如：沉稳温暖的成年女性声音，语速自然" />
+        <textarea
+          v-model.trim="voiceDescription"
+          rows="3"
+          maxlength="500"
+          :disabled="disabled || generating"
+          placeholder="青年年龄感｜清朗青年男声，中低音区、略带松弛感｜清冷克制，措辞端正，句尾收稳｜中等音量｜正常语速｜中文普通话"
+        />
       </label>
       <small v-if="asset.voiceDescription?.sourceLabel && voiceDescription === savedDescription">描述来源：{{ asset.voiceDescription.sourceLabel }}</small>
       <label v-if="needsConflictConfirmation" class="sv-voice-confirm">
@@ -153,7 +159,8 @@ const videoId = `voice-video-${useId()}`
 watch(() => props.videoUrl, () => { showVideo.value = false })
 const voiceProfile = computed(() => props.asset.voiceProfile)
 const voiceAgeLabels = { child: '儿童', teen: '青少年', adult: '成年', older_adult: '老年', unknown: '年龄阶段待定' }
-const voiceFacetLabels = { register: '音域', timbre: '音色', pace: '语速', articulation: '吐字', accent: '口音', delivery: '说话方式' }
+const voiceDisguiseLabels = { male_as_female: '男扮女装', female_as_male: '女扮男装' }
+const voiceFacetLabels = { register: '音域', timbre: '音色', pace: '语速', articulation: '吐字', accent: '口音', delivery: '说话方式', volume: '音量' }
 function episodeSource(evidence: { title: string; episodeNumber?: number }) {
   return evidence.episodeNumber ? `第 ${evidence.episodeNumber} 集` : evidence.title
 }
@@ -168,6 +175,14 @@ const episodeSources = computed(() => {
   return [...new Set(evidence.map(episodeSource).filter(Boolean))]
 })
 const ageChoices = computed(() => voiceProfile.value?.ageConflict ?? [])
+const voiceProfileLabel = computed(() => {
+  const profile = voiceProfile.value
+  if (!profile) return ''
+  const age = profile.ageStage === 'unknown' && !ageChoices.value.length ? '' : voiceAgeLabels[profile.ageStage]
+  const disguise = profile.disguise ? voiceDisguiseLabels[profile.disguise] : ''
+  const details = [age, disguise].filter(Boolean).join(' · ')
+  return `${profile.character} · ${details || '常态音色'}`
+})
 const selectedAge = ref<PreviewVoiceAgeStage | ''>('')
 watch(ageChoices, choices => { if (selectedAge.value && !choices.includes(selectedAge.value)) selectedAge.value = '' })
 const canConfirmAge = computed(() => !props.disabled && !props.uploading && !props.generating && !props.confirmingAge && !props.asset.voiceAudio?.url &&

@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import { tmpdir } from 'node:os'
 import { OUTLINE_DURATION_POLICY, ScriptVideoStore, ScriptVideoStoreError } from '../src/services/script-video-store'
-import { getScriptVideoStylePreset, scriptVideoPromptStylePrefix } from '../src/services/script-video-style'
+import { getScriptVideoStylePreset, scriptVideoPromptStylePrefix, SCRIPT_VIDEO_CUSTOM_STYLE_LIMIT } from '../src/services/script-video-style'
 import { getCurrentScriptVideoStylePreset } from '../src/services/script-video-style-source'
 import { diffScriptVideoChanges } from '../src/services/script-video-sync'
 import { buildScriptVideoDelivery } from '../src/services/script-video-delivery'
@@ -1112,6 +1112,58 @@ test('style snapshots persist, validate strictly and preserve existing settings 
     assert.deepEqual((await store.get(project.id)).settings.stylePreset, STYLE_TWO)
   }
   await assert.rejects(store.create('坏风格', null as any), ScriptVideoStoreError)
+}))
+
+test('custom styles are isolated by project and update the selected project style atomically', async () => fixture(async (store, dir) => {
+  const project = await store.create('自定义项目风格', STYLE)
+  const other = await store.create('另外一个项目')
+  const [episode] = project.episodes
+  const body = '镜头 01（0–3秒）\n画面与动作：木门缓缓推开。'
+  episode.production = { stylePreset: STYLE, visualSpecs: '旧规格' }
+  episode.cards = [{ id: 'card', prompt: scriptVideoPromptStylePrefix(STYLE) + '\n\n' + body,
+    duration: 3, assetIds: [], shots: [] }]
+  await store.update(project.id, project, project.revision)
+
+  const first = { id: `custom-${randomUUID()}` as const, name: '水墨', prefix: '水墨渲染，淡墨山景。' }
+  const second = { id: `custom-${randomUUID()}` as const, name: '黑白', prefix: '高反差黑白。' }
+  const field = (preset: typeof first) => `settings.customStylePresets.${preset.id}`
+  const clientId = randomUUID()
+  const save = (sequence: number, fields: Record<string, unknown>, unset?: string[]) =>
+    store.applyChanges(project.id, { clientId, sequence, changes: [{ target: 'project', fields, unset }] })
+  await save(1, { [field(first)]: first, [field(second)]: second, 'settings.stylePreset': first })
+  const added = await store.get(project.id)
+  assert.deepEqual(added.settings.customStylePresets, { [first.id]: first, [second.id]: second })
+  assert.deepEqual(added.settings.stylePreset, first)
+  assert.deepEqual(added.episodes[0].production.stylePreset, first)
+  assert.equal(added.episodes[0].cards[0].prompt, first.prefix + '\n\n' + body)
+  assert.equal((await store.get(other.id)).settings.customStylePresets, undefined)
+
+  const edited = { ...first, name: '淡墨', prefix: '淡墨纸本，留白。' }
+  await save(2, { [field(first)]: edited, 'settings.stylePreset': edited })
+  const active = await store.get(project.id)
+  assert.equal(active.episodes[0].cards[0].prompt, edited.prefix + '\n\n' + body)
+  await assert.rejects(save(3, {}, [field(first)]), { code: 'STYLE_PRESET_CHANGED', status: 409 })
+  await assert.rejects(save(3, { [field(second)]: { ...first, prefix: '无效的条目标识' } }), /自定义风格无效/u)
+  await assert.rejects(save(3, { [field(second)]: { ...second, prefix: '   ' } }), /自定义风格无效/u)
+  await assert.rejects(save(3, { [field(second)]: { ...second, name: '长'.repeat(61) } }), /自定义风格无效/u)
+  const tooMany = Object.fromEntries(Array.from({ length: SCRIPT_VIDEO_CUSTOM_STYLE_LIMIT + 1 }, () => {
+    const preset = { ...second, id: `custom-${randomUUID()}` }
+    return [preset.id, preset]
+  }))
+  await assert.rejects(save(3, { 'settings.customStylePresets': tooMany }), /每个项目最多保存/u)
+  assert.equal((await store.get(project.id)).revision, active.revision)
+  await save(3, { 'settings.stylePreset': second }, [field(edited)])
+
+  const reopened = new ScriptVideoStore(dir)
+  try {
+    const saved = await reopened.get(project.id)
+    assert.deepEqual(saved.settings.customStylePresets, { [second.id]: second })
+    assert.deepEqual(saved.settings.stylePreset, second)
+    assert.equal(saved.episodes[0].cards[0].prompt, second.prefix + '\n\n' + body)
+    assert.ok(saved.episodes[0].cards[0].promptVersions.some((version: { prompt: string }) => version.prompt.startsWith(edited.prefix)))
+  } finally {
+    await reopened.close()
+  }
 }))
 
 test('明确重应用相同项目风格时同步旧分集，保留历史且重复提交幂等', async t => {

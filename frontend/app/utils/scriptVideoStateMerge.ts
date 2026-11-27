@@ -109,6 +109,11 @@ export function mergeScriptVideoProject<T>(
   remote: T,
 ): { project: T; conflicts: string[] } {
   const conflicts: string[] = []
+  function mergeChoice(base: Value, local: Value, remote: Value, path: string) {
+    if (equal(local, base)) return clone(remote)
+    if (!equal(local, remote) && !equal(base, remote)) conflicts.push(path)
+    return clone(local)
+  }
   function merge(
     baseValue: Value,
     localValue: Value,
@@ -120,6 +125,17 @@ export function mergeScriptVideoProject<T>(
     if (key && serverField(context, key)) return clone(remoteValue)
     if (key && localField(context, key))
       return clone(localValue === missing ? remoteValue : localValue)
+    if (context === 'project' && path === 'settings.stylePreset')
+      return mergeChoice(baseValue, localValue, remoteValue, path)
+    if (context === 'project' && path === 'settings.customStylePresets') {
+      const [saved, local, remote] = [baseValue, localValue, remoteValue].map(value => object(value) ? value : {})
+      const result: ObjectValue = {}
+      for (const id of new Set([...Object.keys(saved!), ...Object.keys(local!), ...Object.keys(remote!)])) {
+        const preset = mergeChoice(own(saved!, id), own(local!, id), own(remote!, id), join(path, id))
+        if (preset !== missing) result[id] = preset
+      }
+      return Object.keys(result).length ? result : missing
+    }
     if (context === 'card' && key === 'referenceFrameSettings') {
       const settings = [baseValue, localValue, remoteValue].map(value => object(value) ? value : {})
       const maps = settings.map(value => object(value.lighting) ? value.lighting : {})
@@ -127,9 +143,7 @@ export function mergeScriptVideoProject<T>(
       // Never combine the mode, timestamp and video from different edits.
       function choice(values: ObjectValue[], name: string, choicePath: string) {
         const [base, local, remote] = values.map(value => own(value, name))
-        if (equal(local, base)) return clone(remote)
-        if (!equal(local, remote) && !equal(base, remote)) conflicts.push(choicePath)
-        return clone(local)
+        return mergeChoice(base, local, remote, choicePath)
       }
       const tail = choice(settings, 'tail', join(path, 'tail'))
       if (tail !== missing) result.tail = tail
@@ -162,6 +176,8 @@ export function mergeScriptVideoProject<T>(
       }
       return missing
     }
+    if (context === 'project' && path === 'settings' && baseValue === missing &&
+      object(localValue) && object(remoteValue)) baseValue = {}
     if (object(baseValue) && object(localValue) && object(remoteValue)) {
       const result: ObjectValue = {}
       const keys = new Set([

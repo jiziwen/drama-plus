@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import type { ScriptVideoVoiceAudio, ScriptVideoVoiceDescription } from './script-video-types.js'
 import {
+  formatScriptVideoVoiceDescription,
   mergeScriptVideoVoiceDrafts,
   scriptVideoVoiceProfileDraftSchema,
   scriptVideoVoiceProfileKey,
@@ -49,15 +50,12 @@ function updateVoiceGroup<T extends VoiceAsset>(group: T[], draft: ScriptVideoVo
   const existingDescriptions = new Map(group.flatMap(asset => preservedDescription(asset) && asset.voiceDescription
     ? [[asset.voiceDescription.text, asset.voiceDescription] as const] : []))
   const sharedDescription = existingDescriptions.size === 1 ? existingDescriptions.values().next().value : undefined
-  const text = [...new Set(draft.clues.map(clue => clue.value))].join('，')
-  const extracted = text ? { text: Array.from(text).slice(0, 250).join(''), sourceLabel: SCRIPT_VOICE_DESCRIPTION_SOURCE } : undefined
+  const extracted = { text: formatScriptVideoVoiceDescription(draft), sourceLabel: SCRIPT_VOICE_DESCRIPTION_SOURCE }
   const profile: ScriptVideoVoiceProfile = { ...draft, id, ...(audioConflict && { audioConflict: true }),
     ...(generatedOutputId && { generatedOutputId }) }
   return group.map(asset => {
     const next = { ...asset, voiceProfile: profile }
-    const description = preservedDescription(asset) ? asset.voiceDescription : sharedDescription ?? extracted
-    if (description) next.voiceDescription = description
-    else delete next.voiceDescription
+    next.voiceDescription = preservedDescription(asset) ? asset.voiceDescription : sharedDescription ?? extracted
     if (audio) next.voiceAudio = audio
     return next
   })
@@ -76,13 +74,13 @@ function assignment(asset: VoiceAsset, proposal: ScriptVideoVoiceProfileDraft) {
     if (Boolean(existing.ageConflict?.length) !== ambiguous && locked) return existing
     return proposal
   }
-  if (!sameCharacter(existing, proposal) || locked) return existing
+  if (!sameCharacter(existing, proposal) || existing.disguise !== proposal.disguise || locked) return existing
   if (proposal.ageConflict?.length) return proposal
   if (proposal.ageStage === 'unknown') return existing
   if (existing.ageStage === 'unknown') return proposal
   return {
     ...proposal,
-    key: scriptVideoVoiceProfileKey(proposal.character, 'unknown'),
+    key: scriptVideoVoiceProfileKey(proposal.character, 'unknown', proposal.disguise),
     ageStage: 'unknown' as const,
     ageConflict: [...new Set([existing.ageStage, proposal.ageStage])].sort(),
     ageEvidence: [...(existing.ageEvidence ?? []), ...(proposal.ageEvidence ?? [])],
@@ -106,7 +104,8 @@ export function mergeScriptVideoProjectVoices<T extends VoiceAsset>(assets: T[],
     const prior = asset.voiceProfile
     const proposed = proposals.get(asset.id)
     if (!prior || prior.ageStage !== 'unknown' || prior.ageConflict?.length || !proposed?.observedAge ||
-        proposed.observedAge !== proposed.draft.ageStage || !sameCharacter(prior, proposed.draft)) continue
+        proposed.observedAge !== proposed.draft.ageStage || prior.disguise !== proposed.draft.disguise ||
+        !sameCharacter(prior, proposed.draft)) continue
     const candidates = newAges.get(prior.key) ?? new Map<string, ScriptVideoVoiceProfileDraft>()
     candidates.set(proposed.draft.key, proposed.draft)
     newAges.set(prior.key, candidates)
@@ -122,11 +121,17 @@ export function mergeScriptVideoProjectVoices<T extends VoiceAsset>(assets: T[],
   }
   for (const original of assets) {
     const previousProfile = original.voiceProfile
+    const proposed = proposals.get(original.id)?.draft
+    const separatedDisguise = previousProfile && !previousProfile.disguise && proposed?.disguise && sameCharacter(previousProfile, proposed)
     const promotion = previousProfile && !previousProfile.ageConflict?.length ? promoted.get(previousProfile.key) : undefined
-    const asset = previousProfile && promotion
+    let asset = previousProfile && promotion
       ? { ...original, voiceProfile: { ...previousProfile, key: promotion.key, ageStage: promotion.ageStage } }
       : original
-    const proposed = proposals.get(asset.id)?.draft
+    if (separatedDisguise) {
+      asset = { ...asset }
+      delete asset.voiceProfile
+      if (asset.voiceDescription?.sourceLabel === SCRIPT_VOICE_DESCRIPTION_SOURCE) delete asset.voiceDescription
+    }
     const previous = asset.voiceProfile
     if (asset.kind !== 'character' || (!proposed && !previous)) continue
     const proposedPromotion = proposed && !proposed.ageConflict?.length ? promoted.get(proposed.key) : undefined
@@ -153,12 +158,12 @@ export function mergeScriptVideoProjectVoices<T extends VoiceAsset>(assets: T[],
 
 export function confirmScriptVideoVoiceAge<T extends VoiceAsset>(assets: T[], asset: T, ageStage: NonNullable<VoiceAsset['confirmedVoiceAge']>): T[] {
   const profile = asset.voiceProfile!
-  const { ageConflict: _ageConflict, ...draft } = profile
+  const { ageConflict: _ageConflict, design: _design, ...draft } = profile
   const next = { ...asset, confirmedVoiceAge: ageStage }
   delete next.voiceProfile
   // Clues on a mixed-age appearance cannot safely be assigned to one stage.
   const resolved = {
-    ...draft, key: scriptVideoVoiceProfileKey(profile.character, ageStage), ageStage,
+    ...draft, key: scriptVideoVoiceProfileKey(profile.character, ageStage, profile.disguise), ageStage,
     ageEvidence: draft.ageEvidence?.filter(evidence => evidence.stage === ageStage),
     clues: [], conflicts: [], observations: [],
   }

@@ -9,7 +9,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isDeepStrictEqual } from 'node:util'
 import 'dotenv/config'
-import { scriptVideoPromptStylePrefix, isScriptVideoStylePreset, styleVisualSpecs, type ScriptVideoStylePreset } from './script-video-style.js'
+import { SCRIPT_VIDEO_CUSTOM_STYLE_LIMIT, isScriptVideoCustomStyleId, isScriptVideoStylePreset, scriptVideoPromptStylePrefix, styleVisualSpecs, type ScriptVideoStylePreset } from './script-video-style.js'
 import { getCurrentScriptVideoStyleRevision, resolveBuiltinStyleSnapshot } from './script-video-style-source.js'
 import { annotateScriptVideoAssets, scriptVideoAudioReferences, scriptVideoMaterialIds, type MentionAsset } from './script-video-mentions.js'
 import { annotateScriptVideoInnerOs } from './script-video-inner-os.js'
@@ -149,6 +149,32 @@ function validStyle(value: unknown): value is ScriptVideoStylePreset {
   if (!isScriptVideoStylePreset(value)) return false
   if (Object.keys(value).length !== styleKeys.length || Object.keys(value).some(key => !styleKeys.includes(key as typeof styleKeys[number]))) return false
   return value.id.length <= 64 && value.name.length <= 100 && value.prefix.length > 0 && value.prefix.length <= 20000
+}
+
+function validateProjectStyles(settings: Record<string, unknown>) {
+  const { stylePreset, customStylePresets } = settings
+  if (stylePreset !== undefined && !validStyle(stylePreset))
+    throw new ScriptVideoStoreError('风格预设无效，请检查名称、字段或长度')
+  if (customStylePresets !== undefined) {
+    if (!customStylePresets || typeof customStylePresets !== 'object' || Array.isArray(customStylePresets))
+      throw new ScriptVideoStoreError('自定义风格列表无效')
+    const entries = Object.entries(customStylePresets)
+    if (entries.length > SCRIPT_VIDEO_CUSTOM_STYLE_LIMIT)
+      throw new ScriptVideoStoreError(`每个项目最多保存 ${SCRIPT_VIDEO_CUSTOM_STYLE_LIMIT} 个自定义风格`)
+    if (entries.some(([id, preset]) => !isScriptVideoCustomStyleId(id) || !validStyle(preset) || preset.id !== id))
+      throw new ScriptVideoStoreError('自定义风格无效，请检查名称和风格前缀')
+  }
+  if (stylePreset && isScriptVideoCustomStyleId(stylePreset.id) &&
+      !isDeepStrictEqual(stylePreset, (customStylePresets as Record<string, unknown> | undefined)?.[stylePreset.id]))
+    throw new ScriptVideoStoreError('所选自定义风格已更新或删除，请重新选择后保存', 409, 'STYLE_PRESET_CHANGED')
+}
+
+function initialProjectStyle(stylePreset?: ScriptVideoStylePreset) {
+  if (stylePreset === undefined) return {}
+  return {
+    stylePreset,
+    ...(isScriptVideoCustomStyleId(stylePreset?.id) && { customStylePresets: { [stylePreset.id]: stylePreset } }),
+  }
 }
 function validateAsset(asset: any) {
   if (
@@ -416,7 +442,7 @@ function sanitizeProject(
     throw new ScriptVideoStoreError('项目字段无效')
   if (input.settings !== undefined && (!input.settings || typeof input.settings !== 'object' || Array.isArray(input.settings))) throw new ScriptVideoStoreError('项目设置无效')
   let settings = partialWrite ? input.settings || {} : { ...(previous?.settings || {}), ...(input.settings || {}) }
-  if (settings.stylePreset !== undefined && !validStyle(settings.stylePreset)) throw new ScriptVideoStoreError('风格预设无效，请检查名称、字段或长度')
+  validateProjectStyles(settings)
   input = syncBuiltinStyleSnapshots({ ...input, settings })
   settings = input.settings
   const assetIds = new Set<string>()
@@ -1004,7 +1030,7 @@ export class ScriptVideoStore {
       assets: [],
       episodes: [episode],
       episodeId: episode.id,
-      settings: stylePreset === undefined ? {} : { stylePreset },
+      settings: initialProjectStyle(stylePreset),
     })
     project.revision = 1
     await this.exclusive(id, async () => this.writeRecord({ project, jobs: [] }))
@@ -1025,7 +1051,7 @@ export class ScriptVideoStore {
       }))
       const project = sanitizeProject({
         id, title: input.title, revision: 1, assets: input.assets, episodes,
-        episodeId: episodes[0]?.id || '', settings: { stylePreset: input.stylePreset },
+        episodeId: episodes[0]?.id || '', settings: initialProjectStyle(input.stylePreset),
       })
       this.writeRecord({ project, jobs: [] })
       return project

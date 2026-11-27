@@ -51,7 +51,7 @@ export function getCurrentScriptVideoStyleRevision(): string {
 
 /** Built-in IDs follow their source. An explicitly custom style stays authored. */
 export function resolveBuiltinStyleSnapshot(preset: unknown): ScriptVideoStylePreset | undefined {
-  if (!isScriptVideoStylePreset(preset) || preset.id === 'custom') return undefined
+  if (!isScriptVideoStylePreset(preset) || (preset.id !== 'cool' && preset.id !== 'warm')) return undefined
   const latest = getCurrentScriptVideoStylePreset(preset.id)
   return latest?.name === preset.name ? latest : undefined
 }

@@ -330,6 +330,10 @@ export async function getJimengVideoModels(): Promise<JimengVideoModel[]> {
     // If the schema supports the command, preserve its original error.
     if (!data) throw error
   }
+  // Some CLI versions interpret an unknown subcommand as a model search and return success.
+  if (!Array.isArray(data.items) && data.query === 'ls' && Array.isArray(data.matches)) {
+    data = await invoke(['model', 'list', '--type=video'])
+  }
   const catalog = list(data.items)
   return Object.entries(jimengVideoModelSpecs).flatMap(([id, { canonicalModel }]) => {
     const item = catalog.find(item => item.model === canonicalModel)

@@ -37,7 +37,8 @@ const subject={kind:'personal',userId:'123'};
 switch(cmd) {
 case 'space current': ok(subject); break;
 case 'canvas create': ok({project:{projectId:flag('project-id')}}); break;
-case 'model ls': ok({items:[...(!fs.existsSync(file('no-mini'))?[{model:'seedance_2.0_mini',displayName:'Seedance 2.0 mini'}]:[]),{model:'seedance_2.5',displayName:'Seedance 2.5'}]}); break;
+case 'model ls': ok({query:'ls',matchKind:'none',matches:[]}); break;
+case 'model list': ok({items:[...(!fs.existsSync(file('no-mini'))?[{model:'seedance_2.0_mini',displayName:'Seedance 2.0 mini'}]:[]),{model:'seedance_2.5',displayName:'Seedance 2.5'}]}); break;
 case 'node create': {
   const nodeId='node_'+randomUUID(), gen={model:flag('model'),mode:flag('mode'),prompt:flag('prompt'),durationSeconds:Number(flag('duration')),ratio:flag('ratio'),resolution:flag('resolution'),outputCount:Number(flag('count')),references:[]};
   fs.writeFileSync(file(nodeId+'.json'),JSON.stringify({nodeId,type:'video',generation:gen}));ok({node:{nodeId}});break;

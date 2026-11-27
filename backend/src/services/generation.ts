@@ -5,7 +5,7 @@
 import { isSeedance25Model } from './seedance-models.js'
 import { inlineSeedanceVoice } from './seedance-reference-media.js'
 import { db, getInsertId, schema } from '../db/index.js'
-import { and, desc, eq, gt, isNull, ne } from 'drizzle-orm'
+import { and, desc, eq, gt, isNull, ne, or } from 'drizzle-orm'
 import fs from 'node:fs'
 import { getAbsolutePath } from '../utils/storage.js'
 import { downloadVideo, safeTaskError } from './video-download.js'
@@ -36,7 +36,7 @@ import { assertVideoCliNotDisconnecting, holdVideoCliSubmission } from './video-
 import { resolveVideoCliAccountId } from './video-cli-accounts.js'
 import { cancelUpstreamVideo } from './video-upstream-cancel.js'
 import { scheduleRetiredUploadCleanup } from './script-video-media-retention.js'
-import { isScriptVideoVoiceModel, saveGeneratedCharacterVoice, scriptVideoVoiceTaskScope, scriptVideoVoiceRequest, type ScriptVideoVoiceRequest } from './script-video-voice-generation.js'
+import { isScriptVideoVoiceModel, sameScriptVideoVoiceOwner, saveGeneratedCharacterVoice, scriptVideoVoiceParam, scriptVideoVoiceTaskScope, scriptVideoVoiceRequest, type ScriptVideoVoiceRequest } from './script-video-voice-generation.js'
 import { ScriptVideoStoreError } from './script-video-store.js'
 import { GALLERY_IMAGE_SIZES, isGalleryImageAspect, type GalleryImageAspect } from './gallery-asset-types.js'
 
@@ -47,8 +47,14 @@ export const VIDEO_REQUEST_NOT_SENT_MESSAGE = '连接视频服务时 TLS 握手�
 const activeTasks = new Set<number>()
 export function isGenerationTaskActive(id: number): boolean { return activeTasks.has(id) }
 const videoSubmissions = new Set<number>()
-const voiceSubmissions = new Set<string>()
+const voiceSubmissions = new Set<ScriptVideoVoiceRequest>()
 const voiceGenerationActive = () => new ScriptVideoStoreError('该角色已有声音生成任务，请等待完成', 409, 'VOICE_GENERATION_ACTIVE')
+function holdVoiceSubmission(voice: ScriptVideoVoiceRequest | undefined) {
+  if (!voice) return
+  if ([...voiceSubmissions].some(active => sameScriptVideoVoiceOwner(active, voice))) throw voiceGenerationActive()
+  voiceSubmissions.add(voice)
+  return () => { voiceSubmissions.delete(voice) }
+}
 function runBackground(id: number, job: () => Promise<void>) {
   if (activeTasks.has(id)) return
   activeTasks.add(id)
@@ -176,13 +182,11 @@ export async function generateVideo(params: GenerateVideoParams, control?: Video
   let releaseCliSubmission: (() => void) | undefined
   const storyboardId = params.storyboardId
   const voice = params.scriptVideoVoice
-  const voiceKey = voice && `${voice.projectId}/${voice.assetId}`
   if (storyboardId && videoSubmissions.has(storyboardId)) throw new Error('该分镜正在提交任务，请勿重复点击')
-  if (voiceKey && voiceSubmissions.has(voiceKey)) throw voiceGenerationActive()
-  if (voiceKey) voiceSubmissions.add(voiceKey)
+  const releaseVoiceSubmission = holdVoiceSubmission(voice)
   if (storyboardId) videoSubmissions.add(storyboardId)
   try {
-    if (voice && activeVoiceTask(db, voice)) throw voiceGenerationActive()
+    if (voice) assertVoiceGenerationAvailable(db, voice)
     if (storyboardId) {
       const [latest] = await db.select().from(schema.sysTask).where(and(eq(schema.sysTask.type, 'video'), eq(schema.sysTask.storyboardId, storyboardId)))
         .orderBy(desc(schema.sysTask.id)).limit(1)
@@ -240,13 +244,20 @@ export async function generateVideo(params: GenerateVideoParams, control?: Video
   } finally {
     releaseCliSubmission?.()
     if (storyboardId) videoSubmissions.delete(storyboardId)
-    if (voiceKey) voiceSubmissions.delete(voiceKey)
+    releaseVoiceSubmission?.()
   }
 }
 
-function activeVoiceTask(database: Pick<typeof db, 'select'>, voice: ScriptVideoVoiceRequest) {
+function assertVoiceGenerationAvailable(database: Pick<typeof db, 'select'>, voice: ScriptVideoVoiceRequest) {
   const task = schema.sysTask
-  return database.select({ id: task.id }).from(task).where(and(eq(task.status, 'processing'), scriptVideoVoiceTaskScope(voice))).get()
+  const completedProfile = voice.profileId
+    ? and(eq(task.status, 'completed'), eq(scriptVideoVoiceParam('profileId'), voice.profileId))
+    : undefined
+  const existing = database.select({ status: task.status }).from(task)
+    .where(and(or(eq(task.status, 'processing'), completedProfile), scriptVideoVoiceTaskScope(voice))).get()
+  if (existing?.status === 'completed')
+    throw new ScriptVideoStoreError('该角色当前年龄阶段已生成音色', 409, 'VOICE_ALREADY_GENERATED')
+  if (existing) throw voiceGenerationActive()
 }
 
 function videoTaskInputs(params: GenerateVideoParams, provider: string) {
@@ -335,9 +346,9 @@ async function createTask(
 ): Promise<number> {
   control?.signal.throwIfAborted()
   const ts = now()
+  const voice = params.scriptVideoVoice as ScriptVideoVoiceRequest | undefined
   const res = db.transaction(tx => {
-    const voice = params.scriptVideoVoice as ScriptVideoVoiceRequest | undefined
-    if (voice && activeVoiceTask(tx, voice)) throw voiceGenerationActive()
+    if (voice) assertVoiceGenerationAvailable(tx, voice)
     if (fields.storyboardId) {
       const shot = tx.select({ id: schema.storyboards.id, deletedAt: schema.storyboards.deletedAt })
         .from(schema.storyboards).where(eq(schema.storyboards.id, fields.storyboardId)).get()
@@ -365,7 +376,7 @@ async function createTask(
       createdAt: ts,
       updatedAt: ts,
     }).run()
-  })
+  }, voice ? { behavior: 'immediate' } : undefined)
 
   const id = getInsertId(res)
   control?.onTaskCreated(id)
@@ -856,7 +867,7 @@ async function saveImageResult(record: SysTaskRecord, source: {
       }
       if (!image && imageUrl) {
         if (base64) db.update(task).set({ stage: 'downloading', updatedAt: now() }).where(eq(task.id, record.id)).run()
-        image = await prepareGeneratedImage(record, await downloadImage(imageUrl, headers))
+        image = await prepareGeneratedImage(record, await downloadImage(imageUrl, { headers, midjourneyResult: isMidjourneyImageTask(record) }))
       }
       if (!image) throw new InvalidGeneratedImage('图片服务返回的文件无法读取，请重试或切换图片模型。')
       localPath = await saveUploadedFile(image.buffer, 'images', 'result' + image.extension)
@@ -1004,9 +1015,12 @@ async function recoveryConfig(record: SysTaskRecord): Promise<AIConfig> {
   throw new Error('历史任务无法确定原服务配置，请先核对配置')
 }
 
+function isMidjourneyImageTask(record: SysTaskRecord): boolean {
+  return isMidjourneyImageConfig({ provider: record.provider || '', baseUrl: record.configBaseUrl || '', model: record.model || '' })
+}
+
 function midjourneyTaskId(record: SysTaskRecord): string | null {
-  const config = { provider: record.provider || '', baseUrl: record.configBaseUrl || '', model: record.model || '' }
-  return isMidjourneyImageConfig(config) ? record.taskId : null
+  return isMidjourneyImageTask(record) ? record.taskId : null
 }
 
 export async function recoverImageTask(id: number): Promise<void> {
@@ -1078,20 +1092,24 @@ export async function recoverVideoTask(id: number): Promise<void> {
   return recoverStoredVideoTask(record)
 }
 
+function assertCurrentVoiceTask(database: Pick<typeof db, 'select'>, request: ScriptVideoVoiceRequest, id: number) {
+  const task = schema.sysTask
+  const newer = database.select({ id: task.id }).from(task)
+    .where(and(gt(task.id, id), scriptVideoVoiceTaskScope(request))).get()
+  if (newer) throw new Error('已有更新的角色声音生成任务，无法恢复这次生成')
+}
+
 async function recoverStoredVideoTask(record: SysTaskRecord): Promise<void> {
   const id = record.id
   if (record.status === 'canceled') throw new Error('视频任务已取消')
   if (activeTasks.has(id) || record.status === 'completed') return
   const voice = scriptVideoVoiceRequest(record.params)
-  if (voice) {
-    const task = schema.sysTask
-    const newer = db.select({ id: task.id }).from(task).where(and(gt(task.id, id), scriptVideoVoiceTaskScope(voice))).get()
-    if (newer) throw new Error('已有更新的角色声音生成任务，无法恢复这次生成')
-  }
+  if (voice) assertCurrentVoiceTask(db, voice, id)
   if (!record.resultUrl && !record.taskId) throw new Error('未保存上游任务编号，请先核对上游记录，勿重复生成')
   if (record.errorCode === 'generation_failed') throw new Error('上游已确认生成失败，无法恢复原任务')
   if (['submission_not_sent', 'submission_rejected'].includes(record.errorCode || '')) throw new Error('视频请求未成功提交，无需查询原任务')
   // 在任何异步配置读取前获取锁，重复点击不会启动多个下载。
+  const releaseVoiceSubmission = holdVoiceSubmission(voice)
   activeTasks.add(id)
   try {
     if (record.storyboardId) {
@@ -1101,9 +1119,15 @@ async function recoverStoredVideoTask(record: SysTaskRecord): Promise<void> {
     const config = record.taskId && !record.resultUrl ? await recoveryConfig(record) : null
     const originalParams = parseTaskParams(record.params)
     assertVideoCliNotDisconnecting(record.provider, originalParams.videoCliAccountId ?? originalParams[record.provider || '']?.profileId ?? 'default')
-    const started = db.update(schema.sysTask).set({ status: 'processing', errorMsg: null, errorCode: null,
-      stage: record.resultUrl ? 'downloading' : record.stage === 'transferring' || record.errorCode === 'delivery_failed' ? 'transferring' : 'polling', updatedAt: now() })
-      .where(and(eq(schema.sysTask.id, id), ne(schema.sysTask.status, 'canceled'), ne(schema.sysTask.status, 'completed'))).run()
+    const claim = (database: Pick<typeof db, 'select' | 'update'>) => {
+      if (voice) assertCurrentVoiceTask(database, voice, id)
+      return database.update(schema.sysTask).set({ status: 'processing', errorMsg: null, errorCode: null,
+        stage: record.resultUrl ? 'downloading' : record.stage === 'transferring' || record.errorCode === 'delivery_failed' ? 'transferring' : 'polling', updatedAt: now() })
+        .where(and(eq(schema.sysTask.id, id), ne(schema.sysTask.status, 'canceled'), ne(schema.sysTask.status, 'completed'),
+          voice ? eq(schema.sysTask.updatedAt, record.updatedAt) : undefined,
+          voice && record.status ? eq(schema.sysTask.status, record.status) : undefined)).run()
+    }
+    const started = voice ? db.transaction(claim, { behavior: 'immediate' }) : claim(db)
     if (!started.changes) {
       activeTasks.delete(id)
       return
@@ -1141,6 +1165,8 @@ async function recoverStoredVideoTask(record: SysTaskRecord): Promise<void> {
   } catch (error) {
     activeTasks.delete(id)
     throw error
+  } finally {
+    releaseVoiceSubmission?.()
   }
 }
 

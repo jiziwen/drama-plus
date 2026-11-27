@@ -7,7 +7,7 @@
     <div v-for="row in rows" :key="keyOf(row)" class="sv-frame-row">
       <button v-if="row.imageUrl" type="button" class="sv-frame-preview" :aria-label="`查看${label(row)}图片`"
         aria-haspopup="dialog" title="点击查看大图" @click="previewFrame(row)">
-        <img :src="row.imageUrl" :alt="label(row)" class="sv-frame-thumb" loading="lazy" />
+        <img :src="thumbOf(row.imageUrl)" :alt="label(row)" class="sv-frame-thumb" loading="lazy" decoding="async" />
       </button>
       <div v-else class="sv-frame-thumb sv-frame-placeholder" aria-hidden="true" />
       <div class="sv-frame-details">
@@ -41,6 +41,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { thumbOf } from '~/composables/useMedia'
 import type { ScriptVideoReferenceFrameRow as Row, ScriptVideoReferenceFrames } from '../../../backend/src/services/script-video-reference-settings'
 import type { FrameSelection, FrameSource } from '~/composables/useScriptVideoReferenceFrames'
 

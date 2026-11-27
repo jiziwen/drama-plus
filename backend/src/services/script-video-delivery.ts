@@ -3,6 +3,7 @@ import type { ScriptVideoReferenceSettings } from './script-video-reference-sett
 import { annotateScriptVideoInnerOs, hasExplicitScriptVideoInnerOs, hasScriptVideoInnerOs, SCRIPT_VIDEO_INNER_OS_DIRECTION } from './script-video-inner-os.js'
 import { mapScriptVideoSoundLine, speechClosers, unquotedSpeaker, withoutScriptVideoVoiceCues } from './script-video-foley.js'
 import { annotateScriptVideoAssets, describeScriptVideoReferenceProblem, scriptVideoAudioReferences, scriptVideoMaterialEvidenceText, scriptVideoMaterialIds, type AssetMention } from './script-video-mentions.js'
+import type { ScriptVideoAssetBindingRequirement } from './script-video-asset-scenes.js'
 import { scriptVideoShotHeadings, splitScriptVideoHandoff } from './script-video-asset-scope.js'
 import { declaredScriptVideoSceneName } from './script-video-scene-continuity.js'
 import { bindScriptVideoLighting, sceneGradedStyle, type ScriptVideoLightingRange, type ScriptVideoReferenceLimits } from './script-video-lighting-delivery.js'
@@ -26,6 +27,8 @@ export interface ScriptVideoDeliveryAsset {
   image: string
   originalName?: string
   sourcePath?: string
+  aliases?: string[]
+  assetIdentity?: string
   voiceAudio?: { url: string; name: string; duration?: number; mimeType?: string }
   voiceMode?: ScriptVideoVoiceMode
 }
@@ -36,6 +39,9 @@ export interface ScriptVideoDeliveryCard {
   assetIds: string[]
   shots: ReadonlyArray<{ duration: number; camera?: string; action?: string; dialogue?: string; visualAssetIds?: string[]; speakerAssetIds?: string[] }>
   openingAssetIds?: string[]
+  scene?: string
+  sourceSceneIds?: string[]
+  assetBindingRequirements?: ScriptVideoAssetBindingRequirement[]
   openingRecap?: string
   characters?: string
   excludedAssetIds?: string[]

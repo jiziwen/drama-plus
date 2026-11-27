@@ -223,7 +223,7 @@
                 <div class="character-asset-main">
                   <div class="character-asset-overview">
                     <div class="character-portrait">
-                      <img v-if="matHasImage(m)" :src="thumbOf(assetSrc(m))" class="previewable-image" loading="lazy" @error="thumbFallback($event, assetSrc(m))" @click.stop="openAssetViewer(m)" />
+                      <img v-if="matHasImage(m)" :src="thumbOf(assetSrc(m))" class="previewable-image" loading="lazy" decoding="async" @click.stop="openAssetViewer(m)" />
                       <div v-else class="character-portrait-empty">
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
                       </div>
@@ -270,7 +270,7 @@
                 @keydown.space.prevent="openEdit(m)"
               >
                 <div class="asset-cover wide">
-                  <img v-if="matHasImage(m)" :src="thumbOf(assetSrc(m))" class="previewable-image" loading="lazy" @error="thumbFallback($event, assetSrc(m))" @click.stop="openAssetViewer(m)" />
+                  <img v-if="matHasImage(m)" :src="thumbOf(assetSrc(m))" class="previewable-image" loading="lazy" decoding="async" @click.stop="openAssetViewer(m)" />
                   <div v-else class="asset-cover-empty">
                     <svg v-if="g.kindKey === 'scene'" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
                     <svg v-else width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
@@ -371,7 +371,7 @@
                   :disabled="!matHasImage(editTarget)"
                   @click.stop="openAssetViewer(editTarget)"
                 >
-                  <img v-if="matHasImage(editTarget)" :src="thumbOf(assetSrc(editTarget))" @error="thumbFallback($event, assetSrc(editTarget))" />
+                  <img v-if="matHasImage(editTarget)" :src="thumbOf(assetSrc(editTarget))" loading="lazy" decoding="async" />
                   <span v-else class="mat-detail-media-empty">
                     <svg v-if="editTarget.kindKey === 'character'" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
                     <svg v-else-if="editTarget.kindKey === 'prop'" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>

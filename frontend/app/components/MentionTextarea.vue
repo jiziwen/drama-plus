@@ -37,7 +37,7 @@
         @mouseleave="leavePreview"
       >
         <div v-if="!preview.option.audioUrl" class="mention-preview-image">
-          <img v-if="preview.option.image && !previewImageFailed" :src="preview.option.image" :alt="preview.option.label || preview.option.value" decoding="async" @error="previewImageFailed = true" />
+          <img v-if="preview.option.image && !previewImageFailed" :src="thumbOf(preview.option.image)" :alt="preview.option.label || preview.option.value" loading="lazy" decoding="async" @error="previewImageFailed = true" />
           <component v-else :is="groupIcon(preview.option.kind)" :size="28" :stroke-width="1.5" />
         </div>
         <strong>@{{ preview.option.label || preview.option.value }}</strong>
@@ -81,7 +81,7 @@
               @mousemove="highlightIdx = flatIndex(gi, oi)"
             >
               <span :class="['mention-avatar', `mention-avatar-${opt.kind === 'scene' ? 'scene' : (opt.kind === 'prop' ? 'prop' : 'role')}`]">
-                <img v-if="opt.image" :src="opt.image" alt="" loading="lazy" decoding="async" @error="$event.target.style.display = 'none'" />
+                <img v-if="opt.image" :key="opt.image" :src="thumbOf(opt.image)" alt="" loading="lazy" decoding="async" @error="$event.target.style.display = 'none'" />
                 <component v-else :is="groupIcon(opt.kind)" :size="12" :stroke-width="2" />
               </span>
               <span class="mention-name">@{{ opt.label }}</span>
@@ -99,6 +99,7 @@
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { User, MapPin, Package, Headphones } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
+import { thumbOf } from '~/composables/useMedia'
 import { activateScriptVideoAudio, deactivateScriptVideoAudio, useScriptVideoAudioPreview } from '~/composables/useScriptVideoAudioPreview'
 
 const { t } = useI18n()

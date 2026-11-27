@@ -1633,6 +1633,45 @@ test('only a new manual production card can submit a free-form prompt without fo
   }
 }))
 
+test('分镜场次素材待确认时不会提交视频，选择后按正确的场景 ID 提交', async () => fixture(async store => {
+  const { createScriptVideoRoutes } = await import('../src/routes/script-video')
+  const { resolveScriptVideoAssetBinding } = await import('../src/services/script-video-asset-bindings')
+  let project = await store.create('场次素材审核')
+  project.assets = ['day', 'night'].map((id, index) => ({
+    id, name: `宫门_${index ? '夜间' : '白天'}`, kind: 'scene', assetIdentity: `宫门｜${index ? '夜间' : '白天'}`,
+    image: `/static/uploads/${id}.png`,
+  }))
+  const episode = project.episodes[0]
+  episode.script = episode.confirmedScript = '场次：1-01\n场景：宫门\n夜色渐浓。'
+  episode.confirmed = episode.outlineConfirmed = true
+  episode.cards = [{ id: 'board', title: '门前', duration: 5, status: 'draft', version: 1,
+    prompt: '镜头1\n画面与动作：@宫门_白天 宫灯渐亮。', assetIds: ['day'],
+    sourceSceneIds: ['1-01'], assetBindingRequirements: [{ key: 'gate', kind: 'scene', label: '宫门', sceneId: '1-01', candidateIds: ['day', 'night'] }],
+    shots: [{ id: 'first', duration: 5, camera: '固定', action: '@宫门_白天 宫灯渐亮。', dialogue: '无对白。', visualAssetIds: ['day'] }],
+  }]
+  project = await store.update(project.id, project, project.revision)
+  const submissions: string[][] = []
+  const app = createScriptVideoRoutes(store, {
+    assertScriptVideoFormal: () => {},
+    startScriptVideoGeneration: async ({ card }) => { submissions.push(card.assetIds); return { taskId: 512, status: 'processing' } },
+  } as Parameters<typeof createScriptVideoRoutes>[1])
+  const root = `http://localhost/projects/${project.id}/episodes/${project.episodeId}`
+  const headers = { 'content-type': 'application/json', 'X-Script-Video-Session': randomUUID() }
+  assert.equal((await app.request(`${root}/lock`, { method: 'POST', headers })).status, 200)
+  const submit = () => app.request(`${root}/cards/board/video`, { method: 'POST', headers, body: JSON.stringify({
+    expectedCardVersion: project.episodes[0].cards[0].version, configId: 1, model: 'test-video', aspectRatio: '16:9', resolution: '720p',
+  }) })
+  const rejected = await submit()
+  assert.equal(rejected.status, 422)
+  assert.equal((await rejected.json() as { errorCode: string }).errorCode, 'ASSET_BINDING_REQUIRED')
+  assert.deepEqual(submissions, [])
+  project.episodes[0].cards[0] = resolveScriptVideoAssetBinding(project.episodes[0].cards[0], 'gate', 'night', project.assets)
+  project = await store.update(project.id, project, project.revision, headers['X-Script-Video-Session'])
+  const accepted = await submit()
+  assert.equal(accepted.status, 201, await accepted.clone().text())
+  assert.deepEqual(submissions, [['night']])
+}))
+
 test('视频提交默认需要参考音频，只有显式开启才允许模型配音', async () => fixture(async store => {
   const { createScriptVideoRoutes } = await import('../src/routes/script-video')
   let project = await store.create('对白与心声音频')

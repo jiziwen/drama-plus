@@ -4,7 +4,7 @@
     <AppMenu v-model:open="isOpen" :min-width="280" :disabled="disabled">
       <template #trigger>
         <button type="button" class="model-select-trigger" :class="{ open: isOpen }" :disabled="disabled">
-          <img v-if="triggerIcon" :src="triggerIcon" class="model-select-icon" alt="" />
+          <img v-if="triggerIcon" :src="triggerIcon" class="model-select-icon" alt="" loading="lazy" decoding="async" />
           <span v-else-if="currentOption?.provider" class="model-select-provider">{{ currentOption.provider }}</span>
           <span class="model-select-value">{{ currentLabel }}</span>
           <ChevronDown :size="11" class="model-select-arrow" :class="{ open: isOpen }" />
@@ -12,7 +12,7 @@
       </template>
 
       <AppMenuItem v-if="!hideDefault" :selected="modelValue === ''" @click="pick('')">
-        <img v-if="defaultIcon" :src="defaultIcon" class="model-select-icon sm" alt="" />
+        <img v-if="defaultIcon" :src="defaultIcon" class="model-select-icon sm" alt="" loading="lazy" decoding="async" />
         <span class="model-select-dim">{{ effectiveDefaultLabel }}</span>
       </AppMenuItem>
       <AppMenuItem
@@ -24,7 +24,7 @@
       >
         <span class="model-select-option-name">{{ modelLabel(o.model) }}<small v-if="showConfig"> · {{ o.configName }}</small></span>
         <template v-if="modelIconUrl(o.provider, o.model)" #trailing>
-          <img :src="modelIconUrl(o.provider, o.model)" class="model-select-icon sm" alt="" />
+          <img :src="modelIconUrl(o.provider, o.model)" class="model-select-icon sm" alt="" loading="lazy" decoding="async" />
         </template>
       </AppMenuItem>
     </AppMenu>

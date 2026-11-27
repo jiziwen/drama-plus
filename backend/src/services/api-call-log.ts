@@ -82,6 +82,44 @@ async function requestBodyIdentity(body: BodyInit | null | undefined, summary: u
   return summary
 }
 
+// A constructed Response has an empty URL and a default type. These public
+// properties must also survive a consumer cloning the observed response.
+function withResponseMetadata(response: Response, original: Response): Response {
+  return Object.defineProperties(response, {
+    url: { value: original.url }, type: { value: original.type }, redirected: { value: original.redirected },
+    clone: { value() { return withResponseMetadata(Response.prototype.clone.call(this), this) } },
+  })
+}
+
+function observeEventStream(response: Response, body: ReadableStream<Uint8Array>, contentType: string) {
+  const decoder = new TextDecoder()
+  let text = '', retained = 0, truncated = false
+  // Observe the SDK's own stream. Draining a clone ahead of a slow consumer
+  // would queue the entire remaining response on the consumer's branch.
+  const tap = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      if (!truncated) {
+        const prefix = chunk.subarray(0, LIMIT - retained)
+        text += decoder.decode(prefix, { stream: true })
+        retained += prefix.byteLength
+        truncated = prefix.byteLength < chunk.byteLength
+      }
+      controller.enqueue(chunk)
+    },
+  })
+  const observed = withResponseMetadata(new Response(tap.readable, response), response)
+  const summary = body.pipeTo(tap.writable).then(() => {
+    text += decoder.decode()
+    if (truncated) return { truncated: true, contentType, text, message: '响应超过 1MB，已截断' }
+    const events = text.split(/\r?\n/).filter(line => line.startsWith('data:')).map(line => {
+      const data = line.slice(5).trim()
+      try { return JSON.parse(data) } catch { return data }
+    })
+    return { contentType, events }
+  })
+  return { response: observed, summary }
+}
+
 async function responseSummary(response: Response) {
   const contentType = response.headers.get('content-type') || ''
   if (!/json|text|xml|event-stream/i.test(contentType)) {
@@ -103,13 +141,6 @@ async function responseSummary(response: Response) {
     text += decoder.decode()
   } finally { reader.releaseLock() }
   if (truncated) return { truncated: true, contentType, text, message: '响应超过 1MB，已截断' }
-  if (contentType.includes('event-stream')) {
-    const events = text.split(/\r?\n/).filter(line => line.startsWith('data:')).map(line => {
-      const data = line.slice(5).trim()
-      try { return JSON.parse(data) } catch { return data }
-    })
-    return { contentType, events }
-  }
   try { return JSON.parse(text) } catch { return text }
 }
 
@@ -142,13 +173,17 @@ export const recordedFetch: typeof globalThis.fetch = async (input, init) => {
     const response = await globalThis.fetch(input, init)
     if (id) {
       safeWrite(() => { db.update(schema.apiCallLogs).set({ statusCode: response.status }).where(eq(schema.apiCallLogs.id, id!)).run() })
-      // Consume only a clone; the SDK retains the original streaming response.
-      void responseSummary(response.clone()).then(summary => safeWrite(() => {
+      const contentType = response.headers.get('content-type') || ''
+      const sse = response.body && /^text\/event-stream\b/i.test(contentType)
+        ? observeEventStream(response, response.body, contentType) : undefined
+      const summaryPromise = sse?.summary ?? responseSummary(response.clone())
+      void summaryPromise.then(summary => safeWrite(() => {
         db.update(schema.apiCallLogs).set({ status: response.ok ? 'success' : 'error', durationMs: Date.now() - started,
           response: serialize({ headers: Object.fromEntries(response.headers), body: summary }) }).where(eq(schema.apiCallLogs.id, id!)).run()
       })).catch(error => safeWrite(() => {
-        db.update(schema.apiCallLogs).set({ status: 'error', durationMs: Date.now() - started, error: String(error.message) }).where(eq(schema.apiCallLogs.id, id!)).run()
+        db.update(schema.apiCallLogs).set({ status: 'error', durationMs: Date.now() - started, error: String(error?.message ?? error ?? '响应读取已取消') }).where(eq(schema.apiCallLogs.id, id!)).run()
       }))
+      if (sse) return sse.response
     }
     return response
   } catch (error: any) {

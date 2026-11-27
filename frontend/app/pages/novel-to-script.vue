@@ -247,7 +247,7 @@
         <div v-if="visibleAssets.length" class="novel-asset-grid">
           <article v-for="asset in visibleAssets" :key="asset.id" class="novel-asset">
             <a v-if="asset.image" :href="asset.image" target="_blank" rel="noopener noreferrer" :aria-label="'查看' + asset.name + '原图'">
-              <img :src="asset.image" :alt="asset.name" loading="lazy">
+              <img :src="thumbOf(asset.image)" :alt="asset.name" loading="lazy" decoding="async">
             </a>
             <div v-else class="novel-asset-placeholder"><Images :size="26" aria-hidden="true" /></div>
             <div class="novel-asset-body">
@@ -299,6 +299,7 @@ import { ArrowLeft, ArrowRight, BookOpen, Check, CircleAlert, Clapperboard, Down
 import type { NovelAssetKind, NovelChapter, NovelCommand, NovelPace, NovelProject, NovelProjectSummary } from '../../../backend/src/services/novel-storyboard-types'
 import type { ProjectModelKind, ProjectModelOption, ProjectModelSelection } from '../../../backend/src/services/project-model-options'
 import { novelStoryboardAPI, taskAPI } from '~/composables/useApi'
+import { thumbOf } from '~/composables/useMedia'
 
 const route = useRoute()
 const router = useRouter()

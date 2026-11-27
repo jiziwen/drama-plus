@@ -8,6 +8,7 @@ import { projectScriptVideoSpokenText, scriptVideoSpokenText, withoutScriptVideo
 import { parseScriptVideoPromptDialogue } from './script-video-prompt-dialogue.js'
 import { getScriptVideoSceneContinuityIssues } from './script-video-scene-continuity.js'
 import { annotateScriptVideoAssets, describeScriptVideoReferenceProblem } from './script-video-mentions.js'
+import type { ScriptVideoAssetBindingRequirement, ScriptVideoAssetOccurrence } from './script-video-asset-scenes.js'
 import type { ScriptVideoReferenceSettings } from './script-video-reference-settings.js'
 import type { ScriptVideoStoryboardMode } from './script-video-storyboard-mode.js'
 
@@ -23,7 +24,7 @@ export const scriptVideoVoiceDescriptionSchema = z.strictObject({
   sourceLabel: z.string().trim().min(1).max(120).optional(),
 })
 export type ScriptVideoVoiceDescription = z.infer<typeof scriptVideoVoiceDescriptionSchema>
-export const scriptVideoAssetImageStatuses = ['pending', 'generating', 'completed', 'failed'] as const
+export const scriptVideoAssetImageStatuses = ['pending', 'generating', 'completed', 'failed', 'delivery_pending'] as const
 export type ScriptVideoAssetImageFields = {
   imagePrompt?: string
   imageStatus?: typeof scriptVideoAssetImageStatuses[number]
@@ -35,8 +36,9 @@ export type ScriptVideoAssetExtractionFields = {
   aliases?: string[]
   sourceTitles?: string[]
   sourceEpisodes?: number[]
+  occurrences?: ScriptVideoAssetOccurrence[]
 }
-export type ScriptVideoAsset = Pick<ScriptVideoAssetExtractionFields, 'aliases'> & {
+export type ScriptVideoAsset = ScriptVideoAssetExtractionFields & {
   id: string
   name: string
   kind: string
@@ -70,6 +72,7 @@ export const outlineFields = z.object({
   duration: seconds,
   summary: content,
   assetIds: z.array(content),
+  sourceSceneIds: z.array(content).optional(),
   combat: z.boolean(),
 })
 export const shotFields = z.object({
@@ -121,6 +124,7 @@ export type ScriptVideoShot = z.infer<typeof shotFields> & { id: string }
 export type ScriptVideoCard = z.infer<typeof outlineFields> &
   Partial<z.infer<typeof formalContext>> & {
     excludedAssetIds?: string[]
+    assetBindingRequirements?: ScriptVideoAssetBindingRequirement[]
     manuallyAdded?: true
     referenceFrameSettings?: ScriptVideoReferenceSettings
     promptNeedsSync?: boolean

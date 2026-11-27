@@ -216,7 +216,8 @@ export const feedbackAPI = {
     for (const screenshot of screenshots) form.append('screenshots', screenshot)
     return req<{ id: number }>('POST', '/settings/feedback', form, false)
   },
-  screenshotUrl: (id: number, position: number) => `${BASE}/settings/feedback/${id}/screenshots/${position}`,
+  screenshotUrl: (id: number, position: number, thumbnail = false) =>
+    `${BASE}/settings/feedback/${id}/screenshots/${position}${thumbnail ? '?thumbnail=1' : ''}`,
   list: (params: URLSearchParams) => api.get<{ items: FeedbackEntry[]; total: number; pageSize: number }>(`/settings/feedback/manage?${params}`),
   save: (id: number, body: Pick<FeedbackEntry, 'status' | 'operatorNote' | 'revision'>) => req<FeedbackEntry>('PUT', `/settings/feedback/manage/${id}`, body, false),
 }

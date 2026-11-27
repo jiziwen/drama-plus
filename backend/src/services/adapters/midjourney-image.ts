@@ -18,6 +18,10 @@ export function isMidjourneyBlend(config: ImageConfig): boolean {
   return config.model === blendModel && isMidjourneyImageConfig(config)
 }
 
+export function isMidjourneyImagine(config: ImageConfig): boolean {
+  return config.model === imagineModel && isMidjourneyImageConfig(config)
+}
+
 export function midjourneyBaseUrl(baseUrl: string): string {
   const base = new URL(baseUrl.trim())
   base.pathname = base.pathname.replace(/\/+$/, '').replace(/(?:\/(?:v1|mj))+$/, '')

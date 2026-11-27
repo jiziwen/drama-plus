@@ -456,7 +456,7 @@ test('single episode request marks camera, action, costume and OS speaker withou
   assert.equal(draft.shots[0].dialogue, dialogue)
 })
 
-test('script-to-video uses non-streaming Chat Completions, keeps tools and limits, and cancels stalled requests', async (t) => {
+test('outline confirmation streams draft and repair calls, preserves tools and limits, and cancels stalled requests', async (t) => {
   const { createServer } = await import('node:http')
   const dir = await mkdtemp(path.join(tmpdir(), 'script-video-provider-'))
   const old = { db: process.env.SQLITE_PATH, mysql: process.env.MYSQL_AUTO_IMPORT }
@@ -507,14 +507,17 @@ test('script-to-video uses non-streaming Chat Completions, keeps tools and limit
     for await (const part of req) chunks.push(part)
     const received = JSON.parse(Buffer.concat(chunks).toString())
     messages.push(received)
+    const contentType = received.stream ? 'text/event-stream' : 'application/json'
+    const event = (value: unknown) => 'data: ' + JSON.stringify(value) + '\n\n'
     if (scenario === 'providerError') {
-      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({
+      const failure = {
         error: { message: 'private fixture provider error', type: 'server_error', code: 'internal_error' },
-      }))
+      }
+      res.writeHead(200, { 'content-type': contentType }).end(received.stream ? event(failure) : JSON.stringify(failure))
       return
     }
     if (scenario === 'stalled') {
-      res.writeHead(200, { 'content-type': 'application/json' }).flushHeaders()
+      res.writeHead(200, { 'content-type': contentType }).flushHeaders()
       // Fail rather than hang even if the production adapter forgets its signal.
       const guard = setTimeout(() => {
         res.end('test guard')
@@ -549,6 +552,13 @@ test('script-to-video uses non-streaming Chat Completions, keeps tools and limit
       },
     }
     const base = { id: 'test', created: 1, model: 'fixture-text' }
+    const usage = { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 }
+    if (received.stream) {
+      res.writeHead(200, { 'content-type': contentType })
+      res.write(event({ ...base, choices: [{ index: 0, delta: { tool_calls: [{ index: 0, ...call }] } }] }))
+      res.end(event({ ...base, choices: [{ index: 0, delta: {}, finish_reason: finish }], usage }) + 'data: [DONE]\n\n')
+      return
+    }
     res.writeHead(200, { 'content-type': 'application/json' })
     res.end(JSON.stringify({
       ...base,
@@ -560,7 +570,7 @@ test('script-to-video uses non-streaming Chat Completions, keeps tools and limit
           : { role: 'assistant', content: null, tool_calls: [call] },
         finish_reason: finish,
       }],
-      usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 },
+      usage,
     }))
   })
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -621,6 +631,7 @@ test('script-to-video uses non-streaming Chat Completions, keeps tools and limit
     })
     assert.equal(complete.cards.length, 1)
     assert.equal(messages.length, 3)
+    assert.equal(messages[2].stream, true)
     assert.equal(messages[2].max_tokens, fixtureMaxOutput)
     const formalMessages = messages[2].messages
     assert.equal(
@@ -711,7 +722,7 @@ test('script-to-video uses non-streaming Chat Completions, keeps tools and limit
         'a deadline-induced tripwire must never be repaired as an empty candidate',
       )
       assert.equal(scheduled.filter((ms) => ms === 600_000).length, 1)
-      assert.ok(!messages[7].stream, 'the deadline cancels the pending JSON request')
+      assert.equal(messages[7].stream, true, 'the deadline cancels the stalled storyboard stream')
       const outlineClosed = new Promise<void>((resolve) => {
         deadlineClosed = resolve
       })
@@ -719,6 +730,7 @@ test('script-to-video uses non-streaming Chat Completions, keeps tools and limit
       await outlineClosed
       assert.equal(scheduled.filter((ms) => ms === 600_000).length, 2)
       assert.equal(messages.length, 9, 'the outline deadline cancels the candidate without starting another')
+      assert.equal(messages[8].stream, false)
     } finally {
       stub.mock.restore()
     }
@@ -735,6 +747,9 @@ test('script-to-video uses non-streaming Chat Completions, keeps tools and limit
       10,
       'an error inside HTTP 200 JSON must not be retried as an incomplete draft',
     )
+    await assert.rejects(generateScriptVideoCards({ ...config, outline: [outline] }),
+      (e) => e instanceof ScriptVideoAIError && e.code === 'MODEL_FAILED' && !e.message.includes('private'))
+    assert.equal(messages.length, 11, 'a provider error in the stream must not replay the draft')
     scenario = 'formal'
     const start = messages.length
     queuedDrafts.push(
@@ -743,6 +758,7 @@ test('script-to-video uses non-streaming Chat Completions, keeps tools and limit
     )
     const repaired = await generateScriptVideoCards({ ...config, outline: [outline] })
     assert.equal(repaired.attempts, 2)
+    assert.deepEqual(messages.slice(start).map(m => m.stream), [true, true])
     assert.deepEqual(messages.slice(start).map(m => m.max_tokens), [fixtureMaxOutput, fixtureMaxOutput])
     const repairTool = messages[start + 1].tools.find(tool => tool.function.name === 'submit_draft')?.function
     assert.ok(repairTool?.parameters?.properties?.patches)
@@ -771,6 +787,7 @@ test('script-to-video uses non-streaming Chat Completions, keeps tools and limit
     const review = await reviewScriptVideoEpisode({ ...config, cards: complete.cards, production: complete.production })
     assert.equal(review.passed, true)
     assert.equal(messages.length, beforeRevision + 2)
+    assert.deepEqual(messages.slice(beforeRevision).map(m => m.stream), [false, false])
 
     const beforeCultivation = messages.length
     queuedDrafts.push({ production, cards: [{
@@ -804,7 +821,7 @@ test('script-to-video uses non-streaming Chat Completions, keeps tools and limit
     assert.match(cultivationInstructions, /正式返回格式：调用 submit_draft 一次/u)
     assert.match(cultivationInstructions, /cards 每项必填/u)
     assert.match(cultivationInstructions, /shots 每项必填/u)
-    assert.ok(messages.every(message => message.stream === false), 'all script-to-video stages send non-streaming requests')
+    assert.equal(cultivationRequest.stream, true)
 
     await t.test('AICost Haiku submits the outline with the named structured tool', async (t) => {
       const aicostConfig = db.insert(schema.aiServiceConfigs).values({

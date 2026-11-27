@@ -203,3 +203,105 @@ test('user cancellation aborts the provider HTTP request and never writes draft 
   await assert.rejects(runScriptVideoWholeModel({ ...request, signal: controller.signal }, resolve), { name: 'AbortError' })
   assert.equal(calls, 1)
 })
+
+function streamChunk(delta: object, finish: string | null = null, usage?: object) {
+  const chunk = {
+    id: 'fixture-stream', model: 'test-model', created: 1,
+    choices: [{ index: 0, delta, finish_reason: finish }], usage,
+  }
+  return 'data: ' + JSON.stringify(chunk) + '\n\n'
+}
+
+function streamToolArgs(args: string, first: boolean) {
+  const definition = first ? { id: 'draft', type: 'function' } : {}
+  return { tool_calls: [{ index: 0, ...definition, function: {
+    ...(first && { name: 'submit_draft' }), arguments: args,
+  } }] }
+}
+
+const sseHeaders = { 'Content-Type': 'text/event-stream' }
+const streamEnd = 'data: [DONE]\n\n'
+
+test('streaming assembles tool argument fragments once and waits for completion before saving', async () => {
+  const local = localProvider(128_000)
+  const saved: unknown[] = []
+  const draft = { timingPlan, production, cards: [card] }
+  const response = runScriptVideoWholeModel({
+    ...request, stream: true,
+    onTimingPlan: value => { saved.push(value) },
+    onProduction: value => { saved.push(value) },
+    onCard: value => { saved.push(value) },
+  }, local.resolveModel)
+  await local.started
+  const body = new TransformStream<Uint8Array, Uint8Array>()
+  const writer = body.writable.getWriter()
+  local.reply(new Response(body.readable, { headers: sseHeaders }))
+  const encoder = new TextEncoder()
+  const args = JSON.stringify(draft)
+  await writer.write(encoder.encode(streamChunk(streamToolArgs(args.slice(0, 15), true))))
+  await writer.write(encoder.encode(streamChunk(streamToolArgs(args.slice(15), false))))
+  assert.deepEqual(saved, [])
+  await writer.write(encoder.encode(streamChunk({}, 'tool_calls') + streamEnd))
+  await writer.close()
+  assert.deepEqual(await response, draft)
+  assert.deepEqual(saved, [timingPlan, production, card])
+  assert.equal(local.requests(), 1)
+  assert.equal(local.sent().stream, true)
+  assert.equal(local.sent().max_tokens, 128_000)
+  assert.equal((local.sent().tools as unknown[]).length, 2)
+})
+
+test('streaming accepts plain JSON split across text deltas when the model answers without a tool', async () => {
+  const local = localProvider()
+  const saved: number[] = []
+  const response = runScriptVideoWholeModel({
+    ...request, stream: true, onCard: (_value, index) => { saved.push(index) },
+  }, local.resolveModel)
+  const draft = { cards: [null, card] }
+  const json = JSON.stringify(draft)
+  local.reply(new Response(
+    streamChunk({ content: json.slice(0, 8) }) + streamChunk({ content: json.slice(8) }, 'stop') + streamEnd,
+    { headers: sseHeaders },
+  ))
+  assert.deepEqual(await response, draft)
+  assert.deepEqual(saved, [1])
+  assert.equal(local.requests(), 1)
+})
+
+test('a stream ending before the provider finish reason does not save a parseable tool call or replay it', async () => {
+  const local = localProvider()
+  const saved: unknown[] = []
+  const response = runScriptVideoWholeModel({
+    ...request, stream: true, onCard: value => { saved.push(value) },
+  }, local.resolveModel)
+  const args = JSON.stringify({ cards: [card] })
+  local.reply(new Response(streamChunk(streamToolArgs(args, true)), { headers: sseHeaders }))
+  await assert.rejects(response, { code: 'MODEL_STREAM_INTERRUPTED' })
+  assert.deepEqual(saved, [])
+  assert.equal(local.requests(), 1)
+})
+
+test('a length-limited tool stream recovers only complete draft objects and reports token usage', async () => {
+  const local = localProvider(128_000)
+  const saved: unknown[] = []
+  const response = runScriptVideoWholeModel({
+    ...request, stream: true,
+    onProduction: value => { saved.push(value) },
+    onCard: value => { saved.push(value) },
+  }, local.resolveModel)
+  const partial = '{"production":' + JSON.stringify(production) + ',"cards":[' + JSON.stringify(card) + ',{"title":"未完'
+  const usage = { completion_tokens: 32768, completion_tokens_details: { reasoning_tokens: 32000 } }
+  local.reply(new Response(
+    streamChunk(streamToolArgs(partial.slice(0, 12), true)) +
+    streamChunk(streamToolArgs(partial.slice(12), false), 'length', usage) + streamEnd,
+    { headers: sseHeaders },
+  ))
+  await assert.rejects(response, (error: any) => {
+    assert.equal(error.code, 'OUTPUT_TRUNCATED')
+    assert.match(error.message, /32768/)
+    assert.match(error.message, /32000/)
+    return true
+  })
+  assert.deepEqual(saved, [production, card])
+  assert.equal(local.requests(), 1)
+})

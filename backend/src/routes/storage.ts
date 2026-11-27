@@ -6,10 +6,12 @@
  * 过期时立即返回旧值并后台单飞重算（computing 防并发）；首次无值才同步等待。
  */
 import { Hono } from 'hono'
+import { createHash } from 'node:crypto'
 import { DATA_ROOT, STORAGE_ROOT } from '../utils/paths.js'
 import { dbPath } from '../db/index.js'
 import { dirUsage, volumeFreeBytes } from '../utils/dirsize.js'
 import { success } from '../utils/response.js'
+import { readStoredImageThumbnail } from '../utils/storage.js'
 
 const app = new Hono()
 
@@ -37,6 +39,15 @@ async function computeUsage() {
 // 启动 10s 后后台预热一次，用户进设置页时大概率已命中缓存
 const warmup = setTimeout(() => { void computeUsage() }, 10_000)
 warmup.unref?.()
+
+app.get('/thumbnail', async c => {
+  const image = await readStoredImageThumbnail(c.req.query('path') || '')
+  if (!image) return c.json({ code: 404, message: '缩略图暂不可用' }, 404, { 'Cache-Control': 'no-store' })
+  const etag = `"${createHash('sha256').update(image).digest('hex')}"`
+  const headers = { 'Content-Type': 'image/webp', 'Cache-Control': 'private, no-cache', ETag: etag }
+  if (c.req.header('If-None-Match') === etag) return c.body(null, 304, headers)
+  return c.body(new Uint8Array(image), 200, headers)
+})
 
 app.get('/', async (c) => {
   const fresh = cache.computedAt && (Date.now() - new Date(cache.computedAt).getTime()) < USAGE_TTL_MS

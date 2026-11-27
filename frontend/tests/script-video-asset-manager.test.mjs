@@ -5,6 +5,7 @@ import { runInNewContext } from 'node:vm'
 import { compileScript, parse } from '@vue/compiler-sfc'
 import * as vue from 'vue'
 import ts from 'typescript'
+import { thumbOf } from '../app/composables/useMedia.ts'
 
 const { computed, ref } = vue
 const source = readFileSync(new URL('../app/pages/preview/script-to-video.vue', import.meta.url), 'utf8')
@@ -40,6 +41,43 @@ function manager() {
 
 const visibleIds = manager => Array.from(manager.managedAssets.value, asset => asset.id)
 const tabCounts = manager => Object.fromEntries(Array.from(manager.assetManageTabs.value, tab => [tab.value, tab.count]))
+
+test('资产缩略图加载失败时只尝试一次原图，换图后重置预览', (t) => {
+  const filename = 'ScriptVideoPreviewAssetImage.vue'
+  const source = readFileSync(new URL(`../app/components/${filename}`, import.meta.url), 'utf8')
+  const { descriptor } = parse(source, { filename })
+  const script = compileScript(descriptor, { id: filename, inlineTemplate: true })
+  const { outputText } = ts.transpileModule(script.content, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  })
+  const exported = {}
+  runInNewContext(outputText, { exports: exported, require: name => {
+    if (name === 'vue') return vue
+    if (name === 'lucide-vue-next') return { Headphones: () => null }
+    assert.equal(name, '~/composables/useMedia')
+    return { thumbOf }
+  }, computed: vue.computed, ref: vue.ref, watch: vue.watch })
+
+  const asset = vue.reactive({ image: '/static/uploads/旧图.png', name: '旧场景', kind: 'scene' })
+  const scope = vue.effectScope()
+  t.after(() => scope.stop())
+  const draw = scope.run(() => exported.default.setup({ asset }, { expose() {} }))
+  const render = () => draw({}, [])
+  const fail = node => node.props.onError({ currentTarget: { getAttribute: () => node.props.src } })
+
+  assert.equal(render().props.src, thumbOf(asset.image))
+  fail(render())
+  assert.equal(render().props.src, asset.image)
+  fail(render())
+  assert.equal(render().children, '图片暂不可用')
+
+  asset.image = '/static/uploads/新图.png'
+  assert.equal(render().props.src, thumbOf(asset.image))
+  asset.image = 'https://example.test/scene.png'
+  assert.equal(render().props.src, asset.image)
+  fail(render())
+  assert.equal(render().children, '图片暂不可用')
+})
 
 test('分类与名称、目录搜索同时生效，搜索忽略大小写且允许没有目录的资产', () => {
   const app = manager()
@@ -147,12 +185,138 @@ test('资产弹框在已有生图提示词和后台更新出图状态时都能�
   assert.deepEqual(targetIds(), ['gate'])
   assets.value = [{ ...assets.value[0], imageStatus: 'generating' }]
   assert.deepEqual(targetIds(), [])
+  assets.value = [{ ...assets.value[0], imageStatus: 'delivery_pending', imageTaskId: 63 }]
+  assert.deepEqual(targetIds(), [])
   assets.value = [{ ...assets.value[0], imageStatus: 'failed' }]
   assert.deepEqual(targetIds(), ['gate'])
   replacingImages.value.add('gate')
   assert.deepEqual(targetIds(), [])
   replacingImages.value.delete('gate')
   assert.deepEqual(targetIds(), ['gate'])
+})
+
+test('旧导入图片资产始终有生图入口，音频不显示该按钮', () => {
+  const assetManager = section('<div class="vp-asset-edit-grid">', '<div class="vp-binding-grid">')
+  const button = assetManager.match(/<button\b[^>]*@click="requestAssetImageGeneration\(asset, \$event\)"[^>]*>[\s\S]*?<\/button>/u)?.[0]
+  assert.ok(button, '资产卡片有生图按钮')
+  assert.match(button, /v-if="asset\.kind !== 'audio'"/u)
+  assert.match(button, /重新生成图片/u)
+  assert.match(button, /生成图片/u)
+  assert.match(assetManager, /v-model="asset\.imagePrompt"/u)
+})
+
+test('旧资产点击生图先打开并聚焦提示词，不改动资产；已有提示词时才提交生成', async () => {
+  const generationController = ts.transpileModule(
+    section('async function requestAssetImageGeneration(', 'async function generateAssetImages('),
+    { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } },
+  ).outputText
+  const editingAssetImagePromptId = ref('')
+  const submitted = []
+  let focused = 0
+  const button = { closest(selector) {
+    assert.equal(selector, '.vp-asset-edit-row')
+    return { querySelector(query) {
+      assert.equal(query, '.vp-asset-image-prompt textarea')
+      return { focus: () => focused++ }
+    } }
+  } }
+  const request = runInNewContext(generationController + '\nrequestAssetImageGeneration', {
+    editingAssetImagePromptId, nextTick: vue.nextTick,
+    generateAssetImages: assets => submitted.push(...assets),
+  })
+  const imported = { id: 'old', kind: 'character', name: '旧素材', image: '/static/uploads/old.png' }
+  const original = { ...imported }
+  await request(imported, { currentTarget: button })
+  assert.equal(editingAssetImagePromptId.value, 'old')
+  assert.equal(focused, 1)
+  assert.deepEqual(imported, original)
+  assert.deepEqual(submitted, [])
+
+  imported.imagePrompt = '深蓝服装的角色'
+  await request(imported, { currentTarget: button })
+  assert.deepEqual(submitted, [imported])
+  assert.equal(focused, 1)
+})
+
+test('只有场景卡片有 MJ 出图，保存提示词后直接提交 MJ 请求', async () => {
+  const actions = section('<div class="vp-asset-edit-actions">', '<label v-if="asset.kind === \'audio\'" class="btn btn-sm vp-asset-replace">')
+  assert.match(actions, /requestAssetImageGeneration\(asset, \$event\)"[\s\S]*?<\/button>\s*<button\s+v-if="asset\.kind === 'scene'"[\s\S]*?@click="requestAssetImageGeneration\(asset, \$event, 'midjourney'\)"[\s\S]*?MJ 出图/u)
+  const generationController = ts.transpileModule(
+    section('function assetImageRunning(', 'async function savePreviewConfig('),
+    { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } },
+  ).outputText
+  const submissions = new Set()
+  const calls = []
+  const request = runInNewContext(generationController + '\nrequestAssetImageGeneration', {
+    currentProject: ref({ id: 'project' }),
+    assetImageModels: ref([{ key: 'other', configId: 7, model: 'other-image-model' }]),
+    assetImageModelKey: ref('other'),
+    assetImageSubmissions: submissions,
+    selectedAssetImages: ref(new Set()),
+    replacingImages: ref(new Set()),
+    requireSharedProjectEdit: () => true,
+    async saveProjectNow(projectId) { calls.push(['save', projectId]) },
+    async scriptVideoRequest(path, method, payload) {
+      assert.ok(submissions.has('project/gate'))
+      calls.push([method, path, JSON.parse(JSON.stringify(payload))])
+      return { started: ['gate'] }
+    },
+    async refreshProject() {},
+    requestActivityRefresh: undefined,
+    alive: true,
+    toast: { success() {} },
+  })
+  const scene = { id: 'gate', kind: 'scene', imagePrompt: '北城门' }
+  await request(scene, {}, 'midjourney')
+  await request(scene, {})
+  assert.deepEqual(calls, [
+    ['save', 'project'],
+    ['POST', '/projects/project/assets/generate', { assetIds: ['gate'], mode: 'midjourney' }],
+    ['save', 'project'],
+    ['POST', '/projects/project/assets/generate', { assetIds: ['gate'], configId: 7, model: 'other-image-model' }],
+  ])
+  assert.equal(submissions.size, 0)
+})
+
+test('待取回的场景显示重试入口，点击只请求取回原图', async () => {
+  const assetManager = section('<div class="vp-asset-edit-grid">', '<div class="vp-binding-grid">')
+  assert.match(assetManager, /v-if="canRetryAssetImageDelivery\(asset\)"[\s\S]*?@click="retryAssetImageDelivery\(asset\)"[\s\S]*?重试取图/u)
+  assert.match(assetManager, /asset\.imageError && \(asset\.imageStatus === 'failed' \|\| asset\.imageStatus === 'delivery_pending'\)/u)
+  const recoveryController = ts.transpileModule([
+    section('function assetImageRunning(', 'async function requestAssetImageGeneration('),
+    section('async function retryAssetImageDelivery(', 'async function savePreviewConfig('),
+  ].join('\n'), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText
+  const asset = { kind: 'scene', id: 'gate', imageStatus: 'delivery_pending', imageTaskId: 63 }
+  const submissions = new Set()
+  const calls = []
+  const { retryAssetImageDelivery, assetImageStatusLabel, canRetryAssetImageDelivery } = runInNewContext(
+    recoveryController + '\n;({ retryAssetImageDelivery, assetImageStatusLabel, canRetryAssetImageDelivery })', {
+      currentProject: ref({ id: 'project' }),
+      assetImageSubmissions: submissions,
+      selectedAssetImages: ref(new Set(['gate'])),
+      replacingImages: ref(new Set()),
+      requireSharedProjectEdit: () => true,
+      async scriptVideoRequest(path, method) {
+        assert.ok(submissions.has('project/gate'))
+        calls.push([method, path])
+        return { taskId: 63 }
+      },
+      async refreshProject(projectId) { calls.push(['refresh', projectId]) },
+      requestActivityRefresh: () => calls.push(['activity']),
+      toast: { success() {} },
+      alive: true,
+    },
+  )
+  assert.equal(assetImageStatusLabel(asset), '已生成，待取回')
+  assert.equal(canRetryAssetImageDelivery({ ...asset, imageTaskId: undefined }), false)
+  await retryAssetImageDelivery({ ...asset, imageStatus: 'failed' })
+  assert.deepEqual(calls, [])
+  const pending = retryAssetImageDelivery(asset)
+  assert.equal(assetImageStatusLabel(asset), '正在取回')
+  await retryAssetImageDelivery(asset)
+  await pending
+  assert.deepEqual(calls, [['POST', '/projects/project/assets/gate/recover-image'], ['refresh', 'project'], ['activity']])
+  assert.equal(submissions.size, 0)
 })
 
 const deletionController = ts.transpileModule([

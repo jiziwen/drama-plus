@@ -109,7 +109,7 @@ test('site administrators can review member feedback with or without a dedicated
   const finished = await call('GET', '/manage?status=resolved', undefined, operator)
   assert.equal(finished.data.items[0].operatorNote, 'Fixed the preview.')
 
-  const screenshot = await sharp({ create: { width: 2, height: 2, channels: 3, background: '#234567' } }).png().toBuffer()
+  const screenshot = await sharp({ create: { width: 800, height: 400, channels: 3, background: '#234567' } }).png().toBuffer()
   function formWithScreenshot() {
     const form = new FormData()
     form.set('title', 'Screenshot feedback')
@@ -127,6 +127,7 @@ test('site administrators can review member feedback with or without a dedicated
   assert.equal(withScreenshot.status, 201)
   const screenshotId = withScreenshot.data.id
   const screenshotPath = `/${screenshotId}/screenshots/1`
+  const thumbnailPath = screenshotPath + '?thumbnail=1'
   for (const account of [reporter, administrator, operator]) {
     const image = await call('GET', screenshotPath, undefined, account)
     assert.equal(image.status, 200)
@@ -134,6 +135,13 @@ test('site administrators can review member feedback with or without a dedicated
     assert.equal(image.headers['cache-control'], 'no-store')
     assert.deepEqual(image.bytes, screenshot)
   }
+  const thumbnail = await call('GET', thumbnailPath, undefined, reporter)
+  assert.equal(thumbnail.status, 200)
+  assert.equal(thumbnail.headers['content-type'], 'image/webp')
+  assert.equal(thumbnail.headers['cache-control'], 'no-store')
+  const thumbnailImage = await sharp(thumbnail.bytes).metadata()
+  assert.deepEqual([thumbnailImage.width, thumbnailImage.height], [400, 200])
+  assert.equal((await call('GET', thumbnailPath, undefined, anotherMember)).status, 404)
   assert.equal((await call('GET', screenshotPath, undefined, anotherMember)).status, 404)
   assert.equal((await call('GET', screenshotPath)).status, 404)
   const picturedQueue = await call('GET', '/manage?status=open', undefined, administrator)

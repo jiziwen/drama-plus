@@ -1,11 +1,14 @@
 import { z } from 'zod'
 import { ScriptVideoAIError } from './script-video-types.js'
 import { isScriptVideoTimingQuestion } from './script-video-speech-planning.js'
+import { interruptedScriptVideoModelStream, receiveScriptVideoModelStream } from './script-video-model-stream.js'
 import { SCRIPT_VIDEO_TEXT_TIMEOUT_MS } from './script-video-text-timeout.js'
 
 type ResolvedModel = Awaited<ReturnType<typeof import('../agents/index.js').resolveScriptVideoTextModel>>
+type Model = Pick<ResolvedModel['model'], 'doGenerate' | 'doStream'>
+type CallOptions = Parameters<Model['doGenerate']>[0]
 type ResolveModel = (model?: string, configId?: number) => Promise<{
-  model: Pick<ResolvedModel['model'], 'doGenerate'>
+  model: Model
   maxOutputTokens?: number
 }>
 
@@ -19,6 +22,7 @@ export type ScriptVideoWholeModelRequest = {
   instructions: string
   message: string
   signal?: AbortSignal
+  stream?: boolean
   schema: z.ZodType
   mode?: keyof typeof submitDraftDescriptions
   model?: string
@@ -109,8 +113,7 @@ type InputSchema = Extract<ModelTools[number], { type: 'function' }>['inputSchem
 const inputSchema = (schema: z.ZodType) =>
   z.toJSONSchema(schema, { target: 'draft-7', io: 'input' }) as InputSchema
 
-/** The provider SDK makes one non-streaming HTTP request. Tools here describe the
- * shape of that single response; they never execute or start an agent step. */
+/** Tools describe a single response and never execute or start another model step. */
 export async function runScriptVideoWholeModel(
   request: ScriptVideoWholeModelRequest,
   resolveModel: ResolveModel = resolveWholeModel,
@@ -128,7 +131,7 @@ export async function runScriptVideoWholeModel(
   const signal = AbortSignal.any([deadline, controller.signal, ...(request.signal ? [request.signal] : [])])
   try {
     signal.throwIfAborted()
-    const result = await resolved.model.doGenerate({
+    const options: CallOptions = {
       prompt: [
         { role: 'system', content: request.instructions },
         { role: 'user', content: [{ type: 'text', text: request.message }] },
@@ -151,7 +154,10 @@ export async function runScriptVideoWholeModel(
         },
       ],
       toolChoice: { type: 'auto' },
-    })
+    }
+    const result = request.stream
+      ? await receiveScriptVideoModelStream(resolved.model, options)
+      : await resolved.model.doGenerate(options)
     signal.throwIfAborted()
     const finish = result.finishReason.unified
     const text: string[] = []
@@ -178,8 +184,7 @@ export async function runScriptVideoWholeModel(
     }
     if (finish === 'content-filter')
       throw new ScriptVideoAIError('MODEL_CONTENT_FILTER', '文字模型服务中断了本次输出，请检查剧本或模型设置。')
-    if (finish !== 'stop' && finish !== 'tool-calls')
-      throw new ScriptVideoAIError('MODEL_STREAM_INTERRUPTED', '文字模型连接在交付完成前中断。', [], 502)
+    if (finish !== 'stop' && finish !== 'tool-calls') throw interruptedScriptVideoModelStream()
     if (question)
       throw new ScriptVideoAIError('USER_INPUT_REQUIRED', question, [{ code: 'USER_INPUT_REQUIRED', message: question }])
     const parsed = parseJson(answer)

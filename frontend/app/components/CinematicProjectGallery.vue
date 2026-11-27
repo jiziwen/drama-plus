@@ -18,6 +18,7 @@
 <script setup lang="ts">
 import { ArrowUpRight, ArrowLeft, ArrowRight, Plus, MoveHorizontal } from 'lucide-vue-next'
 import { projectCover, projectGalleryImages } from '~/utils/projectPresentation'
+import { thumbOf } from '~/composables/useMedia'
 const props = defineProps<{ projects: any[]; loading: boolean }>()
 const emit = defineEmits<{ open: [project: any]; create: [] }>()
 const { interfaceLink } = useStudioInterface()
@@ -29,7 +30,7 @@ const items = computed(() => {
   const real = props.projects.flatMap(project => {
     const images = projectGalleryImages(project).filter(image => { const u = new URL(image.src, typeof location === 'undefined' ? 'http://studio.local' : location.origin); const key = u.origin + u.pathname; if (seen.has(key)) return false; seen.add(key); return true })
     const entries = images.length ? images : projectGalleryImages(project).length ? [] : [{ id: 'empty', src: '/studio/assets/story-placeholder.svg', kind: '', name: '' }]
-    return entries.map(image => ({ id: `project-${project.id}-${image.id}`, title: project.title, caption: image.kind ? `${project.title} · ${image.kind} / ${image.name}` : project.title, poster: image.src, assetLabel: image.kind ? `${image.kind} · ${image.name}` : '', video: '', project, tagline: '', aspect: 1.7, posterFocus: .5 }))
+    return entries.map(image => ({ id: `project-${project.id}-${image.id}`, title: project.title, caption: image.kind ? `${project.title} · ${image.kind} / ${image.name}` : project.title, poster: thumbOf(image.src), assetLabel: image.kind ? `${image.kind} · ${image.name}` : '', video: '', project, tagline: '', aspect: 1.7, posterFocus: .5 }))
   })
   return real.length ? real : [{ id: 'create-story', title: '你的第一个故事', caption: '创建一个新故事', poster: '/studio/assets/story-placeholder.svg', video: '', project: null, tagline: '写下第一段文字，创建属于你的故事。', aspect: 1.7, posterFocus: .5 }]
 })

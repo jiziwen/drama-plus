@@ -15,7 +15,7 @@
 <script setup>
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { ArrowUpRight, Clapperboard, Loader2, Play } from 'lucide-vue-next'
-import { posterOf, videoPosterSrc } from '~/composables/useMedia'
+import { posterOf, thumbOf, videoPosterSrc } from '~/composables/useMedia'
 
 const props = defineProps({
   title: { type: String, default: '' }, episodeTitle: { type: String, default: '' }, episodeNumber: { type: Number, default: 1 },
@@ -125,7 +125,8 @@ async function open({ merge = selectedMerge.value, fromStart = true } = {}) {
     if (destroyed || token !== request) return
     snapshot = {
       title, episode: episodeLabel,
-      shots, selectedId: props.selectedId, ratio, strictMedia: true, mediaAudio: true,
+      shots: shots.map(shot => ({ ...shot, thumbnail: thumbOf(shot.poster || blankPoster) })),
+      selectedId: props.selectedId, ratio, strictMedia: true, mediaAudio: true,
       look: { filter: 'none', glow: .08, accent: '#a6e7df', lightColor: '#d9edf1', lightX: 62, lightY: 32 },
     }
     if (!cinema) cinema = module.createCinema({ getSnapshot: () => snapshot, onClose: () => announce(false) })

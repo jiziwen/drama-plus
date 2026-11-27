@@ -181,8 +181,13 @@ export function createRibbonV2(container, options = {}) {
     if(video.requestVideoFrameCallback)record.frameCallback=video.requestVideoFrameCallback(firstFrame);
   }
   function createRecord(item) {
-    const record={item,texture:blank,posterTexture:null,videoTexture:null,video:null,videoFailed:false,mediaAspect:item.aspect,ready:false,retired:false};
+    const record={item,texture:blank,posterTexture:null,posterRequested:false,videoTexture:null,video:null,videoFailed:false,mediaAspect:item.aspect,ready:false,retired:false};
     records.set(item.id,record);
+    makeVideo(record);
+  }
+  function loadPoster(record) {
+    if(record.posterRequested)return;
+    record.posterRequested=true;
     const loader=new THREE.TextureLoader();loader.setCrossOrigin('anonymous');
     const load=(url,last=false)=>loader.load(url,texture=>{
       if(destroyed||record.retired){texture.dispose();return;}
@@ -193,9 +198,7 @@ export function createRibbonV2(container, options = {}) {
       if(!last&&!destroyed&&!record.retired)load('/studio/assets/story-placeholder.svg',true);
       else{record.ready=true;requestRender();}
     });
-    load(item.poster);
-    makeVideo(record);
-    return record;
+    load(record.item.poster);
   }
   function crop(card) {
     const mediaAspect=card.record.mediaAspect||card.item.aspect;
@@ -254,7 +257,8 @@ export function createRibbonV2(container, options = {}) {
       const mesh=new THREE.Mesh(geometry,material);mesh.frustumCulled=false;mesh.renderOrder=0;scene.add(mesh);
       cards.push({item,record,mesh,material,index,base:0,x:0,y:0,w:1,h:1,hover:0,alpha:0,overlay:null,rect:null});
     }
-    renderFallback();layout(true);
+    if(failed)renderFallback();
+    layout(true);
   }
   function layout(reset=false) {
     if(destroyed)return;
@@ -376,9 +380,11 @@ export function createRibbonV2(container, options = {}) {
   function updateCards(delta) {
     let animating=false;
     const span=mobile?height:width,left=-(loop-span)/2;
+    const nearby=new Set();
     for(const card of cards){
       const axis=looping?wrap(card.base-current,left,loop):card.base-current;
       card.x=mobile?(width-card.w)/2:axis;card.y=mobile?axis:(height-card.h)/2;
+      if(axis+(mobile?card.h:card.w)>-.5*span&&axis<1.5*span)nearby.add(card.record);
       card.mesh.position.set((card.x+card.w/2-width/2)*k,-(card.y+card.h/2-height/2)*k,0);
       const uniforms=card.material.uniforms;
       uniforms.u_sheetW.value=mobile?H:W;uniforms.u_sheetD.value=depth;
@@ -396,7 +402,8 @@ export function createRibbonV2(container, options = {}) {
     }
     let videoPlaying=false;
     for(const record of records.values()){
-      const visible=cards.some(card=>card.record===record&&(mobile?card.y+card.h>-.5*height&&card.y<1.5*height:card.x+card.w>-.5*width&&card.x<1.5*width));
+      const visible=nearby.has(record);
+      if(visible)loadPoster(record);
       if(record.video&&!record.videoFailed&&!reduced&&!paused&&visible&&!document.hidden){
         if(record.video.paused)record.video.play().catch(()=>{});
         if(!record.video.paused)videoPlaying=true;
@@ -440,6 +447,7 @@ export function createRibbonV2(container, options = {}) {
   }
   function showFallback() {
     failed=true;cancelAnimationFrame(raf);raf=0;records.forEach(stopVideo);
+    renderFallback();
     fallback.style.display='flex';if(renderer)renderer.domElement.style.display='none';
   }
   function renderFallback() {
@@ -447,7 +455,10 @@ export function createRibbonV2(container, options = {}) {
     for(const item of items){
       const button=document.createElement('button');button.type='button';button.dataset.id=String(item.id);
       Object.assign(button.style,{position:'relative',flex:'0 0 72%',maxWidth:'650px',aspectRatio:String(item.aspect),padding:'0',border:'1px solid #444',borderRadius:'14px',overflow:'hidden',background:'#111',color:'#fff',cursor:'pointer'});
-      const image=document.createElement('img');image.src=item.poster;image.alt=item.title;image.draggable=false;
+      const image=document.createElement('img');
+      image.loading='lazy';image.decoding='async';image.alt=item.title;image.draggable=false;
+      image.addEventListener('error',()=>{image.src='/studio/assets/story-placeholder.svg';},{once:true});
+      image.src=item.poster;
       Object.assign(image.style,{width:'100%',height:'100%',objectFit:'cover',objectPosition:`${item.posterFocus*100}% center`});
       const title=document.createElement('span');title.textContent=`${item.title}  +`;
       Object.assign(title.style,{position:'absolute',left:'18px',bottom:'15px',font:'16px sans-serif',textShadow:'0 2px 8px #000'});
@@ -530,7 +541,7 @@ export function createRibbonV2(container, options = {}) {
     listen(canvas,'webglcontextlost',event=>{event.preventDefault();showFallback();});
     listen(canvas,'webglcontextrestored',()=>{failed=false;fallback.style.display='none';canvas.style.display='block';requestRender();});
     document.fonts?.load('400 18px "Inter Tight"').then(()=>{if(!destroyed){cards.forEach(drawOverlay);requestRender();}}).catch(()=>{});
-  }catch{renderFallback();showFallback();}
+  }catch{showFallback();}
 
   const resize=()=>{if(!destroyed)layout();};
   const resizeObserver=typeof ResizeObserver!=='undefined'?new ResizeObserver(()=>{clearTimeout(resizeTimer);resizeTimer=setTimeout(resize,100);}):null;

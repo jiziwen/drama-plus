@@ -47,6 +47,7 @@ import { getScriptVideoMissingVoices, getScriptVideoVoiceInputs } from '../servi
 import { isScriptVideoGenerationDuration } from '../services/script-video-capabilities.js'
 import { isSeedance25Model } from '../services/seedance-models.js'
 import { assertScriptVideoFormal, getScriptVideoContentWarnings, ScriptVideoAIError, type ScriptVideoCard, type ScriptVideoInput } from '../services/script-video-types.js'
+import { scriptVideoAssetBindingIssues } from '../services/script-video-asset-bindings.js'
 import { hasScriptVideoPromptBody, scriptVideoPromptStylePrefix } from '../services/script-video-style.js'
 import { getCurrentScriptVideoStylePresets } from '../services/script-video-style-source.js'
 import { DEFAULT_SCRIPT_VIDEO_STORYBOARD_MODE, isScriptVideoStoryboardMode, type ScriptVideoStoryboardMode } from '../services/script-video-storyboard-mode.js'
@@ -192,9 +193,12 @@ function digest(
   }
   const textInput = action !== 'video' && !video && !legacyText
   if (textInput) {
-    assets = assets.map(asset => ({       id: asset.id, name: asset.name, kind: asset.kind,
-      ...(asset.kind === 'character' && {         nameInScript: scriptVideoCharacterName(asset), base: scriptVideoCharacterBase(asset),
-        hasVoiceReference: !!asset.voiceAudio?.url       })     }))
+    assets = assets.map(asset => ({ id: asset.id, name: asset.name, kind: asset.kind,
+      ...(asset.assetIdentity && { assetIdentity: asset.assetIdentity }),
+      ...(asset.aliases?.length && { aliases: asset.aliases }),
+      ...(asset.occurrences?.length && { occurrences: asset.occurrences }),
+      ...(asset.kind === 'character' && { nameInScript: scriptVideoCharacterName(asset), base: scriptVideoCharacterBase(asset),
+        hasVoiceReference: !!asset.voiceAudio?.url }) }))
   }
   const textCard = (card: any) => {
     if (!card) return card
@@ -1515,6 +1519,9 @@ export function createScriptVideoRoutes(
           }
           const cast = episode.production?.characters
           const stylePreset = episode.production?.stylePreset || record.project.settings?.stylePreset
+          const assetBindingIssues = scriptVideoAssetBindingIssues(card, record.project.assets)
+          if (assetBindingIssues.length)
+            throw new ScriptVideoStoreError(assetBindingIssues.map(issue => issue.message).join('\n'), 422, 'ASSET_BINDING_REQUIRED')
           if (card.manuallyAdded) {
             if (!hasScriptVideoPromptBody(card.prompt, stylePreset)) throw new ScriptVideoStoreError('请先输入本段视频提示词', 422, 'PROMPT_REQUIRED')
           } else {

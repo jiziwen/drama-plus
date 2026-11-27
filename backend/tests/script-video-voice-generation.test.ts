@@ -1,6 +1,7 @@
 import { after, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { once } from 'node:events'
 import os from 'node:os'
@@ -66,9 +67,6 @@ const configId = db.insert(schema.aiServiceConfigs).values({ serviceType: 'video
   videoCliAccountId: 'default', isActive: true, createdAt: now, updatedAt: now }).returning().get().id
 const project = await store.create('声音测试')
 project.assets.push(...['success', 'silent', 'manual', 'saved'].map(id => ({ id, name: id, kind: 'character' as const, image: '/static/uploads/character.png' })))
-project.assets.push({ id: 'prop', name: 'prop', kind: 'prop', image: '/static/uploads/prop.png' })
-project.assets.push({ id: 'hero', name: '阿宁', kind: 'character', image: '/static/uploads/character.png' })
-project.episodes[0].confirmedScript = '人物：阿宁\n声音：嗓音沙哑，说话慢'
 await store.update(project.id, project, project.revision)
 await store.mutateAssets(project.id, assets => ({ assets: assets.map(asset => {
   if (asset.id === 'saved') return { ...asset, voiceDescription: { text: '温暖自然的声线', sourceLabel: '第 1 集' } }
@@ -113,11 +111,6 @@ async function waitForJob(id: number) {
 async function calls() {
   return (await readFile(path.join(root, 'calls.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line)) as { cmd: string; args: string[] }[]
 }
-async function describe(asset: string, episodeId?: string) {
-  return fetch(`${origin}/projects/${project.id}/assets/${asset}/voice-description`, {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ episodeId }),
-  })
-}
 
 test('offers the current official mini model even if the saved config only lists 2.5', async () => {
   const response = await fetch(`${origin}/projects/${project.id}/assets/voice-generation-models`)
@@ -153,12 +146,12 @@ test('private endpoints reject cross-origin requests', async () => {
   })).status, 403)
 })
 
-test('reuses a saved character description without sending a generation request', async () => {
+test('removed automatic description endpoint does not start generation', async () => {
   const before = (await calls()).length
-  const response = await describe('saved')
-  assert.equal(response.status, 200, await response.clone().text())
-  assert.deepEqual((await response.json() as any).data, { text: '温暖自然的声线', sourceLabel: '第 1 集' })
-  assert.equal((await describe('prop')).status, 404)
+  const response = await fetch(`${origin}/projects/${project.id}/assets/saved/voice-description`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+  })
+  assert.equal(response.status, 404)
   assert.equal((await calls()).length, before)
 })
 
@@ -170,18 +163,8 @@ test('older clients saving a project without descriptions preserve server-owned 
     body: JSON.stringify({ project: oldClientProject, expectedRevision: oldClientProject.revision }),
   })
   assert.equal(response.status, 200, await response.clone().text())
-  assert.deepEqual((await (await describe('saved')).json() as any).data, { text: '温暖自然的声线', sourceLabel: '第 1 集' })
-})
-
-test('extracts an explicit voice from the confirmed script and persists it without a paid call', async () => {
-  const before = (await calls()).length
-  const response = await describe('hero', project.episodes[0].id)
-  assert.equal(response.status, 200, await response.clone().text())
-  const description = { text: '嗓音沙哑，说话慢', sourceLabel: '第 1 集' }
-  assert.deepEqual((await response.json() as any).data, description)
-  assert.deepEqual((await store.summary(project.id)).assets.find(asset => asset.id === 'hero')?.voiceDescription, description)
-  assert.deepEqual((await (await describe('hero')).json() as any).data, description)
-  assert.equal((await calls()).length, before)
+  assert.deepEqual((await store.summary(project.id)).assets.find(asset => asset.id === 'saved')?.voiceDescription,
+    { text: '温暖自然的声线', sourceLabel: '第 1 集' })
 })
 
 test('does not submit when the selected account no longer lists mini', async () => {
@@ -202,7 +185,8 @@ test('generates a character voice using the exact mini model and prevents duplic
   const response = await request('success')
   assert.equal(response.status, 201, await response.clone().text())
   const { id } = (await response.json() as any).data
-  assert.deepEqual((await (await describe('success')).json() as any).data, { text: '沉稳声音', sourceLabel: '第 2 集' })
+  assert.deepEqual((await store.summary(project.id)).assets.find(asset => asset.id === 'success')?.voiceDescription,
+    { text: '沉稳声音', sourceLabel: '手动编辑' })
   assert.equal((await jobs()).find(job => job.id === id)?.status, 'processing')
   assert.equal((await request('success')).status, 409)
   await rm(path.join(root, 'hold'))
@@ -257,7 +241,8 @@ test('manual voice change made while generation runs is preserved', async t => {
   const response = await request('manual')
   assert.equal(response.status, 201, await response.clone().text())
   const { id } = (await response.json() as any).data
-  assert.deepEqual((await (await describe('manual')).json() as any).data, { text: '沉稳声音', sourceLabel: '手动编辑' })
+  assert.deepEqual((await store.summary(project.id)).assets.find(asset => asset.id === 'manual')?.voiceDescription,
+    { text: '沉稳声音', sourceLabel: '手动编辑' })
   const manual = { url: '/static/uploads/manual.mp3', name: 'manual.mp3', mimeType: 'audio/mpeg' as const }
   await mkdir(path.join(root, 'static/uploads'), { recursive: true })
   await store.mutateAssets(project.id, assets => ({ assets: assets.map(asset => asset.id === 'manual' ? { ...asset, voiceAudio: manual } : asset), result: undefined }))
@@ -266,4 +251,72 @@ test('manual voice change made while generation runs is preserved', async t => {
   assert.equal(job.status, 'failed')
   assert.match(job.error, /声音已更改/)
   assert.deepEqual((await store.summary(project.id)).assets.find(item => item.id === 'manual')?.voiceAudio, manual)
+})
+
+test('one generated voice serves every outfit of an age and a child may have a separate voice', async t => {
+  const before = (await calls()).filter(call => call.cmd === 'node run').length
+  const adult = { id: randomUUID(), key: '阿宁:adult', character: '阿宁', ageStage: 'adult', clues: [], conflicts: [] }
+  const child = { ...adult, id: randomUUID(), key: '阿宁:child', ageStage: 'child' }
+  const uncertain = { ...adult, id: randomUUID(), key: '阿宁:unknown', ageStage: 'unknown', ageConflict: ['child', 'adult'] }
+  const conflict = { ...adult, id: randomUUID(), key: '阿乔:adult', character: '阿乔', conflicts: ['低沉', '尖细'].map(value => ({
+    facet: 'register', value, source: 'explicit', evidence: [{ title: '甲', quote: `阿乔声音${value}` }],
+  })) }
+  const ids = ['daily', 'formal', 'child', 'cloak', 'conflicting']
+  await store.mutateAssets(project.id, assets => ({ assets: [...assets,
+    ...[adult, adult, child, uncertain, conflict].map((voiceProfile, index) => ({
+      id: ids[index], name: ids[index], kind: 'character', image: '/static/uploads/character.png', voiceProfile,
+      ...(index < 2 && { voiceDescription: { text: '低沉清晰', sourceLabel: '剧本提取' } }),
+    })),
+  ], result: undefined }))
+
+  assert.equal((await request('cloak')).status, 409)
+  const disputedResponse = await request('conflicting')
+  assert.equal(disputedResponse.status, 409)
+  assert.match(await disputedResponse.text(), /确认使用的声音描述/u)
+  await writeFile(path.join(root, 'hold'), '')
+  t.after(() => rm(path.join(root, 'hold'), { force: true }))
+  const submissions = await Promise.all([request('daily', '低沉清晰'), request('formal', '低沉清晰')])
+  assert.deepEqual(submissions.map(response => response.status).sort(), [201, 409], await Promise.all(submissions.map(response => response.clone().text())).then(String))
+  const { id } = (await submissions.find(response => response.status === 201)!.json() as any).data
+  assert.deepEqual((await jobs()).filter(job => job.id === id).map(job => job.assetId).sort(), ['daily', 'formal'])
+  await rm(path.join(root, 'hold'))
+  const completed = await waitForJob(id)
+  assert.equal(completed.status, 'completed', completed.error)
+  let assets = (await store.summary(project.id)).assets
+  for (const target of assets.filter(asset => ['daily', 'formal'].includes(asset.id))) {
+    assert.deepEqual(target.voiceAudio, completed.voiceAudio)
+    assert.deepEqual(target.voiceDescription, { text: '低沉清晰', sourceLabel: '剧本提取' })
+    assert.equal(target.voiceProfile.generatedOutputId, completed.voiceAudio.url.split('/').at(-1).split('.')[0])
+  }
+  assert.equal((await request('formal')).status, 409)
+
+  const ageUrl = `${origin}/projects/${project.id}/assets/cloak/voice-age`
+  const confirmed = await fetch(ageUrl, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ageStage: 'adult' }) })
+  assert.equal(confirmed.status, 200, await confirmed.clone().text())
+  const resolved = (await store.summary(project.id)).assets.find(asset => asset.id === 'cloak')!
+  assert.equal(resolved.voiceProfile.id, adult.id)
+  assert.deepEqual(resolved.voiceAudio, completed.voiceAudio)
+
+  const childRequest = await request('child', '稚嫩轻快')
+  assert.equal(childRequest.status, 201, await childRequest.clone().text())
+  const childResult = await waitForJob((await childRequest.json() as any).data.id)
+  assert.equal(childResult.status, 'completed', childResult.error)
+  assert.notEqual(childResult.voiceAudio.url, completed.voiceAudio.url)
+  const active = await store.get(project.id)
+  const editUrl = `${origin}/projects/${project.id}/episodes/${active.episodes[0].id}/assets/daily/voice`
+  const remove = (expected: unknown) => fetch(editUrl, { method: 'PATCH', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ field: 'voiceAudio', expected, value: null }),
+  })
+  assert.equal((await remove(null)).status, 409)
+  assert.equal((await remove(completed.voiceAudio)).status, 200)
+  assets = (await store.summary(project.id)).assets
+  assert.equal(assets.find(asset => asset.id === 'formal')!.voiceAudio, undefined)
+  assert.deepEqual(assets.find(asset => asset.id === 'child')!.voiceAudio, childResult.voiceAudio)
+  assert.equal((await request('formal')).status, 409)
+  const recorded = await calls()
+  assert.equal(recorded.filter(call => call.cmd === 'node run').length, before + 2)
+  const [adultPrompt, childPrompt] = recorded.filter(call => call.cmd === 'node create').slice(-2)
+    .map(call => call.args.find(argument => argument.startsWith('--prompt=')))
+  assert.match(adultPrompt!, /说话者年龄阶段：成年/u)
+  assert.match(childPrompt!, /说话者年龄阶段：儿童/u)
 })

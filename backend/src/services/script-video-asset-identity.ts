@@ -1,9 +1,11 @@
-type CharacterAsset = { name: string; originalName?: string; sourcePath?: string }
+type CharacterAsset = { name: string; originalName?: string; sourcePath?: string; assetIdentity?: string }
 
 const category = /^(?:角色|人物|characters?)$/iu
 const costumeSeparator = /[-_（(【\[]/u
+const identitySeparator = /[｜|]/u
 const crowd = /^群体(?:$|[-_（(【\[])/u
 const imageExtension = /\.(?:avif|bmp|gif|heic|jpe?g|png|webp)$/iu
+const chibi = /Q版|小剧场/iu
 
 /** Derive semantic names without modifying the display name used in @ mentions.
  * A file named 群体.png identifies its cast through the parent directory. */
@@ -36,8 +38,7 @@ export function scriptVideoCharacterName(asset: CharacterAsset): string {
   return file
 }
 
-export function scriptVideoCharacterBase(asset: CharacterAsset): string {
-  const fullName = scriptVideoCharacterName(asset)
+function characterNameBase(fullName: string): string {
   const start = fullName.lastIndexOf('/') + 1
   const leaf = fullName.slice(start)
   if (start && !crowd.test(leaf)) return fullName.slice(0, start - 1)
@@ -48,12 +49,18 @@ export function scriptVideoCharacterBase(asset: CharacterAsset): string {
   return (fullName.slice(0, start) + leaf.slice(0, suffix)).trim()
 }
 
+export function scriptVideoCharacterBase(asset: CharacterAsset): string {
+  return asset.assetIdentity?.split(identitySeparator, 1)[0].trim() || characterNameBase(scriptVideoCharacterName(asset))
+}
+
 export function isScriptVideoChibiAppearance(asset: CharacterAsset): boolean {
+  const version = asset.assetIdentity?.split(identitySeparator).slice(1).join(' ')
+  if (version && chibi.test(version.normalize('NFKC'))) return true
   const forms = asset.originalName && asset.originalName !== asset.name
     ? [asset, { ...asset, name: asset.originalName }]
     : [asset]
   return forms.some(form => {
-    const suffix = scriptVideoCharacterName(form).slice(scriptVideoCharacterBase(form).length)
-    return /Q版|小剧场/iu.test(suffix.normalize('NFKC'))
+    const name = scriptVideoCharacterName(form)
+    return chibi.test(name.slice(characterNameBase(name).length).normalize('NFKC'))
   })
 }

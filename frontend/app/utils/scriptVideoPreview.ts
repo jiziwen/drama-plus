@@ -5,7 +5,9 @@ import { renderScriptVideoPrompt } from '../../../backend/src/services/script-vi
 import { renderScriptVideoCultivationTimeline, scriptVideoCultivationVoiceSummary } from '../../../backend/src/services/script-video-cultivation'
 import { scriptVideoShotHeadings } from '../../../backend/src/services/script-video-asset-scope'
 import { formatScriptVideoStylePreset, scriptVideoPromptStylePrefix, type ScriptVideoStylePreset } from '../../../backend/src/services/script-video-style'
-import type { ScriptVideoAssetExtractionFields, ScriptVideoAssetImageFields, ScriptVideoVoiceMode } from '../../../backend/src/services/script-video-types'
+import type { ScriptVideoAssetExtractionFields, ScriptVideoAssetImageFields, ScriptVideoVoiceDescription, ScriptVideoVoiceMode } from '../../../backend/src/services/script-video-types'
+import type { ScriptVideoVoiceProfile } from '../../../backend/src/services/script-video-project-voices'
+import type { ScriptVideoAssetBindingRequirement } from '../../../backend/src/services/script-video-asset-scenes'
 import type { ScriptVideoReferenceSettings } from '../../../backend/src/services/script-video-reference-settings'
 import type { ScriptVideoVersion } from '../../../backend/src/services/script-video-versions'
 export { listScriptVideoVersions, selectScriptVideoPlayback as scriptVideoCardPlayback } from '../../../backend/src/services/script-video-versions'
@@ -22,7 +24,12 @@ export type PreviewAsset = ScriptVideoAssetImageFields & ScriptVideoAssetExtract
   originalName?: string
   voiceMode?: ScriptVideoVoiceMode
   voiceAudio?: { url: string; name: string; mimeType?: string; duration?: number }
+  voiceDescription?: ScriptVideoVoiceDescription
+  voiceProfile?: ScriptVideoVoiceProfile
 }
+
+export type PreviewVoiceAgeStage = Exclude<ScriptVideoVoiceProfile['ageStage'], 'unknown'>
+export type PreviewVoiceGenerationRequest = { configId: number; model: string; description: string; dialogue: string; confirmVoiceConflict?: boolean }
 
 export type PreviewShot = {
   id: string
@@ -75,6 +82,8 @@ export type PreviewCard = {
   summary: string
   assetIds: string[]
   shots: PreviewShot[]
+  sourceSceneIds?: string[]
+  assetBindingRequirements?: ScriptVideoAssetBindingRequirement[]
   prompt: string
   combat: boolean
   status: 'draft' | 'queued' | 'generating' | 'ready'

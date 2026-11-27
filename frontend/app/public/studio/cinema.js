@@ -58,6 +58,7 @@ function normalizeSnapshot(raw = {}) {
       ...shot, id: shot.id ?? `shot-${index}`, title: String(shot.title || `镜头 ${index + 1}`),
       description: String(shot.description || ''), camera: String(shot.camera || '缓慢推进'),
       poster: localMedia(shot.poster, strictMedia ? emptyPoster : '/art/studio-world.webp'), video: localMedia(shot.video),
+      thumbnail: localMedia(shot.thumbnail, strictMedia ? emptyPoster : '/art/studio-world-thumb.webp'),
       focus: CSS.supports('object-position', String(shot.focus || '')) ? String(shot.focus) : '50% center',
       duration, start,
     };
@@ -172,7 +173,7 @@ export function createCinema({ getSnapshot, onClose = () => {} }) {
   let phase = 'closed', currentTime = 0, requestedIndex = -1, currentLayer = null;
   let reduced = reducedQuery.matches, raf = 0, lastTick = 0, mediaToken = 0;
   let returnFocus = null, previousOverflow = '', audioEnabled = false, audioContext = null, master = null;
-  let oscillators = [], preloads = [], audioAvailable = true;
+  let oscillators = [], audioAvailable = true;
   const timers = new Set();
   const removers = [];
 
@@ -296,7 +297,7 @@ export function createCinema({ getSnapshot, onClose = () => {} }) {
       currentLayer = incoming;
       updateMediaAudio();
       layers.forEach((layer) => layer.node.classList.toggle('dc-current-layer', layer === incoming));
-      elements.ambient.style.backgroundImage = elements.floor.style.backgroundImage = `url(${JSON.stringify(shot.poster)})`;
+      elements.ambient.style.backgroundImage = elements.floor.style.backgroundImage = `url(${JSON.stringify(shot.thumbnail)})`;
       elements.ambient.style.filter = `${snapshot.look.filter === 'none' ? '' : snapshot.look.filter} blur(80px)`;
       if (playing && shot.video) incoming.video.play().catch(() => {});
       if (previous && previous !== incoming) later(() => {
@@ -382,12 +383,12 @@ export function createCinema({ getSnapshot, onClose = () => {} }) {
     snapshot.shots.forEach((shot, index) => {
       const button = document.createElement('button'); button.type = 'button';
       button.setAttribute('aria-label', `播放镜头 ${index + 1}：${shot.title}`);
-      const image = document.createElement('img'); image.src = shot.poster; image.alt = ''; image.style.objectPosition = shot.focus;
+      const image = document.createElement('img'); image.loading = 'lazy'; image.decoding = 'async';
+      image.src = shot.thumbnail; image.alt = ''; image.style.objectPosition = shot.focus;
       const label = document.createElement('span'); label.textContent = String(index + 1).padStart(2, '0');
       button.append(image, label); button.addEventListener('click', () => seek(shot.start, true));
       elements.shotStrip.append(button);
       if (index) { const cut = document.createElement('i'); cut.style.left = `${shot.start / snapshot.duration * 100}%`; elements.cuts.append(cut); }
-      const preload = new Image(); preload.src = shot.poster; preloads.push(preload);
     });
   }
   function releaseMedia() {
@@ -399,7 +400,6 @@ export function createCinema({ getSnapshot, onClose = () => {} }) {
       layer.node.classList.remove('dc-video-ready', 'dc-current-layer');
       layer.index = -1; layer.prepared = false; layer.readyPromise = null;
     }
-    preloads.forEach((image) => image.removeAttribute('src')); preloads = [];
   }
   function open({ fromStart = true } = {}) {
     if (destroyed) return;

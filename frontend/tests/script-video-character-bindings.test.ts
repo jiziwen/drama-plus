@@ -5,12 +5,14 @@ import { runInNewContext } from 'node:vm'
 import { parse } from '@vue/compiler-sfc'
 import ts from 'typescript'
 import * as identities from '../../backend/src/services/script-video-asset-identity'
+import * as assetBindings from '../../backend/src/services/script-video-asset-bindings'
+import type { PreviewCard } from '../app/utils/scriptVideoPreview'
 
 const page = readFileSync(new URL('../app/pages/preview/script-to-video.vue', import.meta.url), 'utf8')
 const setup = parse(page).descriptor.scriptSetup!.content
 const tree = ts.createSourceFile('page.ts', setup, ts.ScriptTarget.Latest)
 const handlers = tree.statements.filter(node => ts.isFunctionDeclaration(node) &&
-  ['chooseBinding', 'characterSummaryMatcher', 'summarizeAIError'].includes(node.name?.text || ''))
+  ['openBindingDialog', 'chooseBinding', 'characterSummaryMatcher', 'summarizeAIError'].includes(node.name?.text || ''))
 const { outputText } = ts.transpileModule(handlers.map(node => node.getText(tree)).join('\n'), {
   compilerOptions: { target: ts.ScriptTarget.ES2022 },
 })
@@ -26,12 +28,14 @@ function card(id: string, summary: string, assetIds: string[]) {
 }
 function bindingPage(assets: Array<ReturnType<typeof character>>, initial: Array<ReturnType<typeof card>>, global = true) {
   const cards = {value: initial}
-  const controls = runInNewContext(outputText + '\n;({chooseBinding,summarizeAIError})', {
+  const bindCharacterToEpisode = {value: global}
+  const controls = runInNewContext(outputText + '\n;({openBindingDialog,chooseBinding,summarizeAIError})', {
     ...identities, assets: {value: assets}, cards,
     selectedCard: {get value() { return cards.value[0] }},
-    currentEpisode: {value: {outlineConfirmed: true}}, bindCharacterToEpisode: {value: global},
+    selectedCardId: {value: ''}, bindingSearch: {value: ''}, dialog: {value: ''},
+    currentEpisode: {value: {outlineConfirmed: true}}, bindCharacterToEpisode,
   })
-  return {cards, ...controls}
+  return {cards, bindCharacterToEpisode, ...controls}
 }
 
 test('大纲资产选择保留多个目录群体，其他片段与稳定 @ 引用保持原样', () => {
@@ -91,10 +95,89 @@ test('真人与小剧场同镜时分别替换造型并保留各自的绑定说�
   assert.ok(!ui.cards.value[0].summary.includes(bind(live)))
   ui.chooseBinding(chibiDressed)
   assert.deepEqual(Array.from(ui.cards.value[0].assetIds), [dressed.id, chibiDressed.id])
-  assert.deepEqual(Array.from(ui.cards.value[1].assetIds), [dressed.id])
+  assert.deepEqual(Array.from(ui.cards.value[1].assetIds), [live.id])
   assert.deepEqual(Array.from(ui.cards.value[2].assetIds), [chibiDressed.id])
   assert.ok(ui.cards.value[0].summary.includes(bind(dressed)))
   assert.ok(ui.cards.value[0].summary.includes(bind(chibiDressed)))
+})
+
+test('通用大纲选图每次默认只修改当前段，显式应用时仅补本集未另行绑定的段', () => {
+  const normal = {id: 'normal', name: '林青', originalName: '林青', kind: 'character', sourcePath: '角色/林青.png'}
+  const red = {...normal, id: 'red', name: '林青_红衣', originalName: '林青_红衣'}
+  const assigned = card('场次2', '林青继续赶路。\n【已确认人物造型】林青 绑定 @林青。', [normal.id])
+  const legacyPending = card('场次3', '林青入场。\n【待确认造型】林青', [])
+  const separatelyScoped = {...card('场次4', '林青来到桥下。', []), assetBindingRequirements: [{key: 'scene-4/lin'}]}
+  const empty = card('场次5', '林青离开。', [])
+  const ui = bindingPage([normal, red], [card('场次1', '林青翻墙。', []), assigned, legacyPending, separatelyScoped, empty])
+
+  ui.openBindingDialog('场次1')
+  assert.equal(ui.bindCharacterToEpisode.value, false)
+  ui.chooseBinding(red)
+  assert.equal(ui.cards.value[4], empty)
+  ui.chooseBinding(red)
+
+  ui.bindCharacterToEpisode.value = true
+  ui.chooseBinding(red)
+  assert.equal(ui.cards.value[1], assigned)
+  assert.equal(ui.cards.value[2], legacyPending)
+  assert.equal(ui.cards.value[3], separatelyScoped)
+  assert.deepEqual(Array.from(ui.cards.value[4].assetIds), [red.id])
+})
+
+test('制作页按来源场次列出候选，只接受可用的具体素材并保存本片段的明确选择', () => {
+  const editor = readFileSync(new URL('../app/components/ScriptVideoPreviewEditor.vue', import.meta.url), 'utf8')
+  const program = ts.createSourceFile('editor.ts', parse(editor).descriptor.scriptSetup!.content, ts.ScriptTarget.Latest)
+  const names = new Set(['projectAssetsById', 'assetBindingRows', 'confirmAssetBinding', 'actionWarnings'])
+  const handlers = program.statements.filter(node =>
+    ts.isFunctionDeclaration(node) && names.has(node.name?.text || '') ||
+    ts.isVariableStatement(node) && node.declarationList.declarations.some(declaration => names.has(declaration.name.getText(program))))
+  const { outputText } = ts.transpileModule(handlers.map(node => node.getText(program)).join('\n'), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  })
+  const props: {card: PreviewCard; assets: { id: string; name: string; kind: string; image: string }[]} = {
+    card: {
+      id: 'courtyard', title: '庭院', duration: 5, summary: '', assetIds: ['plain'], status: 'draft', version: 1, combat: false,
+      prompt: '镜头 01（0–5秒）\n画面与动作：@林青_常服进入庭院。',
+      shots: [{id: 'shot', duration: 5, camera: '', action: '@林青_常服进入庭院。', dialogue: '无台词', visualAssetIds: ['plain']}],
+      assetBindingRequirements: [{key: 'courtyard/hero', kind: 'character', label: '林青', episodeNumber: 3, sceneId: '3-02', sceneTitle: '庭院',
+        candidateIds: ['plain', 'red', 'no-image', 'deleted']}],
+    },
+    assets: [
+      {id: 'plain', name: '林青_常服', kind: 'character', image: '/plain.png'},
+      {id: 'red', name: '林青_红衣', kind: 'character', image: '/red.png'},
+      {id: 'no-image', name: '林青_便装', kind: 'character', image: ''},
+      {id: 'other', name: '侍卫', kind: 'character', image: '/other.png'},
+      {id: 'other-kind', name: '庭院', kind: 'scene', image: '/other-kind.png'},
+    ],
+  }
+  let updates = 0
+  const controls = runInNewContext(outputText + '\n;({ assetBindingRows, confirmAssetBinding, actionWarnings })', {
+    ...assetBindings, props, computed: (getter: () => unknown) => ({get value() { return getter() }}),
+    isGenerating: {value: false}, overLimit: {value: false}, totalDuration: {value: 5},
+    emit: (event: string, next: PreviewCard) => { assert.equal(event, 'update'); updates++; props.card = next },
+  })
+  const row = controls.assetBindingRows.value[0]
+  assert.equal(row.source, '第 3 集 · 庭院')
+  assert.deepEqual(Array.from(row.candidates, (candidate: {id:string}) => candidate.id), ['plain', 'red', 'no-image'])
+  assert.deepEqual(Array.from(row.otherOptions, (option: {value:string}) => option.value), ['other'])
+  assert.equal(controls.actionWarnings.value.length, 1)
+
+  for (const id of ['deleted', 'no-image', 'other-kind']) controls.confirmAssetBinding('courtyard/hero', id)
+  assert.equal(updates, 0)
+  controls.confirmAssetBinding('courtyard/hero', 'red')
+  assert.equal(updates, 1)
+  assert.equal(props.card.assetBindingRequirements?.[0].assetId, 'red')
+  assert.equal(props.card.assetBindingRequirements?.[0].confirmed, true)
+  assert.deepEqual(props.card.shots[0].visualAssetIds, ['red'])
+  assert.match(props.card.prompt, /@林青_红衣进入庭院/u)
+  assert.equal(controls.assetBindingRows.value.length, 0)
+  assert.equal(controls.actionWarnings.value.length, 0)
+
+  props.card = {...props.card, assetBindingRequirements: [{...props.card.assetBindingRequirements![0], assetId: undefined, candidateIds: ['deleted']}]}
+  assert.equal(controls.assetBindingRows.value[0].hasUsableCandidates, false)
+  controls.confirmAssetBinding('courtyard/hero', 'red')
+  assert.equal(updates, 2)
+  assert.deepEqual(props.card.assetBindingRequirements![0].candidateIds, ['deleted', 'red'])
 })
 
 test('状态提示说明失败原因，长候选列表仅在详情呈现', () => {

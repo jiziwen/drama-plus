@@ -265,7 +265,7 @@
                         :src="thumbOf(assetImageSrc(c))"
                         class="previewable-image"
                         loading="lazy"
-                        @error="thumbFallback($event, assetImageSrc(c))"
+                        decoding="async"
                         @click.stop="openImageViewer(assetImageSrc(c), t('episode.asset.charImageTitle', { name: c.name }))"
                       />
                       <div v-else class="character-portrait-empty">
@@ -329,7 +329,7 @@
                     :src="thumbOf(assetImageSrc(s))"
                     class="previewable-image"
                     loading="lazy"
-                    @error="thumbFallback($event, assetImageSrc(s))"
+                    decoding="async"
                     @click.stop="openImageViewer(assetImageSrc(s), t('episode.asset.sceneImageTitle', { name: s.location }))"
                   />
                   <div v-else class="asset-cover-empty">
@@ -380,7 +380,7 @@
                     :src="thumbOf(assetImageSrc(p))"
                     class="previewable-image"
                     loading="lazy"
-                    @error="thumbFallback($event, assetImageSrc(p))"
+                    decoding="async"
                     @click.stop="openImageViewer(assetImageSrc(p), t('episode.asset.propImageTitle', { name: p.name }))"
                   />
                   <div v-else class="asset-cover-empty">
@@ -507,6 +507,7 @@
                       :src="videoPosterSrc('storyboards', task.id, getVideoUrl(task.storyboard))"
                       alt=""
                       loading="lazy"
+                      decoding="async"
                     />
                     <div v-else class="video-task-empty">
                       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
@@ -598,7 +599,7 @@
                               :disabled="!asset.ready"
                               @click.stop="asset.ready && openImageViewer(assetImageSrc({ imageUrl: asset.imageUrl }), `${asset.name} ${asset.typeLabel}`)"
                             >
-                              <img v-if="asset.ready" :src="thumbOf(assetImageSrc({ imageUrl: asset.imageUrl }))" class="previewable-image" loading="lazy" @error="thumbFallback($event, assetImageSrc({ imageUrl: asset.imageUrl }))" />
+                              <img v-if="asset.ready" :src="thumbOf(assetImageSrc({ imageUrl: asset.imageUrl }))" class="previewable-image" loading="lazy" decoding="async" />
                               <span v-else>{{ asset.kind === 'scene' ? t('episode.ref.shortScene') : asset.kind === 'prop' ? t('episode.ref.shortProp') : t('episode.ref.shortChar') }}</span>
                             </button>
                             <div class="storyboard-ref-main">
@@ -724,7 +725,7 @@
                   @click="previewHistoryVideo(h)"
                   @keydown.enter.prevent="previewHistoryVideo(h)"
                 >
-                  <img :src="videoPosterSrc('tasks', h.id, taskVideoPath(h))" alt="" loading="lazy" />
+                  <img :src="videoPosterSrc('tasks', h.id, taskVideoPath(h))" alt="" loading="lazy" decoding="async" />
                   <span class="video-history-time">{{ formatHistoryTime(taskCreatedAt(h)) }}</span>
                   <span v-if="isCurrentVideo(h)" class="video-history-badge">{{ t('episode.vid.current') }}</span>
                   <button v-else type="button" class="video-history-del" :title="t('episode.vid.deleteRecord')" @click.stop="removeHistoryVideo(h)">×</button>
@@ -747,7 +748,7 @@
                         :title="`${asset.name} · ${asset.typeLabel}`"
                         @click="asset.ready && openImageViewer(assetImageSrc({ imageUrl: asset.imageUrl }), `${asset.name} ${asset.typeLabel}`)"
                       >
-                        <img v-if="asset.ready" :src="thumbOf(assetImageSrc({ imageUrl: asset.imageUrl }))" :alt="asset.name" loading="lazy" @error="thumbFallback($event, assetImageSrc({ imageUrl: asset.imageUrl }))" />
+                        <img v-if="asset.ready" :src="thumbOf(assetImageSrc({ imageUrl: asset.imageUrl }))" :alt="asset.name" loading="lazy" decoding="async" />
                         <span v-else class="video-bound-ref-empty">{{ asset.kind === 'scene' ? t('episode.ref.shortScene') : asset.kind === 'prop' ? t('episode.ref.shortProp') : t('episode.ref.shortChar') }}</span>
                         <small>{{ asset.name }}</small>
                       </button>
@@ -847,14 +848,12 @@
                   @keydown.enter.prevent="m.status === 'completed' && m.merged_url && (activeMerge = m)"
                 >
                   <div class="merge-card-thumb">
-                    <video
+                    <img
                       v-if="m.status === 'completed' && m.merged_url"
-                      :src="'/' + m.merged_url"
-                      :poster="posterOf('/' + m.merged_url) || undefined"
-                      preload="none"
-                      muted
-                      playsinline
-                      tabindex="-1"
+                      :src="posterOf(videoSourceUrl(m.merged_url)) || undefined"
+                      alt=""
+                      loading="lazy"
+                      decoding="async"
                     />
                     <div v-else :class="['merge-card-pending', m.status === 'failed' && 'is-failed']" :title="m.status === 'failed' ? m.error_msg : null">
                       {{ m.status === 'failed' ? mapError(m.error_msg, { fallback: 'episode.export.mergeFailed' }) : t('episode.export.merging') }}
@@ -913,14 +912,12 @@
                   @keydown.enter.prevent="toggleExportSelect(sb)"
                 >
                   <div class="exp-thumb">
-                    <video
+                    <img
                       v-if="hasVid(sb)"
-                      :src="'/' + getVideoUrl(sb)"
-                      :poster="posterOf('/' + getVideoUrl(sb)) || undefined"
-                      preload="none"
-                      muted
-                      playsinline
-                      tabindex="-1"
+                      :src="videoPosterSrc('storyboards', sb.id, getVideoUrl(sb))"
+                      alt=""
+                      loading="lazy"
+                      decoding="async"
                     />
                     <div v-else class="exp-thumb-empty">
                       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
@@ -999,7 +996,7 @@
                   :src="thumbOf(genTaskPreviewSrc(row.previewUrl))"
                   :alt="row.targetLabel"
                   loading="lazy"
-                  @error="thumbFallback($event, genTaskPreviewSrc(row.previewUrl))"
+                  decoding="async"
                   @click="openImageViewer(genTaskPreviewSrc(row.previewUrl), row.targetLabel)"
                 />
                 <div v-else class="video-task-empty">
@@ -1096,7 +1093,8 @@
                     v-if="assetImageSrc(assetDetail.item)"
                     :src="thumbOf(assetImageSrc(assetDetail.item))"
                     class="previewable-image"
-                    @error="thumbFallback($event, assetImageSrc(assetDetail.item))"
+                    loading="lazy"
+                    decoding="async"
                   />
                   <span v-else class="asset-detail-media-empty">
                     <svg v-if="assetDetail.type === 'character'" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
@@ -3559,21 +3557,21 @@ const mentionOptions = computed(() => {
       value: c.name,
       kind: 'character',
       group: t('common.role'),
-      image: thumbOf(assetImageSrc(c)),
+      image: assetImageSrc(c),
     })),
     ...(scene ? [{
       label: `${scene.location} · ${scene.time || t('episode.asset.noTime')}`,
       value: scene.location,
       kind: 'scene',
       group: t('common.scene'),
-      image: thumbOf(assetImageSrc(scene)),
+      image: assetImageSrc(scene),
     }] : []),
     ...getStoryboardProps(sb).map(p => ({
       label: p.name,
       value: p.name,
       kind: 'prop',
       group: t('common.prop'),
-      image: thumbOf(assetImageSrc(p)),
+      image: assetImageSrc(p),
     })),
   ]
 })
@@ -5778,11 +5776,12 @@ button.video-task-metric.on { box-shadow: 0 0 0 2px var(--accent); }
   background: var(--surface-raised);
   border: 1px solid var(--border);
 }
-.merge-card video {
+.merge-card-thumb > img {
   width: 100%;
   aspect-ratio: 16 / 9;
   border-radius: 6px;
   background: var(--media-surface);
+  object-fit: contain;
   display: block;
 }
 .merge-card-pending {
@@ -5878,7 +5877,7 @@ button.video-task-metric.on { box-shadow: 0 0 0 2px var(--accent); }
   border-radius: 6px;
   background: var(--media-surface);
 }
-.exp-thumb video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.exp-thumb > img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .exp-thumb-empty { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; color: var(--text-3); }
 .exp-thumb-index {
   position: absolute;

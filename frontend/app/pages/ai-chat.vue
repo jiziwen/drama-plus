@@ -322,6 +322,8 @@
                         :src="modelIconUrl(option.provider, option.rawModel)"
                         class="chat-model-icon"
                         alt=""
+                        loading="lazy"
+                        decoding="async"
                       />
                       <span class="chat-model-name">{{ option.label }}</span>
                     </span>

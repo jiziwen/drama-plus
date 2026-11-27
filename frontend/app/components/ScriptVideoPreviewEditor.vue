@@ -31,6 +31,44 @@
     </nav>
 
     <div class="sv-body" :class="{ 'sv-body-preview': tab === 'preview' && previewVideoUrl }">
+      <section
+        v-if="assetBindingRows.length && (tab === 'prompt' || tab === 'shots')"
+        ref="assetBindingPanel"
+        class="sv-asset-bindings"
+        :aria-labelledby="assetBindingTitleId"
+        tabindex="-1"
+      >
+        <h3 :id="assetBindingTitleId">确认本片段素材</h3>
+        <ul>
+          <li v-for="row in assetBindingRows" :key="row.requirement.key">
+            <strong>{{ row.requirement.label }} <small>{{ kindLabel(row.requirement.kind) }}</small></strong>
+            <span v-if="row.source" class="sv-asset-binding-source">{{ row.source }}</span>
+            <p>{{ row.message }}</p>
+            <div v-if="row.candidates.length" class="sv-asset-binding-options" :aria-label="`${row.requirement.label}的候选素材`" role="group">
+              <button
+                v-for="asset in row.candidates"
+                :key="asset.id"
+                class="sv-button sv-quiet"
+                type="button"
+                :disabled="isGenerating || !asset.image"
+                @click="confirmAssetBinding(row.requirement.key, asset.id)"
+              >{{ asset.name }}<small v-if="!asset.image">缺少图片</small></button>
+            </div>
+            <details v-if="row.otherOptions.length" class="sv-asset-binding-other" :open="!row.hasUsableCandidates">
+              <summary>选择其他{{ kindLabel(row.requirement.kind) }}素材</summary>
+              <BaseSelect
+                :aria-label="`为 ${row.requirement.label} 选择其他素材`"
+                :options="row.otherOptions"
+                :disabled="isGenerating"
+                placeholder="搜索已上传的素材"
+                variant="inspector"
+                @update:model-value="confirmAssetBinding(row.requirement.key, String($event))"
+              />
+            </details>
+            <p v-else-if="!row.hasUsableCandidates" class="sv-asset-binding-source">请在项目资产补充同类图片。</p>
+          </li>
+        </ul>
+      </section>
       <template v-if="tab === 'prompt'">
         <div class="sv-section-head">
           <div>
@@ -288,9 +326,12 @@
     <footer v-if="tab !== 'revise'" class="sv-footer">
       <div v-if="actionWarnings.length || advisoryWarnings.length" :id="actionWarningId" class="sv-action-warning" role="status">
         <div><p v-for="warning in [...actionWarnings, ...advisoryWarnings]" :key="warning">{{ warning }}</p></div>
-        <button v-if="card.promptNeedsSync" class="sv-button sv-quiet" type="button" @click="tab = 'revise'">
-          <Sparkles :size="13" /> AI 调整
-        </button>
+        <div v-if="assetBindingRows.length || card.promptNeedsSync" class="sv-action-warning-actions">
+          <button v-if="assetBindingRows.length" class="sv-button sv-quiet" type="button" @click="showAssetBindingIssues">确认素材</button>
+          <button v-if="card.promptNeedsSync" class="sv-button sv-quiet" type="button" @click="tab = 'revise'">
+            <Sparkles :size="13" /> AI 调整
+          </button>
+        </div>
       </div>
       <div class="sv-footer-actions">
         <div class="sv-footer-secondary">
@@ -422,6 +463,7 @@ import type { useScriptVideoReferenceFrames } from '~/composables/useScriptVideo
 import { getPreviewMaterialUse, inspectPreviewCardAssets, validatePreviewCards } from '~/utils/scriptVideoPreviewValidation'
 import { editScriptVideoPromptVoiceView, scriptVideoPromptVoiceView } from '~/utils/scriptVideoPromptVoiceView'
 import { getScriptVideoPromptVoices, type ScriptVideoPromptMode } from '../../../backend/src/services/script-video-delivery'
+import { resolveScriptVideoAssetBinding, scriptVideoAssetBindingIssues } from '../../../backend/src/services/script-video-asset-bindings'
 import { scriptVideoAudioReferences } from '../../../backend/src/services/script-video-mentions'
 import { splitScriptVideoPromptStyle } from '../../../backend/src/services/script-video-style'
 import { officialScriptVideoUrl } from '../../../backend/src/services/script-video-versions'
@@ -457,6 +499,7 @@ const props = withDefaults(
     running?: boolean
     canCancelVideo?: boolean
     cancelingVideo?: boolean
+    recoveringVideoDelivery?: boolean
     videoVoiceWarning?: string
     completedTaskVideoUrl?: string
     videoVersions?: readonly ScriptVideoVersion[]
@@ -553,15 +596,38 @@ const kindLabel = (kind: string) =>
   ({ character: '角色', scene: '背景', prop: '道具', creature: '生物', audio: '音频' })[
     kind
   ] || '资产'
+const assetBindingTitleId = useId()
+const assetBindingPanel = ref<HTMLElement>()
+const projectAssetsById = computed(() => new Map(props.assets.map(asset => [asset.id, asset])))
+const assetBindingRows = computed(() => scriptVideoAssetBindingIssues(props.card, props.assets).map(issue => {
+  const { requirement } = issue
+  const { episodeNumber, sceneId, sceneTitle, candidateIds, kind } = requirement
+  const source = [episodeNumber ? `第 ${episodeNumber} 集` : '', sceneTitle || (sceneId ? `场次 ${sceneId}` : '')].filter(Boolean).join(' · ')
+  const candidates = candidateIds.map(id => projectAssetsById.value.get(id))
+    .filter((asset): asset is PreviewAsset => asset?.kind === kind)
+  const otherOptions = props.assets.filter(asset => asset.kind === kind && asset.image && !candidateIds.includes(asset.id))
+    .map(asset => ({ label: asset.name, value: asset.id }))
+  return { ...issue, source, candidates, otherOptions, hasUsableCandidates: candidates.some(asset => !!asset.image) }
+}))
+async function showAssetBindingIssues() {
+  if (tab.value !== 'shots') tab.value = 'prompt'
+  await nextTick()
+  assetBindingPanel.value?.focus()
+}
+function confirmAssetBinding(requirementKey: string, assetId: string) {
+  if (isGenerating.value || !projectAssetsById.value.get(assetId)?.image) return
+  if (!assetBindingRows.value.some(row => row.requirement.key === requirementKey)) return
+  const next = resolveScriptVideoAssetBinding(props.card, requirementKey, assetId, props.assets)
+  if (next) emit('update', next)
+}
 const assetContext = computed(() => ({
   stylePreset: props.production?.stylePreset || props.stylePreset,
   cast: props.production?.characters,
 }))
 const selectedAssets = computed(() => {
-  const byId = new Map(props.assets.map(asset => [asset.id, asset]))
   const { imageIds, speakerIds, audioIds } = materialUse.value
   const ids = new Set([...props.card.assetIds, ...imageIds, ...speakerIds, ...audioIds])
-  return [...ids].map(id => byId.get(id)).filter((asset): asset is PreviewAsset => !!asset)
+  return [...ids].map(id => projectAssetsById.value.get(id)).filter((asset): asset is PreviewAsset => !!asset)
 })
 function materialStatus(asset: PreviewAsset) {
   const { imageIds, speakerIds, audioIds, contextIds, missingVoices } = materialUse.value
@@ -847,9 +913,9 @@ function editPrompt(display: string, input: HTMLTextAreaElement, previousSelecti
 }
 const actionWarningId = useId()
 const actionWarnings = computed(() => {
-  if (props.card.manuallyAdded)
-    return hasPromptBody.value ? [] : ['请输入视频提示词。']
   const warnings: string[] = []
+  if (assetBindingRows.value.length && !props.recoveringVideoDelivery) warnings.push('请先确认本片段需要的参考素材。')
+  if (props.card.manuallyAdded) return hasPromptBody.value ? warnings : [...warnings, '请输入视频提示词。']
   if (!props.card.shots.length) warnings.push('请先添加镜头。')
   else if (overLimit.value) warnings.push(`镜头合计 ${totalDuration.value} 秒，超过单段 30 秒上限。`)
   else if (totalDuration.value <= 0) warnings.push('镜头总时长必须大于 0 秒。')
@@ -1151,6 +1217,71 @@ p {
   align-items: center;
   gap: 4px;
   flex: none;
+}
+.sv-action-warning-actions,
+.sv-asset-binding-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.sv-asset-bindings {
+  margin-bottom: 16px;
+  padding: 9px 13px;
+  border: 1px solid var(--border-strong, var(--border));
+  border-radius: 7px;
+  background: var(--surface-1, var(--bg-2));
+  overflow-wrap: anywhere;
+}
+.sv-asset-bindings:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.sv-asset-bindings h3 {
+  margin: 0 0 8px;
+  color: var(--warning, #b77429);
+  font-size: 13px;
+}
+.sv-asset-bindings ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.sv-asset-bindings li {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+}
+.sv-asset-bindings li + li {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.sv-asset-bindings p {
+  margin: 0;
+}
+.sv-asset-binding-source,
+.sv-asset-bindings small {
+  color: var(--text-2);
+  font-weight: 400;
+}
+.sv-asset-binding-options button {
+  max-width: 100%;
+  text-align: left;
+  white-space: normal;
+}
+.sv-asset-binding-options small {
+  margin-inline-start: 4px;
+}
+.sv-asset-binding-other {
+  max-width: 360px;
+  color: var(--text-2);
+}
+.sv-asset-binding-other summary {
+  cursor: pointer;
+}
+.sv-asset-binding-other[open] summary {
+  margin-bottom: 5px;
 }
 .sv-reference-head {
   margin-top: 24px;

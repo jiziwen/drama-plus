@@ -31,6 +31,7 @@ import { LibTVCliError } from './libtv-cli.js'
 import { formatJimengScriptPrompt } from './jimeng-reference-labels.js'
 import { jimengVideoModel } from './jimeng-video-models.js'
 import { LIBTV_VIDEO_RATIOS, libtvVideoModel } from './libtv-video-models.js'
+import { scriptVideoAssetBindingIssues } from './script-video-asset-bindings.js'
 
 type Asset = ScriptVideoDeliveryAsset
 export type ScriptVideoContinuationSource = {
@@ -408,6 +409,8 @@ export function getScriptVideoSubmissionPrompt(
 async function prepareSubmission(input: ScriptVideoGenerationInput) {
   const { card, assets, configId, model, aspectRatio, resolution } = input
   if (!input.projectId || !input.episodeId || !card?.id || !Array.isArray(assets)) throw new Error('项目、分集或分镜无效')
+  const assetIssues = scriptVideoAssetBindingIssues(card, assets)
+  if (assetIssues.length) throw new Error(assetIssues.map(issue => issue.message).join('\n'))
   if (!Number.isSafeInteger(configId) || configId <= 0 || typeof model !== 'string' || !model.trim()) throw new Error('请先选择已启用的视频服务与模型')
   if (card.manuallyAdded) {
     if (!hasScriptVideoPromptBody(card.prompt, input.stylePreset)) throw new Error('请先输入本段视频提示词')

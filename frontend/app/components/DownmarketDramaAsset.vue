@@ -2,7 +2,7 @@
   <article class="drama-asset">
     <button v-if="asset.image" type="button" class="drama-asset-image drama-asset-preview"
       :aria-label="`查看${asset.name}大图`" aria-haspopup="dialog" title="点击查看大图" @click="openPreview">
-      <img :src="asset.image" :alt="asset.name" loading="lazy">
+      <img :src="thumbOf(asset.image)" :alt="asset.name" loading="lazy" decoding="async">
     </button>
     <div v-else class="drama-asset-image">
       <span><Image :size="22" aria-hidden="true" />{{ asset.imageStatus === 'running' ? '处理中' : asset.imageStatus === 'delivery_pending' ? '已生成，待取回' : '待出图' }}</span>
@@ -36,12 +36,12 @@
       <a v-if="asset.image" class="btn btn-ghost" :href="asset.image" :download="downloadName">下载图片</a>
     </div>
     <Teleport to="body">
-      <dialog ref="previewDialog" class="drama-image-dialog" :aria-label="`${asset.name}大图`" @click="closeOnBackdrop">
+      <dialog ref="previewDialog" class="drama-image-dialog" :aria-label="`${asset.name}大图`" @click="closeOnBackdrop" @close="previewOpen = false">
         <div class="drama-image-head">
           <h2>{{ asset.name }}</h2>
           <button type="button" class="btn btn-icon" aria-label="关闭大图" @click="previewDialog?.close()"><X :size="18" /></button>
         </div>
-        <div class="drama-image-body"><img v-if="asset.image" :src="asset.image" :alt="asset.name"></div>
+        <div class="drama-image-body"><img v-if="previewOpen && asset.image" :src="asset.image" :alt="asset.name"></div>
       </dialog>
     </Teleport>
   </article>
@@ -50,6 +50,7 @@
 <script setup lang="ts">
 import { Image, X } from 'lucide-vue-next'
 import { uploadAPI } from '~/composables/useApi'
+import { thumbOf } from '~/composables/useMedia'
 import type { DramaAsset, DramaCommand } from '../../../backend/src/services/downmarket-drama-types'
 
 const props = defineProps<{ asset: DramaAsset; disabled: boolean }>()
@@ -59,13 +60,17 @@ const reference = ref<{ url: string; name: string }>()
 const error = ref('')
 const uploading = ref(false)
 const previewDialog = ref<HTMLDialogElement | null>(null)
+const previewOpen = ref(false)
 const kindLabel = computed(() => ({ character: '人物', scene: '场景', prop: '物品' })[props.asset.kind])
 const downloadName = computed(() => kindLabel.value + '-' + props.asset.name.replace(/[\\/:*?"<>|]/gu, '_') + (props.asset.image?.match(/\.[a-z0-9]+$/iu)?.[0] || '.png'))
 watch(() => props.asset.prompt, (next, previous) => { if (prompt.value === previous) prompt.value = next })
 watch(() => props.asset.image, image => { if (!image) previewDialog.value?.close() })
 
 function openPreview() {
-  if (props.asset.image && previewDialog.value && !previewDialog.value.open) previewDialog.value.showModal()
+  const dialog = previewDialog.value
+  if (!props.asset.image || !dialog || dialog.open) return
+  dialog.showModal()
+  previewOpen.value = true
 }
 
 function closeOnBackdrop(event: MouseEvent) {

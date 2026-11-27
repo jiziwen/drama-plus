@@ -8,7 +8,9 @@ import {
   type ScriptVideoInput,
 } from './script-video-types.js'
 
-type AssetScope = Pick<ScriptVideoCard, 'title' | 'summary' | 'assetIds'>
+type AssetScope = Pick<ScriptVideoCard, 'title' | 'summary' | 'assetIds'> & {
+  assetBindingRequirements?: ReadonlyArray<{ assetId?: string; candidateIds: string[] }>
+}
 
 const normalize = (text: string) => text.normalize('NFKC').replaceAll('\\', '/').toLowerCase()
 
@@ -30,6 +32,9 @@ export function selectScriptVideoEpisodeAssets(
     .join('\n')
   const text = normalize(source)
   const selected = new Set(cards.flatMap((c) => c.assetIds))
+  for (const card of cards) for (const requirement of card.assetBindingRequirements ?? []) {
+    for (const id of requirement.assetId ? [requirement.assetId] : requirement.candidateIds) selected.add(id)
+  }
   for (const mention of resolveScriptVideoMentions(source, input.assets).mentions)
     selected.add(mention.id)
   const boundRoles = new Set(
@@ -42,6 +47,8 @@ export function selectScriptVideoEpisodeAssets(
   return input.assets.filter((asset) => {
     if (asset.kind === 'audio') return false
     if (selected.has(asset.id)) return true
+    if (asset.occurrences?.some(item => (!item.episodeNumber || !input.episodeNumber || item.episodeNumber === input.episodeNumber) &&
+      input.script.includes(item.quote))) return true
     const namedByAlias = Array.isArray(asset.aliases) && asset.aliases.some(alias => typeof alias === 'string' && alias.length >= 2 && mentioned(alias))
     if (asset.kind === 'character') {
       const entity = scriptVideoCharacterName(asset)

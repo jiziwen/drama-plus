@@ -1,6 +1,7 @@
 import { and, desc, eq, inArray } from 'drizzle-orm'
 import { z } from 'zod'
 import { db, schema } from '../db/index.js'
+import { isMidjourneyImagine } from './adapters/midjourney-image.js'
 import { getGlobalDefaultModel, isOfficialProvider } from './ai.js'
 import { parseComfySettings } from './comfyui.js'
 import { assertImageMode } from './media-selection.js'
@@ -13,7 +14,7 @@ export type ProjectModelKind = z.infer<typeof projectModelKind>
 export type ProjectModelSelection = z.infer<typeof projectModelSelection>
 export type ProjectModelOption = ProjectModelSelection & { kind: ProjectModelKind; configName: string }
 
-export function projectModelOptions(filters: { configId?: number; imageMode?: 'text' | 'reference' } = {}): ProjectModelOption[] {
+export function projectModelOptions(filters: { configId?: number; imageMode?: 'text' | 'reference'; midjourneyImagineOnly?: boolean } = {}): ProjectModelOption[] {
   const configs = schema.aiServiceConfigs
   const rows = db.select({
     id: configs.id, name: configs.name, serviceType: configs.serviceType,
@@ -25,13 +26,14 @@ export function projectModelOptions(filters: { configId?: number; imageMode?: 't
   const options = rows.flatMap(row => {
     const kind = row.serviceType as ProjectModelKind
     const provider = row.provider || ''
-    if (!isOfficialProvider(kind, provider)) return []
+    if (!isOfficialProvider(kind, provider) || (filters.midjourneyImagineOnly && kind !== 'image')) return []
     let models: unknown
     try { models = JSON.parse(row.model ?? '[]') } catch { return [] }
     if (!Array.isArray(models)) return []
     const comfyui = kind === 'image' && filters.imageMode ? parseComfySettings(row.settings) : undefined
     return [...new Set(models)].flatMap(model => {
       if (typeof model !== 'string' || !model.trim()) return []
+      if (filters.midjourneyImagineOnly && !isMidjourneyImagine({ provider, baseUrl: row.baseUrl, model })) return []
       if (kind === 'image' && filters.imageMode) {
         try { assertImageMode({ provider, baseUrl: row.baseUrl, model, comfyui }, filters.imageMode) }
         catch { return [] }

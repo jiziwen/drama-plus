@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { ScriptVideoDatabase, type ScriptVideoRecord, type ProjectRow } from './script-video-database.js'
+import { ScriptVideoAssetExtractionJobs } from './script-video-asset-extraction-jobs.js'
 import { ScriptVideoQueue } from './script-video-queue.js'
 import { ScriptVideoMediaRetention } from './script-video-media-retention.js'
 import { applyScriptVideoChanges, validateScriptVideoChanges, type ScriptVideoChange } from './script-video-sync.js'
@@ -14,7 +15,10 @@ import { annotateScriptVideoAssets, scriptVideoAudioReferences, scriptVideoMater
 import { annotateScriptVideoInnerOs } from './script-video-inner-os.js'
 import { hasScriptVideoShotHeadings } from './script-video-asset-scope.js'
 import { replaceScriptVideoPromptStyle } from './script-video-format.js'
-import { getScriptVideoOutlineDurationIssues, scriptVideoAssetImageStatuses, scriptVideoVoiceDescriptionSchema, type ScriptVideoVoiceDescription } from './script-video-types.js'
+import { getScriptVideoOutlineDurationIssues, scriptVideoAssetImageStatuses, scriptVideoVoiceDescriptionSchema, type ScriptVideoVoiceAudio, type ScriptVideoVoiceDescription } from './script-video-types.js'
+import { confirmScriptVideoVoiceAge, scriptVideoVoiceProfileSchema, setScriptVideoProfileAudio } from './script-video-project-voices.js'
+import { scriptVideoVoiceAgeStageSchema, type ScriptVideoVoiceAgeStage } from './script-video-voice-profile.js'
+import { scriptVideoAssetBindingRequirementSchema, scriptVideoAssetOccurrenceSchema } from './script-video-asset-scenes.js'
 import { getScriptVideoVoiceInputs, scriptVideoVoiceSource, type ScriptVideoDeliveryAsset, type ScriptVideoDeliveryCard } from './script-video-delivery.js'
 import type { ScriptVideoStoryboardCheckpoint, ScriptVideoStoryboardProgress } from './script-video-ai.js'
 import type { LightingCheck } from './script-video-lighting.js'
@@ -166,11 +170,19 @@ function validateAsset(asset: any) {
       (asset.sourceEpisodes !== undefined && (!Array.isArray(asset.sourceEpisodes) ||
         asset.sourceEpisodes.some((value: number) => !Number.isSafeInteger(value) || value < 1))))
     throw new ScriptVideoStoreError('资产提取记录无效')
+  if (asset.occurrences !== undefined && (!Array.isArray(asset.occurrences) ||
+      asset.occurrences.some((item: unknown) => !scriptVideoAssetOccurrenceSchema.safeParse(item).success)))
+    throw new ScriptVideoStoreError('资产场次来源无效')
   if (asset.voiceMode !== undefined && (asset.kind !== 'character' || !['model', 'reference'].includes(asset.voiceMode))) {
     throw new ScriptVideoStoreError('角色配音设置无效')
   }
   if (asset.voiceDescription !== undefined && (asset.kind !== 'character' || !scriptVideoVoiceDescriptionSchema.safeParse(asset.voiceDescription).success))
     throw new ScriptVideoStoreError('角色声音描述无效')
+  if (asset.voiceProfile !== undefined && (asset.kind !== 'character' || !scriptVideoVoiceProfileSchema.safeParse(asset.voiceProfile).success))
+    throw new ScriptVideoStoreError('角色音色信息无效')
+  if (asset.confirmedVoiceAge !== undefined && (asset.kind !== 'character' || asset.confirmedVoiceAge === 'unknown' ||
+      !scriptVideoVoiceAgeStageSchema.safeParse(asset.confirmedVoiceAge).success))
+    throw new ScriptVideoStoreError('角色音色年龄无效')
   if (asset.voiceAudio !== undefined || asset.kind === 'audio') {
     const voice = asset.voiceAudio
     if (!['character', 'audio'].includes(asset.kind) || !voice || typeof voice !== 'object' || Array.isArray(voice) || Object.keys(voice).some(key => !['url', 'name', 'mimeType', 'duration'].includes(key)) || typeof voice.url !== 'string' || !/^\/static\/uploads\/[a-z0-9_-]+\.(?:mp3|wav|m4a|aac)$/iu.test(voice.url) || typeof voice.name !== 'string' || !voice.name.trim() || voice.name.length > 255 || (voice.mimeType !== undefined && (typeof voice.mimeType !== 'string' || voice.mimeType.length > 100 || !/^audio\/[a-z0-9.+-]+$/iu.test(voice.mimeType))) || (voice.duration !== undefined && (typeof voice.duration !== 'number' || !Number.isFinite(voice.duration) || voice.duration <= 0 || voice.duration > 86400))) {
@@ -207,8 +219,16 @@ function preserveServerAssetFields(input: any, previous: ScriptVideoProject) {
     if (!asset || typeof asset !== 'object' || Array.isArray(asset)) return asset
     const prior = priorAssets.get(asset.id)
     const next = { ...asset }
-    delete next.voiceDescription
-    if (asset.kind === 'character' && prior?.voiceDescription) next.voiceDescription = prior.voiceDescription
+    delete next.occurrences
+    if (prior?.kind === asset.kind && prior.occurrences) next.occurrences = prior.occurrences
+    for (const field of ['voiceDescription', 'voiceProfile', 'confirmedVoiceAge']) {
+      delete next[field]
+      if (asset.kind === 'character' && prior?.[field] !== undefined) next[field] = prior[field]
+    }
+    if (asset.kind === 'character' && prior?.voiceProfile) {
+      if (prior.voiceAudio) next.voiceAudio = prior.voiceAudio
+      else delete next.voiceAudio
+    }
     for (const field of imageJobFields) {
       delete next[field]
       if (prior && prior.image === asset.image && prior[field] !== undefined) next[field] = prior[field]
@@ -454,8 +474,15 @@ function sanitizeProject(
           (!Array.isArray(card.excludedAssetIds) || !card.excludedAssetIds.every(validId))) {
         throw new ScriptVideoStoreError('分镜的已移除参考素材标识无效')
       }
+      if ((card.sourceSceneIds !== undefined && (!Array.isArray(card.sourceSceneIds) ||
+          card.sourceSceneIds.some((id: unknown) => typeof id !== 'string' || !id || id.length > 80))) ||
+          (card.assetBindingRequirements !== undefined && (!Array.isArray(card.assetBindingRequirements) ||
+           card.assetBindingRequirements.some((item: unknown) => !scriptVideoAssetBindingRequirementSchema.safeParse(item).success))))
+        throw new ScriptVideoStoreError('分镜场次素材绑定无效')
       if (card.stylePreset !== undefined && !validStyle(card.stylePreset)) throw new ScriptVideoStoreError('分镜的风格预设无效')
       const prior = old?.cards?.find((item: any) => item.id === card.id)
+      if (prior?.assetBindingRequirements?.length && card.assetBindingRequirements === undefined)
+        card = { ...card, assetBindingRequirements: prior.assetBindingRequirements, sourceSceneIds: card.sourceSceneIds ?? prior.sourceSceneIds }
       if (previous) {
         const oldReferences = new Set(scriptVideoReferencedAssetIds(prior))
         if (scriptVideoReferencedAssetIds(card).some(id => !assetIds.has(id) && (!oldReferences.has(id) || oldAssetIds.has(id))))
@@ -667,12 +694,14 @@ export class ScriptVideoStore {
     void this.init.catch(() => { })
   }
   private catalog!: ScriptVideoDatabase
+  private assetExtractionJobs!: ScriptVideoAssetExtractionJobs
   private media!: ScriptVideoMediaRetention
   private corruptLegacy = new Set<string>()
   private async initialize() {
     await fs.mkdir(this.directory, { recursive: true })
     this.catalog = new ScriptVideoDatabase(this.directory)
     const db = this.catalog.db
+    this.assetExtractionJobs = new ScriptVideoAssetExtractionJobs(db)
     this.media = new ScriptVideoMediaRetention(db)
     for (const name of await fs.readdir(this.directory)) {
       const id = name.slice(0, -5)
@@ -920,6 +949,12 @@ export class ScriptVideoStore {
     this.media.dispose()
     this.generationQueue?.close()
     this.catalog.db.close()
+  }
+  async assetExtractionJobsFor(projectId: string) {
+    await this.init
+    assertId(projectId)
+    this.projectRow(projectId)
+    return this.assetExtractionJobs
   }
   async list(): Promise<ScriptVideoProject[]> {
     await this.init
@@ -1205,25 +1240,39 @@ export class ScriptVideoStore {
         throw new ScriptVideoStoreError('请选择项目里的角色资产')
       const current = asset[field] ?? null
       if (sameJson(current, value)) return { result: project, recordChanged: false }
+      if (field === 'voiceAudio' && asset.voiceProfile && !sameJson(current, expected))
+        throw new ScriptVideoStoreError('角色声音已更新，请刷新后重试', 409, 'CONFLICT')
       const next = { ...asset }
       if (value === null) delete next[field]
       else next[field] = value
       validateAsset(next)
-      const assets = project.assets.slice()
-      assets[index] = next
+      const assets = field === 'voiceAudio' && asset.voiceProfile
+        ? setScriptVideoProfileAudio(project.assets, asset, value as ScriptVideoVoiceAudio | null)
+        : project.assets.map((item, i) => i === index ? next : item)
       record.project = sanitizeProject({ ...project, assets }, project)
       return { result: record.project, documentChanged: true }
     })
   }
+  confirmCharacterVoiceAge(projectId: string, assetId: string, ageStage: Exclude<ScriptVideoVoiceAgeStage, 'unknown'>) {
+    return this.mutateAssets(projectId, assets => {
+      const asset = assets.find(item => item.id === assetId && item.kind === 'character')
+      if (!asset) throw new ScriptVideoStoreError('角色资产不存在', 404, 'NOT_FOUND')
+      if (asset.confirmedVoiceAge === ageStage) return { result: { ageStage } }
+      if (!asset.voiceProfile?.ageConflict?.includes(ageStage))
+        throw new ScriptVideoStoreError('音色年龄选项已变化，请刷新后确认', 409, 'CONFLICT')
+      if (asset.voiceAudio) throw new ScriptVideoStoreError('该造型已有参考音频，请先移除后确认年龄', 409, 'CONFLICT')
+      return { assets: confirmScriptVideoVoiceAge(assets, asset, ageStage), result: { ageStage } }
+    })
+  }
   async saveCharacterVoiceDescription(
-    projectId: string, assetId: string, description: ScriptVideoVoiceDescription, keepExisting = false,
+    projectId: string, assetId: string, description: ScriptVideoVoiceDescription,
   ): Promise<ScriptVideoVoiceDescription> {
     return this.mutateAssets(projectId, assets => {
       const index = assets.findIndex(asset => asset.id === assetId && asset.kind === 'character')
       const asset = assets[index]
       if (!asset) throw new ScriptVideoStoreError('角色资产不存在', 404, 'NOT_FOUND')
       const current: ScriptVideoVoiceDescription | undefined = asset.voiceDescription
-      if (current && (keepExisting || current.text === description.text)) return { result: current }
+      if (current && current.text === description.text && current.sourceLabel === description.sourceLabel) return { result: current }
       if (!description.text) return { result: description }
       const next = assets.slice()
       next[index] = { ...asset, voiceDescription: description }

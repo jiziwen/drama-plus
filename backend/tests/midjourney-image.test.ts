@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { test } from 'node:test'
 import sharp from 'sharp'
+import { Agent } from 'undici'
 
 test('资产画廊的火灵灵配置提交绘图、轮询任务并保存图片', async t => {
   const root = await mkdtemp(join(tmpdir(), 'midjourney-image-'))
@@ -36,6 +37,10 @@ test('资产画廊的火灵灵配置提交绘图、轮询任务并保存图片',
   }).returning().get()
   const taskId = '1234567890123456789'
   const imageUrl = origin + '/mj/image/' + taskId
+  const cdnUrl = 'https://mjcn-midjourney.googlec.cc/result.webp'
+  let resultUrl = imageUrl
+  let cdnRequestMode: 'offline' | 'forbidden' = 'offline'
+  const cdnRoutes: string[] = []
   const imageBytes = new Uint8Array(await sharp({
     create: { width: 160, height: 90, channels: 3, background: '#123456' },
   }).png().toBuffer())
@@ -49,9 +54,16 @@ test('资产画廊的火灵灵配置提交绘图、轮询任务并保存图片',
       return Response.json({ code: 1, description: '提交成功', result: taskId })
     }
     if (method === 'GET' && url === origin + '/mj/task/' + taskId + '/fetch') {
-      return Response.json({ id: taskId, status: 'SUCCESS', progress: '100%', imageUrl })
+      return Response.json({ id: taskId, status: 'SUCCESS', progress: '100%', imageUrl: resultUrl })
     }
     if (url === imageUrl) return new Response(imageBytes, { headers: { 'Content-Type': 'image/png' } })
+    if (url === cdnUrl) {
+      const dispatcher = (init as (RequestInit & { dispatcher?: unknown }) | undefined)?.dispatcher
+      cdnRoutes.push(dispatcher instanceof Agent ? 'direct' : 'proxy')
+      if (cdnRequestMode === 'forbidden') return new Response(null, { status: 403 })
+      if (!dispatcher) throw new TypeError('fetch failed', { cause: { code: 'UND_ERR_CONNECT_TIMEOUT' } })
+      return new Response(imageBytes, { headers: { 'Content-Type': 'image/png' } })
+    }
     if (url === origin + '/v1/models') return Response.json({ data: [{ id: 'mj_imagine' }, { id: 'mj_blend' }] })
     return Response.json({ error: { message: 'openai_error', type: 'bad_response_status_code' } }, { status: 404 })
   })
@@ -98,6 +110,43 @@ test('资产画廊的火灵灵配置提交绘图、轮询任务并保存图片',
   assert.ok(asset?.imageUrl)
   const output = await sharp(join(root, asset.imageUrl)).metadata()
   assert.equal(output.width * 9, output.height * 16)
+
+  await t.test('MJ 公共图片 CDN 的代理连接超时后，通过直连下载原图', async () => {
+    const proxySettings = {
+      NODE_USE_ENV_PROXY: '1', https_proxy: 'http://127.0.0.1:7890', no_proxy: '',
+    }
+    const originalSettings = new Map(Object.keys(proxySettings).map(key => [key, process.env[key]]))
+    Object.assign(process.env, proxySettings)
+    resultUrl = cdnUrl
+    try {
+      const initialCalls = calls.length
+      const id = await generateImage({ configId: config.id, model: 'mj_imagine', prompt: '空街道' })
+      const saved = await completed(id)
+      assert.ok(saved.localPath)
+      assert.equal(saved.resultUrl, cdnUrl)
+      assert.deepEqual(cdnRoutes, ['proxy', 'direct'])
+      assert.equal(calls.slice(initialCalls).filter(call => call.method === 'POST').length, 1)
+
+      cdnRequestMode = 'forbidden'
+      const forbidden = await generateImage({ configId: config.id, model: 'mj_imagine', prompt: '空街道' })
+      for (let attempt = 0; attempt < 150; attempt++) {
+        const row = db.select().from(schema.sysTask).where(eq(schema.sysTask.id, forbidden)).get()
+        if (row?.status !== 'processing') {
+          assert.equal(row?.status, 'delivery_pending')
+          assert.deepEqual(cdnRoutes, ['proxy', 'direct', 'proxy'])
+          return
+        }
+        await delay(20)
+      }
+      assert.fail('访问被拒后的取图状态未落库')
+    } finally {
+      resultUrl = imageUrl
+      for (const [key, value] of originalSettings) {
+        if (value === undefined) delete process.env[key]
+        else process.env[key] = value
+      }
+    }
+  })
 
   await t.test('带参考图的绘图请求传入 Base64，采用所选比例', async () => {
     const encoded = Buffer.from(imageBytes).toString('base64')
@@ -150,37 +199,92 @@ test('资产画廊的火灵灵配置提交绘图、轮询任务并保存图片',
     ])
   })
 
-  await t.test('剧本转视频的项目资产使用同一生图任务并写回项目', async () => {
+  await t.test('项目资产的 MJ 出图使用已启用的绘图模型与场景专用提示词', async () => {
     const { ScriptVideoStore } = await import('../src/services/script-video-store.js')
     const { createScriptVideoAssetImages } = await import('../src/routes/script-video-asset-images.js')
     const store = new ScriptVideoStore(join(root, 'script-video'))
     try {
+      const otherConfig = db.insert(schema.aiServiceConfigs).values({
+        ...dates, serviceType: 'image', provider: 'openai', name: '其他图片模型',
+        baseUrl: 'https://example.test/v1', apiKey: 'test-only',
+        model: JSON.stringify(['gpt-image-2', 'mj_imagine']), priority: 100, isActive: true,
+      }).returning().get()
+      assert.equal((await aiConfigs.request('/default/image', {
+        ...post({ configId: otherConfig.id, model: 'gpt-image-2' }), method: 'PUT',
+      })).status, 200)
+      const scenePrompt = '[2.建筑骨架]：青石庭院，东侧白玉门。\n[4.光影与色彩]：冷蓝晨光，庭院里铺满晨光。\n[5.四宫格多机位排版]：旧版机位标签。 --raw'
       const { id } = await store.create('剧本转视频项目')
-      await store.mutateAssets(id, () => ({ assets: [{
-        id: 'courtyard', kind: 'scene', name: '庭院', image: '', imagePrompt: '一座没有人物的庭院',
-      }], result: undefined }))
-      const images = createScriptVideoAssetImages(store, { pollIntervalMs: 5 })
+      await store.mutateAssets(id, () => ({ assets: [
+        { id: 'courtyard', kind: 'scene', name: '庭院', image: '', imagePrompt: scenePrompt },
+        { id: 'key', kind: 'prop', name: '旧钥匙', image: '', imagePrompt: '有缺口的铜钥匙' },
+      ], result: undefined }))
+      let receivedDescription = ''
+      let rewriteUnavailable = false
+      const rewritten = '东侧白玉门，青石空庭，冷蓝晨光'
+      const images = createScriptVideoAssetImages(store, {
+        pollIntervalMs: 5,
+        async rewriteScriptVideoMidjourneyScene(description) {
+          receivedDescription = description
+          if (rewriteUnavailable) throw new Error('测试文字模型暂时不可用')
+          return rewritten
+        },
+      })
+      async function finishedScene() {
+        for (let attempt = 0; attempt < 150; attempt++) {
+          const [asset] = (await store.summary(id)).assets
+          if (asset.imageStatus !== 'generating') {
+            assert.equal(asset.imageStatus, 'completed', asset.imageError)
+            return asset
+          }
+          await delay(20)
+        }
+        assert.fail('项目场景出图未完成')
+      }
       const startedAt = calls.length
-      const submitted = await images.routes.request(`/projects/${id}/assets/generate`, post({
-        assetIds: ['courtyard'], configId: config.id, model: 'mj_imagine',
+      const draw = () => images.routes.request(`/projects/${id}/assets/generate`, post({
+        assetIds: ['courtyard', 'key'], mode: 'midjourney',
       }))
+      const submitted = await draw()
       assert.equal(submitted.status, 200)
       assert.deepEqual((await submitted.json()).data.started, ['courtyard'])
-      for (let attempt = 0; attempt < 150; attempt++) {
-        if ((await store.summary(id)).assets[0].imageStatus !== 'generating') break
-        await delay(20)
-      }
-      const [asset] = (await store.summary(id)).assets
-      assert.equal(asset.imageStatus, 'completed', asset.imageError)
+      const asset = await finishedScene()
+      const [, prop] = (await store.summary(id)).assets
+      assert.equal(asset.imagePrompt, scenePrompt)
+      assert.equal(prop.imageTaskId, undefined)
       const task = await completed(asset.imageTaskId)
+      assert.equal(task.configId, config.id)
+      assert.equal(task.model, 'mj_imagine')
       assert.equal(asset.image, '/' + task.localPath)
       assert.deepEqual(JSON.parse(task.params!).scriptVideoAsset, {
         projectId: id, assetId: 'courtyard', requestId: asset.imageRequestId,
       })
       assert.equal(task.propId, null)
-      assert.deepEqual(calls[startedAt].body, {
-        botType: 'MID_JOURNEY', prompt: '一座没有人物的庭院 --ar 16:9', base64Array: [],
-      })
+      assert.equal(calls[startedAt].url, origin + '/mj/submit/imagine')
+      const request = calls[startedAt].body as { botType: string; prompt: string; base64Array: string[] }
+      assert.equal(request.botType, 'MID_JOURNEY')
+      assert.deepEqual(request.base64Array, [])
+      assert.match(request.prompt, /2×2/u)
+      assert.ok(request.prompt.includes(rewritten))
+      assert.doesNotMatch(request.prompt, /建筑骨架|旧版机位标签|庭院里铺满晨光|--no [^\n]*\btext\b/u)
+      assert.match(request.prompt, /--raw .*--ar 16:9$/u)
+      assert.match(receivedDescription, /青石庭院.*东侧白玉门/u)
+      assert.doesNotMatch(receivedDescription, /旧版机位标签|--raw/u)
+
+      rewriteUnavailable = true
+      const fallbackAt = calls.length
+      assert.deepEqual((await (await draw()).json()).data.started, ['courtyard'])
+      assert.equal((await finishedScene()).imagePrompt, scenePrompt)
+      const fallbackRequest = calls[fallbackAt].body as { prompt: string }
+      assert.match(fallbackRequest.prompt, /青石庭院.*东侧白玉门/u)
+      assert.match(fallbackRequest.prompt, /--ar 16:9$/u)
+
+      db.update(schema.aiServiceConfigs).set({ isActive: false }).where(eq(schema.aiServiceConfigs.baseUrl, origin + '/v1')).run()
+      db.update(schema.aiServiceConfigs).set({ isActive: false }).where(eq(schema.aiServiceConfigs.provider, 'midjourney')).run()
+      const afterCompletion = calls.length
+      const unavailable = await draw()
+      assert.equal(unavailable.status, 400)
+      assert.match((await unavailable.json()).message, /启用.*mj_imagine/u)
+      assert.equal(calls.length, afterCompletion)
     } finally {
       await store.close()
     }

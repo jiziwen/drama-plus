@@ -6,6 +6,7 @@ import assert from 'node:assert/strict'
 import ts from 'typescript'
 import { parse, compileScript, compileTemplate } from '@vue/compiler-sfc'
 import * as vue from 'vue'
+import { thumbOf } from '../app/composables/useMedia.ts'
 
 const require = createRequire(import.meta.url)
 const app = new URL('../app/', import.meta.url)
@@ -232,7 +233,8 @@ test('async real projects become selected; a real card never acquires a demo vid
   await vue.nextTick()
   assert.equal(component.model.selected.value.id, 'project-42-characters-4')
   assert.equal(component.model.selected.value.project.id, 42)
-  assert.equal(component.model.selected.value.poster, '/static/uploads/actual.png')
+  assert.notEqual(component.model.selected.value.poster, '/static/uploads/actual.png')
+  assert.equal(component.model.selected.value.poster, thumbOf('/static/uploads/actual.png'))
   assert.equal(component.model.selected.value.video, '')
   component.model.openSelected()
   assert.equal(component.emitted.at(-1)[0], 'open')

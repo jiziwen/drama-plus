@@ -65,8 +65,7 @@
           <button v-if="imageOf(asset)" type="button" class="gallery-preview-trigger"
             :aria-label="`查看${asset.name}大图`" aria-haspopup="dialog" title="点击查看大图"
             @click="imagePreview?.open(imageOf(asset), asset.name, $event.currentTarget)">
-            <img :key="imageOf(asset)" :src="thumbOf(imageOf(asset))" :alt="asset.name" loading="lazy"
-              @error="thumbFallback($event, imageOf(asset))" />
+            <img :key="imageOf(asset)" :src="thumbOf(imageOf(asset))" :alt="asset.name" loading="lazy" decoding="async" />
           </button>
           <span v-else class="gallery-initial">{{ asset.name.slice(0, 1) || '·' }}</span>
           <span class="gallery-kind">{{ kindLabels[asset.kind] }}</span>
@@ -167,7 +166,7 @@
 import { Search, Pencil, LoaderCircle, FolderKanban, Images, ArrowUpRight, UsersRound, Mountain, Box, Sparkles, X, Plus, RotateCcw, Trash2, Download } from 'lucide-vue-next'
 import AssetImagePreview from '~/components/AssetImagePreview.vue'
 import { galleryAssetAPI, listAllDramas, taskAPI } from '~/composables/useApi'
-import { thumbOf, thumbFallback } from '~/composables/useMedia'
+import { thumbOf } from '~/composables/useMedia'
 import { GALLERY_IMAGE_ASPECTS, type GalleryAsset, type GalleryAssetKind, type GalleryImageAspect } from '../../../backend/src/services/gallery-asset-types'
 import type { ProjectModelOption } from '../../../backend/src/services/project-model-options'
 

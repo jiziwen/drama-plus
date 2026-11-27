@@ -7,6 +7,7 @@ import { db } from '../db/index.js'
 import { feedback, feedbackScreenshots, feedbackStatuses } from '../db/schema.js'
 import { hasFeedbackAdminAccess, trustedSiteUser } from '../utils/private-access.js'
 import { badRequest, created, notFound, now, success } from '../utils/response.js'
+import { imageThumbnail } from '../utils/storage.js'
 
 const app = new Hono()
 const pageSize = 20
@@ -83,7 +84,7 @@ app.post('/', async (c, next) => {
   return created(c, entry)
 })
 
-app.get('/:id/screenshots/:position', c => {
+app.get('/:id/screenshots/:position', async c => {
   const id = Number(c.req.param('id'))
   const position = Number(c.req.param('position'))
   const submittedBy = trustedSiteUser(c)
@@ -96,6 +97,13 @@ app.get('/:id/screenshots/:position', c => {
     .where(and(eq(feedbackScreenshots.feedbackId, id), eq(feedbackScreenshots.position, position),
       canManage ? undefined : eq(feedback.submittedBy, submittedBy))).get()
   if (!screenshot) return notFound(c, '截图不存在')
+  if (c.req.query('thumbnail') === '1') {
+    const thumbnail = await imageThumbnail(screenshot.content).toBuffer().catch(() => null)
+    if (!thumbnail) return notFound(c, '截图缩略图暂不可用')
+    return c.body(new Uint8Array(thumbnail), 200, {
+      'Content-Type': 'image/webp', 'X-Content-Type-Options': 'nosniff', 'Cross-Origin-Resource-Policy': 'same-origin',
+    })
+  }
   return c.body(new Uint8Array(screenshot.content), 200, {
     'Content-Type': screenshot.mimeType,
     'X-Content-Type-Options': 'nosniff',

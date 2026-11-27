@@ -10,22 +10,23 @@ import { getJimengVideoModels, withJimengAccount } from '../services/jimeng-cli.
 import { JIMENG_SEEDANCE_20_MINI_MODEL } from '../services/jimeng-video-models.js'
 import { libtvHasSeedance20Mini, withLibTVAccount } from '../services/libtv-cli.js'
 import { LIBTV_SEEDANCE_20_MINI_MODEL } from '../services/libtv-video-models.js'
+import { scriptVideoVoiceMembers, type ScriptVideoVoiceProfile } from '../services/script-video-project-voices.js'
 import { ScriptVideoStoreError, type ScriptVideoStore } from '../services/script-video-store.js'
-import { extractScriptVideoVoiceDescription } from '../services/script-video-voice-description.js'
-import type { ScriptVideoVoiceDescription } from '../services/script-video-types.js'
+import { scriptVideoVoiceAgeStageSchema } from '../services/script-video-voice-profile.js'
 import { generatedVoiceAudio, generatedVoiceVideoUrl, isScriptVideoVoiceModel, scriptVideoVoiceParam, scriptVideoVoicePrompt, scriptVideoVoiceRequest } from '../services/script-video-voice-generation.js'
 import { safeTaskError } from '../services/video-download.js'
 import { resolveVideoCliAccountId } from '../services/video-cli-accounts.js'
 import { hasLoopbackAccess, hasPrivateGatewayAccess } from '../utils/private-access.js'
 
 const voiceDuration = 5
-const descriptionRequestSchema = z.object({ episodeId: z.string().trim().min(1).max(100).optional() })
 const voiceGenerationSchema = z.object({
   configId: z.number().int().positive(),
   model: z.enum([JIMENG_SEEDANCE_20_MINI_MODEL, LIBTV_SEEDANCE_20_MINI_MODEL]),
   description: z.string().trim().min(1).max(500),
   dialogue: z.string().trim().min(1).max(80),
+  confirmVoiceConflict: z.boolean().optional(),
 })
+const voiceAgeSchema = z.object({ ageStage: scriptVideoVoiceAgeStageSchema.exclude(['unknown']) })
 
 const configs = schema.aiServiceConfigs
 const enabledVideoCli = and(eq(configs.serviceType, 'video'), eq(configs.isActive, true), inArray(configs.provider, ['jimeng', 'libtv']))
@@ -54,34 +55,28 @@ async function voiceGenerationOption(config: VoiceConfig) {
 export function registerScriptVideoVoiceGenerationRoutes(
   routes: Hono, store: ScriptVideoStore, respondError: (c: Context, error: unknown) => Response,
 ) {
-  const descriptionRequests = new Map<string, Promise<ScriptVideoVoiceDescription>>()
+  async function voiceTarget(projectId: string, assetId: string, confirmVoiceConflict: boolean | undefined) {
+    const project = await store.summary(projectId)
+    const asset = project.assets.find(item => item.id === assetId && item.kind === 'character')
+    if (!asset) throw new ScriptVideoStoreError('角色资产不存在', 404, 'NOT_FOUND')
+    const profile: ScriptVideoVoiceProfile | undefined = asset.voiceProfile
+    if (profile?.ageConflict?.length) throw new ScriptVideoStoreError('请先确认此造型对应的年龄阶段', 409, 'VOICE_AGE_CONFLICT')
+    const members = scriptVideoVoiceMembers(project.assets, asset)
+    if (profile?.audioConflict) throw new ScriptVideoStoreError('同年龄角色已有多份参考音频，请先统一音频', 409, 'VOICE_AUDIO_CONFLICT')
+    if (profile && members.some(member => member.voiceAudio))
+      throw new ScriptVideoStoreError('此角色在该年龄阶段已有声音，可直接复用', 409, 'VOICE_ALREADY_SET')
+    if (profile?.generatedOutputId)
+      throw new ScriptVideoStoreError('此角色在该年龄阶段已生成过声音，可上传参考音频', 409, 'VOICE_ALREADY_GENERATED')
+    if (profile?.conflicts?.length && !confirmVoiceConflict)
+      throw new ScriptVideoStoreError('请阅读各集的声音线索并确认使用的声音描述', 409, 'VOICE_DESCRIPTION_CONFLICT')
+    return { asset, profile, members }
+  }
 
-  routes.post('/projects/:id/assets/:assetId/voice-description', async c => {
+  routes.patch('/projects/:id/assets/:assetId/voice-age', async c => {
     try {
-      requireVoiceGenerationAccess(c)
-      const parsed = descriptionRequestSchema.safeParse(await c.req.json().catch(() => null))
-      if (!parsed.success) throw new ScriptVideoStoreError('角色声音描述请求无效')
-      const projectId = c.req.param('id')
-      const assetId = c.req.param('assetId')
-      const project = await store.summary(projectId)
-      const asset = project.assets.find(item => item.id === assetId && item.kind === 'character')
-      if (!asset) throw new ScriptVideoStoreError('角色资产不存在', 404, 'NOT_FOUND')
-      if (asset.voiceDescription) return success(c, asset.voiceDescription)
-
-      const key = `${projectId}/${assetId}`
-      let pending = descriptionRequests.get(key)
-      if (!pending) {
-        pending = (async () => {
-          const source = await store.get(projectId)
-          const current = source.assets.find(item => item.id === assetId && item.kind === 'character')
-          if (!current) throw new ScriptVideoStoreError('角色资产不存在', 404, 'NOT_FOUND')
-          if (current.voiceDescription) return current.voiceDescription
-          const description = await extractScriptVideoVoiceDescription(source, current, parsed.data.episodeId)
-          return store.saveCharacterVoiceDescription(projectId, assetId, description, true)
-        })().finally(() => { descriptionRequests.delete(key) })
-        descriptionRequests.set(key, pending)
-      }
-      return success(c, await pending)
+      const parsed = voiceAgeSchema.safeParse(await c.req.json().catch(() => null))
+      if (!parsed.success) throw new ScriptVideoStoreError('请选择此角色造型的年龄阶段')
+      return success(c, await store.confirmCharacterVoiceAge(c.req.param('id'), c.req.param('assetId'), parsed.data.ageStage))
     } catch (error) { return respondError(c, error) }
   })
 
@@ -113,10 +108,8 @@ export function registerScriptVideoVoiceGenerationRoutes(
         throw new ScriptVideoStoreError('请选择 Seedance 2.0 Mini，并填写声音描述（最多 500 字）和试音台词（最多 80 字）')
       const projectId = c.req.param('id')
       const assetId = c.req.param('assetId')
-      const project = await store.summary(projectId)
-      const asset = project.assets.find(item => item.id === assetId && item.kind === 'character')
-      if (!asset) throw new ScriptVideoStoreError('角色资产不存在', 404, 'NOT_FOUND')
-      const { configId, model, description, dialogue } = parsed.data
+      const { configId, model, description, dialogue, confirmVoiceConflict } = parsed.data
+      await voiceTarget(projectId, assetId, confirmVoiceConflict)
       const config = db.select(configFields).from(configs).where(and(eq(configs.id, configId), enabledVideoCli)).get()
       if (!config || !isScriptVideoVoiceModel(config.provider ?? '', model))
         throw new ScriptVideoStoreError('请选择已启用的即梦积分或 LibTV Seedance 2.0 Mini 服务')
@@ -126,15 +119,19 @@ export function registerScriptVideoVoiceGenerationRoutes(
         throw new ScriptVideoStoreError(safeTaskError(error), 502, 'VOICE_MODEL_LOOKUP_FAILED')
       })
       if (!option) throw new ScriptVideoStoreError('所选账号当前未提供 Seedance 2.0 Mini')
-      await store.saveCharacterVoiceDescription(projectId, assetId, { text: description, sourceLabel: '手动编辑' })
+      const { asset, profile, members } = await voiceTarget(projectId, assetId, confirmVoiceConflict)
+      const savedDescription = asset.voiceDescription?.text === description && !confirmVoiceConflict
+        ? asset.voiceDescription : { text: description, sourceLabel: '手动编辑' }
+      if (!profile) await store.saveCharacterVoiceDescription(projectId, assetId, { text: description, sourceLabel: '手动编辑' })
       const id = await generateVideo({
-        configId, model, prompt: scriptVideoVoicePrompt(description, dialogue), referenceMode: 'text',
+        configId, model, prompt: scriptVideoVoicePrompt(description, dialogue, profile?.ageStage), referenceMode: 'text',
         duration: voiceDuration, aspectRatio: '16:9', resolution: option.resolution, generateAudio: true,
         videoCliAccountId: option.accountId, allowJimeng: config.provider === 'jimeng', allowLibTV: config.provider === 'libtv',
         scriptVideoVoice: {
           projectId, assetId, outputId: randomUUID(),
           name: `${Array.from(asset.name).slice(0, 100).join('')}试音.mp3`,
           expectedUrl: asset.voiceAudio?.url ?? null,
+          ...(profile && { profileId: profile.id, memberAssetIds: members.map(member => member.id), description: savedDescription }),
         },
       }).catch(error => {
         if (error instanceof ScriptVideoStoreError) throw error
@@ -149,19 +146,34 @@ export function registerScriptVideoVoiceGenerationRoutes(
       c.header('Cache-Control', 'no-store')
       const project = await store.summary(c.req.param('id'))
       const task = schema.sysTask
-      const assetIds = new Set(project.assets.filter(asset => asset.kind === 'character').map(asset => asset.id))
+      const assetIds = new Set<string>()
+      const memberIds = new Map<string, string[]>()
+      for (const asset of project.assets) {
+        if (asset.kind !== 'character') continue
+        assetIds.add(asset.id)
+        if (!asset.voiceProfile?.id || asset.voiceProfile.ageConflict?.length) continue
+        const members = memberIds.get(asset.voiceProfile.id) ?? []
+        members.push(asset.id)
+        memberIds.set(asset.voiceProfile.id, members)
+      }
       const latest = db.select({ id: max(task.id) }).from(task)
         .where(and(eq(task.type, 'video'), eq(scriptVideoVoiceParam('projectId'), project.id)))
-        .groupBy(scriptVideoVoiceParam('assetId'))
+        .groupBy(scriptVideoVoiceParam('assetId'), scriptVideoVoiceParam('profileId'))
       const records = db.select({ id: task.id, status: task.status, params: task.params, localPath: task.localPath, error: task.errorMsg })
         .from(task).where(inArray(task.id, latest)).orderBy(desc(task.id)).all()
+      const seen = new Set<string>()
       return success(c, records.flatMap(record => {
         const owner = scriptVideoVoiceRequest(record.params)
-        if (!owner || !assetIds.has(owner.assetId)) return []
-        const job = { id: record.id, assetId: owner.assetId, videoUrl: generatedVoiceVideoUrl(record.localPath) }
-        if (record.status === 'completed') return [{ ...job, status: 'completed', voiceAudio: generatedVoiceAudio(owner) }]
-        if (record.status === 'processing') return [{ ...job, status: 'processing' }]
-        return [{ ...job, status: 'failed', error: record.error || '角色声音生成失败' }]
+        if (!owner) return []
+        const ids = owner.profileId ? memberIds.get(owner.profileId) ?? [] : assetIds.has(owner.assetId) ? [owner.assetId] : []
+        return ids.flatMap(assetId => {
+          if (seen.has(assetId)) return []
+          seen.add(assetId)
+          const job = { id: record.id, assetId, videoUrl: generatedVoiceVideoUrl(record.localPath) }
+          if (record.status === 'completed') return [{ ...job, status: 'completed', voiceAudio: generatedVoiceAudio(owner) }]
+          if (record.status === 'processing') return [{ ...job, status: 'processing' }]
+          return [{ ...job, status: 'failed', error: record.error || '角色声音生成失败' }]
+        })
       }))
     } catch (error) { return respondError(c, error) }
   })

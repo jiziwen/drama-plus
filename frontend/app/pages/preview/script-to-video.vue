@@ -235,7 +235,7 @@
             >
               <LoaderCircle v-if="activeAssetExtraction?.status === 'running'" :size="13" class="animate-spin" />
               <Sparkles v-else :size="13" />
-              {{ activeAssetExtraction?.status === 'running' ? '查看提取进度' : '一键提取资产' }}
+              {{ assetExtractionButtonLabel }}
             </button>
           </div>
         </div>
@@ -259,7 +259,7 @@
             <button type="button" class="vp-material-edit" aria-haspopup="dialog" @click="editAsset(asset.id)">
               <span v-if="!asset.image" class="vp-material-thumb"><ScriptVideoPreviewAssetImage :asset="asset" /></span>
               <strong>{{ asset.name }}</strong>
-              <small>{{ kindLabel(asset.kind) }}<template v-if="asset.imagePrompt && (!asset.image || assetImageRunning(asset))"> · {{ assetImageStatusLabel(asset) }}</template></small>
+              <small>{{ kindLabel(asset.kind) }}<template v-if="asset.imageStatus === 'delivery_pending' || (asset.imagePrompt && (!asset.image || assetImageRunning(asset)))"> · {{ assetImageStatusLabel(asset) }}</template></small>
             </button>
           </div>
         </div>
@@ -456,6 +456,7 @@
             :uploading-prompt-media="uploadingPromptMedia.get(currentProject.id)"
             @upload-prompt-media="uploadPromptMedia"
             :video-voice-warning="videoVoiceWarningForCard(selectedCard.id)"
+            :recovering-video-delivery="isVideoDeliveryRecovery(videoGenerationTaskByCard.get(selectedCard.id))"
             :request-revision="revisionRequester"
             :revision-state="activeRevisionState"
             :revision-blocked="!!currentTextRun"
@@ -539,14 +540,17 @@
             <p v-if="batchVideoVoiceWarning" id="vp-batch-video-voice" class="vp-video-voice-warning" role="status">
               {{ batchVideoVoiceWarning }}
             </p>
+            <p v-if="batchVideoAssetBindingWarning" id="vp-batch-video-assets" class="vp-video-voice-warning" role="status">
+              {{ batchVideoAssetBindingWarning }}
+            </p>
             <button v-if="activeVideoRun || videoCanceling" class="btn vp-wide" type="button" :disabled="videoCanceling" @click="cancelVideoGeneration()">
               <X :size="13" />{{ videoCanceling ? '正在取消…' : '取消本集视频生成' }}
             </button>
             <button v-else
               class="btn vp-wide"
               type="button"
-              :disabled="!cards.length || running || !!activeCardIds.length || !!batchVideoVoiceWarning"
-              :aria-describedby="batchVideoVoiceWarning ? 'vp-batch-video-voice' : undefined"
+              :disabled="!cards.length || running || !!activeCardIds.length || !!batchVideoVoiceWarning || !!batchVideoAssetBindingWarning"
+              :aria-describedby="[batchVideoVoiceWarning && 'vp-batch-video-voice', batchVideoAssetBindingWarning && 'vp-batch-video-assets'].filter(Boolean).join(' ') || undefined"
               @click="requestVideoGeneration(cards.map(card => card.id))"
             >
               <Layers :size="13" />批量生成视频
@@ -877,44 +881,71 @@
           </template>
           <template v-else-if="dialog === 'asset-extract'">
             <div class="vp-modal-body">
-              <p class="vp-modal-description">导入剧本，提取角色、场景、道具和生物，以及每项资产的生图提示词。</p>
-              <div class="vp-dropzone" @dragover.prevent @drop.prevent="dropAssetScripts">
-                <FileText :size="23" aria-hidden="true" />
-                <strong>导入剧本</strong>
-                <span>支持多个 TXT、Markdown 或 ZIP 文件</span>
-                <button type="button" class="btn btn-sm" :disabled="assetExtractionBusy" @click="assetScriptInput?.click()">
-                  <Upload :size="13" />{{ readingAssetScripts ? '正在读取…' : '选择剧本文件' }}
-                </button>
-                <input
-                  ref="assetScriptInput"
-                  type="file"
-                  accept=".txt,.md,.markdown,.zip,text/plain,text/markdown,application/zip"
-                  multiple hidden
-                  @change="chooseAssetScripts"
-                />
+              <div v-if="assetExtractionPollState === 'checking'" class="vp-asset-extraction-progress" role="status">正在读取提取进度…</div>
+              <div v-else-if="assetExtractionPollState === 'unavailable' || assetExtractionPollState === 'missing'" class="vp-asset-extraction-progress" role="status">
+                <span>{{ assetExtractionPollState === 'missing' ? '服务器找不到上次的提取任务，请检查资产清单。' : '暂时无法读取提取进度。页面会自动重新连接。' }}</span>
+                <button type="button" class="btn btn-ghost btn-sm" @click="requestAssetExtractionStatus?.()">重新读取进度</button>
               </div>
-              <div v-if="assetScriptSources.length" class="vp-asset-extraction-sources">
-                <span>已导入 {{ assetScriptSources.length }} 份剧本 · {{ assetScriptSourceSize.toLocaleString('zh-CN') }} 字</span>
-                <button type="button" class="btn btn-ghost btn-sm" :disabled="assetExtractionBusy" @click="clearAssetScripts">清空</button>
+              <div v-if="activeAssetExtraction" class="vp-asset-extraction-progress" role="status">
+                <span v-if="activeAssetExtraction.status === 'running'">{{ activeAssetExtraction.total ? '正在提取资产' : '正在准备剧本分段' }}</span>
+                <span v-else-if="assetExtractionFailedJob">提取中断</span>
+                <span v-else>提取已完成 · 新增 {{ activeAssetExtraction.added ?? 0 }} 项，复用 {{ activeAssetExtraction.reused ?? 0 }} 项</span>
+                <span v-if="activeAssetExtraction.total">已处理 {{ activeAssetExtraction.completed }} / {{ activeAssetExtraction.total }} 段</span>
+                <progress v-if="activeAssetExtraction.total" :value="activeAssetExtraction.completed" :max="activeAssetExtraction.total" aria-label="资产提取进度" />
+                <span v-if="activeAssetExtraction.stage?.title && activeAssetExtraction.status !== 'completed'">{{ assetExtractionFailedJob ? '中断位置' : '当前处理' }}：{{ activeAssetExtraction.stage.title }}</span>
               </div>
-              <ul v-if="assetScriptErrors.length" class="vp-asset-extraction-errors" role="status">
-                <li v-for="(error, index) in assetScriptErrors" :key="index">{{ error }}</li>
-              </ul>
-              <div v-if="activeAssetExtraction?.status === 'running'" class="vp-asset-extraction-progress" role="status">
-                <span>正在提取资产 · 已处理 {{ activeAssetExtraction.completed }} / {{ activeAssetExtraction.total }} 段</span>
-                <progress :value="activeAssetExtraction.completed" :max="activeAssetExtraction.total || 1" aria-label="资产提取进度" />
-              </div>
-              <p v-else-if="assetExtractionError || activeAssetExtraction?.status === 'failed'" class="vp-asset-extraction-errors" role="alert">
-                {{ assetExtractionError || activeAssetExtraction?.error || '提取失败，请重试' }}
-              </p>
+              <p v-if="assetExtractionFailedJob?.error" class="vp-asset-extraction-errors" role="alert">{{ assetExtractionFailedJob.error }}</p>
+              <p v-if="assetExtractionError" class="vp-asset-extraction-errors" role="alert">{{ assetExtractionError }}</p>
+              <p v-if="assetExtractionFailedJob?.resumable && !assetExtractionRestarting" class="vp-modal-description">已保存完成的分段。继续提取将使用上次的剧本处理剩余部分。</p>
+              <p v-if="assetExtractionRestarting" class="vp-modal-description">从头提取会替换上次的待续任务，并重新处理所有分段。</p>
+              <template v-if="assetExtractionSourceForm">
+                <p v-if="!assetExtractionRestarting" class="vp-modal-description">导入剧本，提取角色、场景、道具和生物，以及每项资产的生图提示词。</p>
+                <div class="vp-dropzone" @dragover.prevent @drop.prevent="dropAssetScripts">
+                  <FileText :size="23" aria-hidden="true" />
+                  <strong>导入剧本</strong>
+                  <span>支持多个 TXT、Markdown 或 ZIP 文件</span>
+                  <button type="button" class="btn btn-sm" :disabled="assetExtractionBusy" @click="assetScriptInput?.click()">
+                    <Upload :size="13" />{{ readingAssetScripts ? '正在读取…' : '选择剧本文件' }}
+                  </button>
+                  <input
+                    ref="assetScriptInput"
+                    type="file"
+                    accept=".txt,.md,.markdown,.zip,text/plain,text/markdown,application/zip"
+                    multiple hidden
+                    @change="chooseAssetScripts"
+                  />
+                </div>
+                <div v-if="assetScriptSources.length" class="vp-asset-extraction-source-details">
+                  <div class="vp-asset-extraction-sources">
+                    <span>已导入 {{ assetScriptSources.length }} 份剧本 · {{ assetScriptSourceSize.toLocaleString('zh-CN') }} 字</span>
+                    <button type="button" class="btn btn-ghost btn-sm" :disabled="assetExtractionBusy" @click="clearAssetScripts">清空</button>
+                  </div>
+                  <ul class="vp-asset-extraction-source-list" aria-label="已导入的剧本文件" tabindex="0">
+                    <li v-for="(source, index) in assetScriptSources" :key="index">
+                      <strong>{{ source.title }}</strong>
+                      <span v-if="source.sourcePath">{{ source.sourcePath }}</span>
+                    </li>
+                  </ul>
+                </div>
+                <ul v-if="assetScriptErrors.length" class="vp-asset-extraction-errors" role="status">
+                  <li v-for="(error, index) in assetScriptErrors" :key="index">{{ error }}</li>
+                </ul>
+              </template>
             </div>
             <footer>
               <button type="button" class="btn" @click="dialog = null">{{ activeAssetExtraction?.status === 'running' ? '后台继续' : '关闭' }}</button>
-              <div class="vp-import-actions">
-                <button type="button" class="btn btn-sm" :disabled="assetExtractionBusy" @click="startAssetExtraction(true)">使用项目已导入的剧本</button>
+              <div v-if="assetExtractionFailedJob?.resumable && !assetExtractionRestarting" class="vp-import-actions">
+                <button type="button" class="btn btn-ghost btn-sm" :disabled="assetExtractionBusy" @click="assetExtractionRestartJobId = assetExtractionFailedJob.id">从头提取…</button>
+                <button type="button" class="btn btn-primary" :disabled="assetExtractionBusy" @click="resumeAssetExtraction">
+                  <LoaderCircle v-if="submittingAssetExtraction" :size="14" class="animate-spin" />继续提取
+                </button>
+              </div>
+              <div v-else-if="assetExtractionSourceForm" class="vp-import-actions">
+                <button v-if="assetExtractionRestarting" type="button" class="btn btn-ghost btn-sm" :disabled="assetExtractionBusy" @click="assetExtractionRestartJobId = ''">返回继续提取</button>
+                <button type="button" class="btn btn-sm" :disabled="assetExtractionBusy" @click="startAssetExtraction(true)">{{ assetExtractionRestarting ? '使用项目剧本从头提取' : '使用项目已导入的剧本' }}</button>
                 <button type="button" class="btn btn-primary" :disabled="assetExtractionBusy || !assetScriptSources.length" @click="startAssetExtraction(false)">
                   <LoaderCircle v-if="submittingAssetExtraction" :size="14" class="animate-spin" />
-                  <Sparkles v-else :size="14" />提取资产
+                  <Sparkles v-else :size="14" />{{ assetExtractionRestarting ? '使用导入剧本从头提取' : '提取资产' }}
                 </button>
               </div>
             </footer>
@@ -952,12 +983,12 @@
                       <Upload :size="13" />选择图片
                     </button>
                     <button type="button" class="btn btn-sm" :disabled="!canEditSharedProject" @click="openAssetExtraction">
-                      <Sparkles :size="13" />{{ activeAssetExtraction?.status === 'running' ? '查看提取进度' : '一键提取资产' }}
+                      <Sparkles :size="13" />{{ assetExtractionButtonLabel }}
                     </button>
                   </div>
                 </div>
                 <p v-if="occupiedEpisodeIds.includes(selectedEpisodeId)" class="vp-muted">另一个页面也在编辑本集。</p>
-                <div v-if="assets.some(asset => asset.imagePrompt)" class="vp-asset-generation-bar">
+                <div v-if="editingAssetImagePromptId || assets.some(asset => asset.imagePrompt)" class="vp-asset-generation-bar">
                   <ModelSelect
                     v-model="assetImageModelKey"
                     label="生图模型"
@@ -1055,38 +1086,58 @@
                       <span v-if="asset.sourceEpisodes?.length" class="vp-asset-source" :title="asset.sourceTitles?.join('、')">第 {{ asset.sourceEpisodes.join('、') }} 集</span>
                       <span v-else-if="asset.sourceTitles?.length" class="vp-asset-source" :title="asset.sourceTitles.join('、')">{{ asset.sourceTitles.join('、') }}</span>
                     </div>
-                    <div v-if="asset.kind !== 'audio' && (asset.imagePrompt !== undefined || asset.assetIdentity)" class="vp-asset-image-prompt">
+                    <div v-if="asset.kind !== 'audio' && (asset.imagePrompt !== undefined || asset.assetIdentity || asset.imageStatus || editingAssetImagePromptId === asset.id)" class="vp-asset-image-prompt">
                       <label>
                         <span>生图提示词</span>
                         <textarea
                           v-model="asset.imagePrompt"
                           class="textarea"
                           rows="3"
-                          placeholder="填写生图提示词"
+                          maxlength="16000"
+                          placeholder="填写生图提示词后再生成图片"
                           :aria-label="`${asset.name}的生图提示词`"
                           :disabled="!canEditSharedProject || assetImageRunning(asset)"
                         />
                       </label>
                       <div v-if="asset.imagePrompt || asset.imageStatus" class="vp-asset-image-state">
-                        <label v-if="asset.imagePrompt?.trim()" class="vp-asset-image-selection">
+                        <label v-if="asset.imagePrompt?.trim() && asset.imageStatus !== 'delivery_pending'" class="vp-asset-image-selection">
                           <input v-model="selectedAssetImages" type="checkbox" :value="asset.id" :disabled="!canEditSharedProject || assetImageRunning(asset)" :aria-label="`选择${asset.name}批量生成`" />
                           <span>加入批量</span>
                         </label>
                         <span :class="{ 'vp-asset-extraction-errors': asset.imageStatus === 'failed' }" role="status">{{ assetImageStatusLabel(asset) }}</span>
                       </div>
-                      <p v-if="asset.imageError && asset.imageStatus === 'failed'" class="vp-asset-extraction-errors" role="status">{{ asset.imageError }}</p>
+                      <p v-if="asset.imageError && (asset.imageStatus === 'failed' || asset.imageStatus === 'delivery_pending')" class="vp-asset-extraction-errors" role="status">{{ asset.imageError }}</p>
                     </div>
                     <div class="vp-asset-edit-actions">
                       <button
-                        v-if="asset.kind !== 'audio' && (asset.imagePrompt || asset.imageStatus)"
+                        v-if="canRetryAssetImageDelivery(asset)"
                         type="button" class="btn btn-primary btn-sm"
-                        :disabled="!canEditSharedProject || !canGenerateAssetImage(asset)"
-                        @click="generateAssetImages([asset])"
+                        :disabled="!canEditSharedProject || assetImageRunning(asset) || replacingImages.has(asset.id)"
+                        @click="retryAssetImageDelivery(asset)"
                       >
                         <LoaderCircle v-if="assetImageRunning(asset)" :size="13" class="animate-spin" />
-                        <RefreshCw v-else-if="asset.image || asset.imageStatus === 'failed'" :size="13" />
+                        <Download v-else :size="13" />
+                        {{ assetImageRunning(asset) ? '正在取回…' : '重试取图' }}
+                      </button>
+                      <button
+                        v-if="asset.kind !== 'audio'"
+                        type="button" class="btn btn-sm"
+                        :class="{ 'btn-primary': !canRetryAssetImageDelivery(asset) }"
+                        :disabled="!canEditSharedProject || assetImageRunning(asset) || replacingImages.has(asset.id)"
+                        @click="requestAssetImageGeneration(asset, $event)"
+                      >
+                        <LoaderCircle v-if="assetImageRunning(asset) && !canRetryAssetImageDelivery(asset)" :size="13" class="animate-spin" />
+                        <RefreshCw v-else-if="asset.image || asset.imageStatus === 'failed' || asset.imageStatus === 'delivery_pending'" :size="13" />
                         <Sparkles v-else :size="13" />
-                        {{ assetImageRunning(asset) ? '生成中…' : asset.image || asset.imageStatus === 'failed' ? '重新生成' : '生成' }}
+                        {{ assetImageRunning(asset) && !canRetryAssetImageDelivery(asset) ? '生成中…' : asset.image || asset.imageStatus === 'failed' || asset.imageStatus === 'delivery_pending' ? '重新生成图片' : '生成图片' }}
+                      </button>
+                      <button
+                        v-if="asset.kind === 'scene'"
+                        type="button" class="btn btn-sm"
+                        :disabled="!canEditSharedProject || assetImageRunning(asset) || replacingImages.has(asset.id)"
+                        @click="requestAssetImageGeneration(asset, $event, 'midjourney')"
+                      >
+                        MJ 出图
                       </button>
                       <label v-if="asset.kind === 'audio'" class="btn btn-sm vp-asset-replace">
                         <Upload :size="13" aria-hidden="true" />
@@ -1129,21 +1180,21 @@
                       :key="`${currentProject.id}/${currentEpisode.id}/${asset.id}`"
                       class="vp-asset-voice"
                       :asset="asset"
-                      :disabled="!episodeOpen || voiceEdits.has(asset.id)"
-                      :uploading="voiceEdits.get(asset.id)?.operation === 'upload'"
-                      :generating="voiceStarting(asset.id) || voiceJobs.get(asset.id)?.status === 'processing'"
+                      :disabled="!episodeOpen || !!voiceEditForAsset(asset)"
+                      :uploading="voiceEditForAsset(asset)?.operation === 'upload'"
+                      :confirming-age="voiceEdits.get(asset.id)?.operation === 'age'"
+                      :generating="voiceIsGenerating(asset)"
+                      :shared-voice-present="sharedVoicePresent(asset)"
+                      :already-generated="voiceWasGenerated(asset)"
                       :generation-error="voiceGenerationError(asset.id)"
                       :video-url="voiceJobs.get(asset.id)?.videoUrl"
                       :generation-options="voiceGenerationOptions"
                       :generation-message="voiceGenerationMessage"
                       :generation-loading="voiceOptionsLoading"
-                      :description-suggestion="voiceDescriptionState(asset.id)?.result"
-                      :description-loading="voiceDescriptionState(asset.id)?.loading"
-                      :description-error="voiceDescriptionState(asset.id)?.error"
                       @upload="uploadCharacterVoice(asset.id, $event)"
                       @remove="removeCharacterVoice(asset.id)"
                       @model-voice="setCharacterModelVoice(asset.id, $event)"
-                      @open-description="loadCharacterVoiceDescription(asset.id)"
+                      @confirm-age="confirmCharacterVoiceAge(asset.id, $event)"
                       @generate="generateCharacterVoice(asset.id, $event)"
                     />
                     <audio v-else-if="asset.kind === 'audio' && asset.voiceAudio?.url" class="vp-asset-voice"
@@ -1183,7 +1234,7 @@
                 ><input
                   v-model="bindCharacterToEpisode"
                   type="checkbox"
-                />角色造型同时应用到本集涉及该人物的片段</label
+                />角色造型同时应用到本集未另行绑定该人物的片段</label
               >
               <div class="vp-binding-grid">
                 <button
@@ -1491,6 +1542,7 @@ import { latestScriptVideoTaskUrls, officialScriptVideoUrl } from '../../../../b
 import { AICOST_VIDEO_RATIOS, AICOST_VIDEO_RESOLUTIONS, aicostVideoModelCapabilities } from '../../../../backend/src/services/aicost-video-models'
 import { seedanceModelLimits } from '../../../../backend/src/services/seedance-models'
 import { isScriptVideoChibiAppearance, scriptVideoCharacterBase, scriptVideoCharacterName } from '../../../../backend/src/services/script-video-asset-identity'
+import { scriptVideoAssetBindingIssues } from '../../../../backend/src/services/script-video-asset-bindings'
 import { getScriptVideoOutlineDurationIssues } from '../../../../backend/src/services/script-video-types'
 import { isScriptVideoEpisodeProgress, SCRIPT_VIDEO_EPISODE_PROGRESS_OPTIONS, type ScriptVideoEpisodeProgress } from '../../../../backend/src/services/script-video-episode-progress'
 import { getScriptVideoContinuationScene } from '../../../../backend/src/services/script-video-scene-boundary'
@@ -1504,6 +1556,8 @@ import {
   type PreviewCard,
   type PreviewAsset,
   type PreviewProduction,
+  type PreviewVoiceAgeStage,
+  type PreviewVoiceGenerationRequest,
 } from '~/utils/scriptVideoPreview'
 import { exportPreviewPackage } from '~/utils/scriptVideoPreviewExport'
 import {
@@ -1847,33 +1901,53 @@ const episodeImportReport = computed(
 )
 type AssetExtractionJob = {
   id: string
-  status: 'running' | 'completed' | 'failed'
+  status: 'running' | 'completed' | 'failed' | 'interrupted'
   completed: number
   total: number
+  resumable?: boolean
+  stage?: { title: string; episodeNumber?: number }
   added?: number
   reused?: number
   error?: string
 }
+type AssetExtractionPollState = 'checking' | 'ready' | 'unavailable' | 'missing'
 const assetScriptInput = ref<HTMLInputElement>()
 const assetScriptSources = shallowRef<ImportedEpisode[]>([])
 const assetScriptErrors = ref<string[]>([])
 const assetScriptSourceSize = computed(() => assetScriptSources.value.reduce((total, source) => total + source.script.length, 0))
 const readingAssetScripts = ref(false)
-const submittingAssetExtraction = ref(false)
-const assetExtractionError = ref('')
+const assetExtractionSubmissions = reactive(new Set<string>())
+const submittingAssetExtraction = computed(() => assetExtractionSubmissions.has(currentProject.value.id))
+const assetExtractionErrors = reactive(new Map<string, string>())
+const assetExtractionError = computed(() => assetExtractionErrors.get(currentProject.value.id))
 let assetScriptSession = 0
 let assetScriptProjectId = ''
 const assetExtractionJobs = reactive(new Map<string, AssetExtractionJob>())
+const assetExtractionPollStates = reactive(new Map<string, AssetExtractionPollState>())
+const assetExtractionApplied = new Map<string, string>()
+let requestAssetExtractionStatus: (() => void) | undefined
 const activeAssetExtraction = computed(() => assetExtractionJobs.get(currentProject.value.id))
+const assetExtractionFailedJob = computed(() => {
+  const job = activeAssetExtraction.value
+  return job?.status === 'failed' || job?.status === 'interrupted' ? job : undefined
+})
+const assetExtractionButtonLabel = computed(() => activeAssetExtraction.value?.status === 'running' ? '查看提取进度' :
+  assetExtractionFailedJob.value?.resumable ? '继续提取' : '一键提取资产')
 const assetExtractionBusy = computed(() => readingAssetScripts.value || submittingAssetExtraction.value || activeAssetExtraction.value?.status === 'running')
+const assetExtractionPollState = computed(() => assetExtractionPollStates.get(currentProject.value.id) ?? 'checking')
+const assetExtractionRestartJobId = ref('')
+const assetExtractionRestarting = computed(() => assetExtractionFailedJob.value?.id === assetExtractionRestartJobId.value)
+const assetExtractionSourceForm = computed(() => activeAssetExtraction.value?.status !== 'running' &&
+  (!assetExtractionFailedJob.value?.resumable || assetExtractionRestarting.value))
 const assetImageModelKey = ref('')
 const assetImageModels = shallowRef<(ProjectModelOption & { key: string })[]>([])
 const assetImageModelsLoading = ref(false)
 const assetImageModelsError = ref('')
+const editingAssetImagePromptId = ref('')
 const assetImagePreview = ref<InstanceType<typeof AssetImagePreview>>()
 const selectedAssetImages = ref(new Set<string>())
 const assetImageSubmissions = reactive(new Set<string>())
-const batchAssetImageTargets = computed(() => assets.value.filter(asset => canGenerateAssetImage(asset) && (
+const batchAssetImageTargets = computed(() => assets.value.filter(asset => asset.imageStatus !== 'delivery_pending' && canGenerateAssetImage(asset) && (
   selectedAssetImages.value.size ? selectedAssetImages.value.has(asset.id) : !asset.image || asset.imageStatus === 'failed'
 )))
 const assetManageSearch = ref('')
@@ -1889,7 +1963,7 @@ const managedAssets = computed(() =>
 const validation = ref<PreviewValidation>()
 const validationScope = ref('')
 const bindingSearch = ref('')
-const bindCharacterToEpisode = ref(true)
+const bindCharacterToEpisode = ref(false)
 const bindingAssets = computed(() =>
   assets.value.filter((asset) =>
     asset.kind !== 'audio' && asset.name.toLowerCase().includes(bindingSearch.value.toLowerCase()),
@@ -1936,8 +2010,18 @@ const creatingProject = ref(false)
 const savingStyle = ref(false)
 const styleProjectId = ref('')
 const voiceEdits = ref(new Map<string, {
-  projectId: string; operation: 'upload' | 'save'; completion: Promise<void>
+  projectId: string; operation: 'upload' | 'save' | 'age'; completion: Promise<void>
 }>())
+const voiceProfileGroups = computed(() => {
+  const groups = new Map<string, PreviewAsset[]>()
+  for (const asset of currentProject.value.assets) {
+    if (asset.kind !== 'character' || !asset.voiceProfile || asset.voiceProfile.ageConflict?.length) continue
+    const assets = groups.get(asset.voiceProfile.id)
+    if (assets) assets.push(asset)
+    else groups.set(asset.voiceProfile.id, [asset])
+  }
+  return groups
+})
 type VoiceGenerationJob = { id: number; assetId: string; status: 'processing' | 'completed' | 'failed'; error?: string; videoUrl?: string }
 type VoiceGenerationOption = { key: string; label: string; configId: number; model: string; resolution: '480p' | '720p' }
 const voiceGenerationOptions = ref<VoiceGenerationOption[]>([])
@@ -1946,11 +2030,6 @@ const voiceOptionsLoading = ref(false)
 const voiceJobs = ref(new Map<string, VoiceGenerationJob>())
 const voiceStarts = ref(new Set<string>())
 const voiceStartErrors = ref(new Map<string, { detail: string; previousJobId?: number }>())
-type VoiceDescriptionState = { loading: boolean; result?: { text: string; sourceLabel?: string }; error?: string }
-const voiceDescriptions = ref(new Map<string, VoiceDescriptionState>())
-const voiceDescriptionKey = (projectId: string, episodeId: string, assetId: string) => JSON.stringify([projectId, episodeId, assetId])
-const voiceDescriptionState = (assetId: string) => voiceDescriptions.value.get(voiceDescriptionKey(currentProject.value.id, currentEpisode.value.id, assetId))
-const voiceStarting = (assetId: string) => voiceStarts.value.has(`${currentProject.value.id}/${assetId}`)
 function voiceFailureDetail(message?: string) {
   const detail = message?.trim()
   return detail && detail !== '角色声音生成失败' ? detail : '服务未提供具体原因，请重试。'
@@ -1993,6 +2072,7 @@ watch([selectedProjectId, loadingProjects], ([projectId, loading], _, onCleanup)
   let polling = false
   let pending = false
   const synchronized = new Set<number>()
+  const notifiedFailures = new Set<number>()
   const poll = async () => {
     if (controller.signal.aborted) return
     if (polling) { pending = true; return }
@@ -2008,7 +2088,8 @@ watch([selectedProjectId, loadingProjects], ([projectId, loading], _, onCleanup)
       voiceJobs.value = next
       for (const job of next.values()) {
         const prior = previous.get(job.assetId)
-        if (job.status === 'failed' && prior?.id === job.id && prior.status === 'processing') {
+        if (job.status === 'failed' && prior?.id === job.id && prior.status === 'processing' && !notifiedFailures.has(job.id)) {
+          notifiedFailures.add(job.id)
           const name = currentProject.value.assets.find(asset => asset.id === job.assetId)?.name
           notifyVoiceGenerationFailure(name, voiceFailureDetail(job.error))
         }
@@ -2751,6 +2832,7 @@ function updateCard(card: PreviewCard, targetEpisode?: PreviewEpisode) {
 function openBindingDialog(cardId: string) {
   selectedCardId.value = cardId
   bindingSearch.value = ''
+  bindCharacterToEpisode.value = false
   dialog.value = 'bindings'
 }
 function characterSummaryMatcher(characters: PreviewAsset[], keyFor: (asset: PreviewAsset) => string) {
@@ -2795,7 +2877,10 @@ function chooseBinding(asset: PreviewAsset) {
   cards.value = cards.value.map((item) => {
     if (item.id !== card.id) {
       if (!base || !bindCharacterToEpisode.value) return item
+      if (item.assetBindingRequirements?.length) return item
       if (remove && !item.assetIds.includes(asset.id)) return item
+      if (!remove && (item.assetIds.some(id => id !== asset.id && sameAppearanceIds.has(id)) ||
+        item.summary.split('\n').some(line => line.startsWith('【待确认造型') && mentionedAppearances(line).has(presentation)))) return item
       if (!item.assetIds.some(id => sameAppearanceIds.has(id)) && !mentionedAppearances(item.summary).has(presentation)) return item
     }
     const ids = item.assetIds.filter(id => remove ? id !== asset.id : !sameAppearanceIds.has(id))
@@ -3054,12 +3139,13 @@ function openAssetExtraction(event: MouseEvent) {
     readingAssetScripts.value = false
     clearAssetScripts()
   }
+  assetExtractionRestartJobId.value = ''
   dialog.value = 'asset-extract'
+  requestAssetExtractionStatus?.()
 }
 function clearAssetScripts() {
   assetScriptSources.value = []
   assetScriptErrors.value = []
-  assetExtractionError.value = ''
 }
 async function chooseAssetScripts(event: Event) {
   const input = event.target as HTMLInputElement
@@ -3073,6 +3159,7 @@ function dropAssetScripts(event: DragEvent) {
 async function readAssetScripts(selectedFiles: File[]) {
   if (assetExtractionBusy.value || !selectedFiles.length) return
   const session = assetScriptSession
+  const projectId = currentProject.value.id
   readingAssetScripts.value = true
   const imported = [...assetScriptSources.value]
   const errors: string[] = []
@@ -3103,10 +3190,10 @@ async function readAssetScripts(selectedFiles: File[]) {
         }
       }
     }
-    if (session !== assetScriptSession || !alive) return
+    if (session !== assetScriptSession || !alive || currentProject.value.id !== projectId) return
     assetScriptSources.value = imported
     assetScriptErrors.value = errors
-    assetExtractionError.value = ''
+    assetExtractionErrors.delete(projectId)
   } finally {
     if (session === assetScriptSession) readingAssetScripts.value = false
   }
@@ -3114,34 +3201,66 @@ async function readAssetScripts(selectedFiles: File[]) {
 function assetExtractionPath(projectId: string) {
   return `/projects/${encodeURIComponent(projectId)}/assets/extract`
 }
-async function startAssetExtraction(useProjectScripts: boolean) {
-  if (assetExtractionBusy.value || !requireSharedProjectEdit()) return
-  submittingAssetExtraction.value = true
-  assetExtractionError.value = ''
+function readAssetExtractionJob(value: unknown): AssetExtractionJob | null {
+  if (value === null) return null
+  if (value && typeof value === 'object') {
+    if ('data' in value && value.data === null && 'code' in value && (value.code === 200 || value.code === 0)) return null
+    const job = value as AssetExtractionJob
+    if (typeof job.id === 'string' && job.id && ['running', 'completed', 'failed', 'interrupted'].includes(job.status) &&
+      Number.isInteger(job.completed) && Number.isInteger(job.total) && job.completed >= 0 && job.completed <= job.total &&
+      (job.stage === undefined || typeof job.stage?.title === 'string')) return job
+  }
+  throw new Error('服务返回了无法识别的提取任务')
+}
+function startAssetExtraction(useProjectScripts: boolean) {
+  if (assetExtractionBusy.value || !assetExtractionSourceForm.value || !requireSharedProjectEdit()) return
   const projectId = currentProject.value.id
   const { configId, model } = textRequestOptions()
-  try {
-    await saveProjectNow(projectId)
-    let sources
-    if (!useProjectScripts) {
-      const grouped = groupImportedEpisodes(assetScriptSources.value)
-      assetScriptErrors.value = [...assetScriptErrors.value, ...grouped.errors]
-      sources = grouped.episodes.map(episode => ({ title: episode.title, script: episode.script, episodeNumber: episode.number }))
-      if (!sources.length) throw new Error('请导入包含正文的剧本')
+  let sources
+  if (!useProjectScripts) {
+    const grouped = groupImportedEpisodes(assetScriptSources.value)
+    assetScriptErrors.value = [...assetScriptErrors.value, ...grouped.errors]
+    sources = grouped.episodes.map(episode => ({ title: episode.title, script: episode.script, episodeNumber: episode.number }))
+    if (!sources.length) {
+      assetExtractionErrors.set(projectId, '请导入包含正文的剧本')
+      return
     }
-    const job = await scriptVideoRequest<AssetExtractionJob>(assetExtractionPath(projectId), 'POST', { sources, configId, model })
+  }
+  const restartJobId = assetExtractionRestarting.value ? assetExtractionFailedJob.value?.id : undefined
+  return submitAssetExtraction(projectId, assetExtractionPath(projectId), { sources, configId, model, restartJobId }, () => saveProjectNow(projectId))
+}
+function resumeAssetExtraction() {
+  const job = assetExtractionFailedJob.value
+  if (assetExtractionBusy.value || !job?.resumable || !requireSharedProjectEdit()) return
+  const project = currentProject.value
+  const { configId, model } = project.settings?.textSelection ? textRequestOptions(project) : {}
+  return submitAssetExtraction(project.id, `${assetExtractionPath(project.id)}/${encodeURIComponent(job.id)}/resume`, { configId, model })
+}
+async function submitAssetExtraction(projectId: string, path: string, input: unknown, save?: () => Promise<void>) {
+  assetExtractionSubmissions.add(projectId)
+  assetExtractionErrors.delete(projectId)
+  try {
+    if (save) await save()
+    const job = readAssetExtractionJob(await scriptVideoRequest<unknown>(path, 'POST', input))
+    if (!job) throw new Error('服务未返回提取任务，请先重新读取进度。')
     assetExtractionJobs.set(projectId, job)
-    if (job.status === 'completed') await completeAssetExtraction(projectId, job)
+    if (job.status === 'completed') await completeAssetExtraction(projectId, job, true)
   } catch (error) {
-    if (currentProject.value.id === projectId) assetExtractionError.value = error instanceof Error ? error.message : '资产提取失败，请重试'
+    if (alive) {
+      assetExtractionErrors.set(projectId, error instanceof Error ? error.message : '请求提取失败，请先重新读取进度。')
+      assetExtractionPollStates.set(projectId, 'checking')
+    }
   } finally {
-    submittingAssetExtraction.value = false
+    assetExtractionSubmissions.delete(projectId)
+    if (currentProject.value.id === projectId) requestAssetExtractionStatus?.()
   }
 }
-async function completeAssetExtraction(projectId: string, job: AssetExtractionJob) {
-  await refreshProject(projectId)
-  if (!alive || currentProject.value.id !== projectId) return
-  clearAssetScripts()
+async function completeAssetExtraction(projectId: string, job: AssetExtractionJob, announce: boolean, signal?: AbortSignal) {
+  await refreshProject(projectId, undefined, signal)
+  if (!alive || signal?.aborted) return
+  assetExtractionApplied.set(projectId, job.id)
+  if (!announce || currentProject.value.id !== projectId) return
+  if (assetScriptProjectId === projectId) clearAssetScripts()
   toast.success(`提取完成，新增 ${job.added ?? 0} 项，复用 ${job.reused ?? 0} 项`)
   if (dialog.value === 'asset-extract') editAsset('')
 }
@@ -3165,17 +3284,29 @@ function assetImageRunning(asset: PreviewAsset) {
 function canGenerateAssetImage(asset: PreviewAsset) {
   return asset.kind !== 'audio' && !!asset.imagePrompt?.trim() && !assetImageRunning(asset) && !replacingImages.value.has(asset.id)
 }
+function canRetryAssetImageDelivery(asset: PreviewAsset) {
+  return asset.kind !== 'audio' && asset.imageStatus === 'delivery_pending' && !!asset.imageTaskId
+}
 function assetImageStatusLabel(asset: PreviewAsset) {
+  if (asset.imageStatus === 'delivery_pending') return assetImageRunning(asset) ? '正在取回' : '已生成，待取回'
   if (assetImageRunning(asset)) return '生成中'
   if (asset.imageStatus === 'failed') return '生成失败'
   return asset.image ? '图片已就绪' : '待生成'
 }
-async function generateAssetImages(targets: PreviewAsset[]) {
+async function requestAssetImageGeneration(asset: PreviewAsset, event: MouseEvent, mode?: 'midjourney') {
+  if (asset.imagePrompt?.trim()) return generateAssetImages([asset], mode)
+
+  const row = (event.currentTarget as HTMLElement).closest('.vp-asset-edit-row')
+  editingAssetImagePromptId.value = asset.id
+  await nextTick()
+  row?.querySelector<HTMLTextAreaElement>('.vp-asset-image-prompt textarea')?.focus()
+}
+async function generateAssetImages(targets: PreviewAsset[], mode?: 'midjourney') {
   if (!requireSharedProjectEdit()) return
   const assetIds = targets.filter(canGenerateAssetImage).map(asset => asset.id)
   if (!assetIds.length) return
   const projectId = currentProject.value.id
-  const selection = assetImageModels.value.find(option => option.key === assetImageModelKey.value)
+  const selection = mode ? undefined : assetImageModels.value.find(option => option.key === assetImageModelKey.value)
   const keys = assetIds.map(id => `${projectId}/${id}`)
   const started: string[] = []
   keys.forEach(key => assetImageSubmissions.add(key))
@@ -3184,7 +3315,8 @@ async function generateAssetImages(targets: PreviewAsset[]) {
     const path = `/projects/${encodeURIComponent(projectId)}/assets/generate`
     for (let index = 0; index < assetIds.length; index += 1000) {
       const result = await scriptVideoRequest<{ started: string[] }>(path, 'POST', {
-        assetIds: assetIds.slice(index, index + 1000), configId: selection?.configId, model: selection?.model,
+        assetIds: assetIds.slice(index, index + 1000),
+        ...(mode ? { mode } : { configId: selection?.configId, model: selection?.model }),
       })
       started.push(...result.started)
     }
@@ -3199,6 +3331,27 @@ async function generateAssetImages(targets: PreviewAsset[]) {
       if (started.length) toast.success(`已提交 ${started.length} 项生图任务`)
     }
     keys.forEach(key => assetImageSubmissions.delete(key))
+  }
+}
+async function retryAssetImageDelivery(asset: PreviewAsset) {
+  if (!canRetryAssetImageDelivery(asset) || assetImageRunning(asset) || replacingImages.value.has(asset.id) || !requireSharedProjectEdit()) return
+  const projectId = currentProject.value.id
+  const key = `${projectId}/${asset.id}`
+  assetImageSubmissions.add(key)
+  try {
+    await scriptVideoRequest<{ taskId: number }>(`/projects/${encodeURIComponent(projectId)}/assets/${encodeURIComponent(asset.id)}/recover-image`, 'POST')
+    if (alive && currentProject.value.id === projectId) {
+      selectedAssetImages.value.delete(asset.id)
+      toast.success('已请求取回原图')
+    }
+  } catch (error) {
+    if (alive && currentProject.value.id === projectId) toast.error(error instanceof Error ? error.message : '暂时无法取回原图')
+  } finally {
+    if (alive && currentProject.value.id === projectId) {
+      await refreshProject(projectId).catch(() => {})
+      requestActivityRefresh?.()
+    }
+    assetImageSubmissions.delete(key)
   }
 }
 async function savePreviewConfig() {
@@ -3851,6 +4004,14 @@ const batchVideoVoiceWarning = computed(() => {
     return names.length ? [`第 ${index + 1} 段（${names.join('、')}）`] : []
   })
   return segments.length ? `批量生成需要补齐${segments.join('、')}的角色参考音频。${videoVoiceHelp}` : ''
+})
+const batchVideoAssetBindingWarning = computed(() => {
+  const segments = cards.value.flatMap((card, index) => {
+    const task = videoGenerationTaskByCard.value.get(card.id)
+    if (task?.status === 'processing' || isVideoDeliveryRecovery(task)) return []
+    return scriptVideoAssetBindingIssues(card, assets.value).length ? [`第 ${index + 1} 段`] : []
+  })
+  return segments.length ? `批量生成前，请先确认${segments.join('、')}的参考素材。` : ''
 })
 const retryVideoVoiceWarning = computed(() => pendingVideoRetry.value ? videoVoiceWarningForRequest(pendingVideoRetry.value) : '')
 const remainingVideoVoiceWarning = computed(() => {
@@ -4848,7 +5009,7 @@ async function replaceAssetImage(id: string, event: Event) {
 function releaseAssetImage(asset: { image: string }) {
   if (asset.image.startsWith('blob:')) URL.revokeObjectURL(asset.image)
 }
-function saveAudioEdit(projectId: string, assetId: string, operation: 'upload' | 'save',
+function saveAudioEdit(projectId: string, assetId: string, operation: 'upload' | 'save' | 'age',
   edit: () => Promise<void>, failureMessage: string,
 ) {
   const completion = Promise.resolve().then(edit).catch((error: unknown) => {
@@ -4887,15 +5048,24 @@ function saveCharacterVoiceAudio(
 ) {
   const project = currentProject.value
   const asset = project.assets.find(item => item.id === assetId)
-  if (!episodeOpen.value || !asset || asset.kind !== 'character' || voiceEdits.value.has(assetId)) return
+  if (!episodeOpen.value || !asset || asset.kind !== 'character' || voiceEditForAsset(asset) || voiceIsGenerating(asset)) return
+  const episodeId = currentEpisode.value.id
+  const expected = asset.voiceAudio ?? null
   return saveAudioEdit(project.id, assetId, operation, async () => {
     const value = await next()
     if (!alive) return
     const current = project.assets.find(item => item.id === assetId)
     if (current?.kind !== 'character') throw new Error('角色已移除')
-    if (value === null) delete current.voiceAudio
-    else current.voiceAudio = value
-    await saveProjectNow(project.id)
+    if (current.voiceProfile) {
+      await saveProjectNow(project.id)
+      const assetPath = `/projects/${encodeURIComponent(project.id)}/episodes/${encodeURIComponent(episodeId)}/assets/${encodeURIComponent(assetId)}`
+      await scriptVideoRequest(`${assetPath}/voice`, 'PATCH', { field: 'voiceAudio', expected, value })
+      await refreshProject(project.id)
+    } else {
+      if (value === null) delete current.voiceAudio
+      else current.voiceAudio = value
+      await saveProjectNow(project.id)
+    }
     toast.success(value ? `${current.name}的声音参考已保存` : '已移除角色声音参考')
   }, '角色声音保存失败')
 }
@@ -4907,32 +5077,52 @@ function setCharacterModelVoice(assetId: string, enabled: boolean) {
 function uploadCharacterVoice(assetId: string, file: File) {
   if (validReferenceAudio(file)) return saveCharacterVoiceAudio(assetId, () => uploadReferenceAudio(file), 'upload')
 }
-async function loadCharacterVoiceDescription(assetId: string) {
-  const project = currentProject.value, episodeId = currentEpisode.value.id
-  const key = voiceDescriptionKey(project.id, episodeId, assetId)
-  if (!episodeOpen.value || !requireSharedProjectEdit() || voiceDescriptions.value.get(key)?.loading ||
-      !project.assets.some(asset => asset.id === assetId && asset.kind === 'character')) return
-  const previous = voiceDescriptions.value.get(key)
-  voiceDescriptions.value.set(key, { loading: true, result: previous?.result })
-  try {
-    await saveProjectNow(project.id)
-    const result = await scriptVideoRequest<{ text: string; sourceLabel?: string }>(
-      `/projects/${encodeURIComponent(project.id)}/assets/${encodeURIComponent(assetId)}/voice-description`, 'POST', { episodeId })
-    if (alive) voiceDescriptions.value.set(key, { loading: false, result })
-  } catch (error) {
-    if (alive) voiceDescriptions.value.set(key, { loading: false, result: previous?.result, error: error instanceof Error ? error.message : '读取声音描述失败' })
+function voiceProfileAssets(asset: PreviewAsset) {
+  if (!asset.voiceProfile || asset.voiceProfile.ageConflict?.length) return [asset]
+  return voiceProfileGroups.value.get(asset.voiceProfile.id) ?? [asset]
+}
+function sharedVoicePresent(asset: PreviewAsset) {
+  return voiceProfileAssets(asset).some(member => member.id !== asset.id && !!member.voiceAudio?.url)
+}
+function voiceEditForAsset(asset: PreviewAsset) {
+  for (const member of voiceProfileAssets(asset)) {
+    const edit = voiceEdits.value.get(member.id)
+    if (edit) return edit
   }
 }
-async function generateCharacterVoice(assetId: string, input: { configId: number; model: string; description: string; dialogue: string }) {
+function voiceStartKey(projectId: string, asset: PreviewAsset) {
+  return asset.voiceProfile ? `${projectId}/voice/${asset.voiceProfile.id}` : `${projectId}/asset/${asset.id}`
+}
+function voiceIsGenerating(asset: PreviewAsset) {
+  return voiceStarts.value.has(voiceStartKey(currentProject.value.id, asset)) ||
+    voiceProfileAssets(asset).some(member => voiceJobs.value.get(member.id)?.status === 'processing')
+}
+function voiceWasGenerated(asset: PreviewAsset) {
+  return !!asset.voiceProfile && voiceProfileAssets(asset).some(member =>
+    !!member.voiceProfile?.generatedOutputId || voiceJobs.value.get(member.id)?.status === 'completed')
+}
+function confirmCharacterVoiceAge(assetId: string, ageStage: PreviewVoiceAgeStage) {
   const project = currentProject.value
-  const key = `${project.id}/${assetId}`
+  const asset = project.assets.find(item => item.id === assetId && item.kind === 'character')
+  if (!asset?.voiceProfile?.ageConflict?.includes(ageStage) || asset.voiceAudio?.url || !requireSharedProjectEdit() || voiceEditForAsset(asset) || voiceIsGenerating(asset)) return
+  return saveAudioEdit(project.id, assetId, 'age', async () => {
+    await saveProjectNow(project.id)
+    await scriptVideoRequest(`/projects/${encodeURIComponent(project.id)}/assets/${encodeURIComponent(assetId)}/voice-age`, 'PATCH', { ageStage })
+    await refreshProject(project.id)
+  }, '角色声音年龄确认失败')
+}
+async function generateCharacterVoice(assetId: string, input: PreviewVoiceGenerationRequest) {
+  const project = currentProject.value
   const asset = project.assets.find(asset => asset.id === assetId && asset.kind === 'character')
-  const previousJob = voiceJobs.value.get(assetId)
-  if (!episodeOpen.value || !requireSharedProjectEdit() || voiceStarts.value.has(key) || voiceEdits.value.has(assetId) ||
-      previousJob?.status === 'processing' || !asset ||
+  if (!asset || !episodeOpen.value || !requireSharedProjectEdit() || voiceIsGenerating(asset) || voiceEditForAsset(asset) ||
       !voiceGenerationOptions.value.some(option => option.configId === input.configId && option.model === input.model)) return
-  voiceStarts.value.add(key)
-  voiceStartErrors.value.delete(key)
+  if (asset.voiceProfile && (asset.voiceProfile.ageConflict?.length || asset.voiceProfile.audioConflict || asset.voiceAudio?.url ||
+      sharedVoicePresent(asset) || voiceWasGenerated(asset))) return
+  const previousJob = voiceJobs.value.get(assetId)
+  const startKey = voiceStartKey(project.id, asset)
+  const errorKey = `${project.id}/${assetId}`
+  voiceStarts.value.add(startKey)
+  voiceStartErrors.value.delete(errorKey)
   try {
     await saveProjectNow(project.id)
     const job = await scriptVideoRequest<VoiceGenerationJob>(`/projects/${encodeURIComponent(project.id)}/assets/${encodeURIComponent(assetId)}/voice-generation`, 'POST', input)
@@ -4942,10 +5132,10 @@ async function generateCharacterVoice(assetId: string, input: { configId: number
   } catch (error) {
     if (alive) {
       const detail = voiceFailureDetail(error instanceof Error ? error.message : undefined)
-      voiceStartErrors.value.set(key, { detail, previousJobId: previousJob?.id })
+      voiceStartErrors.value.set(errorKey, { detail, previousJobId: previousJob?.id })
       notifyVoiceGenerationFailure(asset.name, detail)
     }
-  } finally { voiceStarts.value.delete(key); if (alive && currentProject.value.id === project.id) wakeVoicePoll?.() }
+  } finally { voiceStarts.value.delete(startKey); if (alive && currentProject.value.id === project.id) wakeVoicePoll?.() }
 }
 function removeCharacterVoice(assetId: string) {
   return saveCharacterVoiceAudio(assetId, () => null)
@@ -5060,39 +5250,91 @@ onMounted(() => {
   document.addEventListener('visibilitychange', updatePageVisibility)
   window.addEventListener('focus', refreshVisibleStyles)
 })
-watch(selectedProjectId, () => selectedAssetImages.value.clear())
-watch(dialog, open => {
-  if (open !== 'assets') return
-  void loadAssetImageModels()
-  if (assets.value.some(asset => asset.imageStatus === 'generating')) void refreshProject(currentProject.value.id).catch(() => {})
+watch(selectedProjectId, () => {
+  selectedAssetImages.value.clear()
+  editingAssetImagePromptId.value = ''
 })
-watch(() => pageVisible.value && episodeOpen.value && (
-  dialog.value === 'asset-extract' || activeAssetExtraction.value?.status === 'running'
-) ? currentProject.value.id : '', (projectId, _, onCleanup) => {
+watch(dialog, open => {
+  if (open !== 'assets') {
+    editingAssetImagePromptId.value = ''
+    return
+  }
+  void loadAssetImageModels()
+  if (assets.value.some(asset => asset.imageStatus === 'generating' ||
+    (asset.imageTaskId && (asset.imageStatus === 'failed' || asset.imageStatus === 'delivery_pending')))) {
+    void refreshProject(currentProject.value.id).catch(() => {})
+  }
+})
+watch(() => pageVisible.value && dialog.value === 'assets' && assets.value.some(asset => asset.imageStatus === 'generating') ? currentProject.value.id : '',
+  (projectId, _, onCleanup) => {
+    if (!projectId) return
+    const controller = new AbortController()
+    let timer: ReturnType<typeof setTimeout>
+    async function poll() {
+      try {
+        const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(8000)])
+        await refreshProject(projectId, undefined, signal)
+      } catch { /* Leave the current image status visible until the next poll. */ }
+      if (!controller.signal.aborted) timer = setTimeout(() => { void poll() }, 2500)
+    }
+    timer = setTimeout(() => { void poll() }, 2500)
+    onCleanup(() => { controller.abort(); clearTimeout(timer) })
+  },
+)
+watch(() => pageVisible.value && !loadingProjects.value ? selectedProjectId.value : '', (projectId, _, onCleanup) => {
   if (!projectId) return
   const controller = new AbortController()
   let timer: ReturnType<typeof setTimeout> | undefined
+  let polling = false
+  const active = () => alive && !controller.signal.aborted && selectedProjectId.value === projectId
+  assetExtractionPollStates.set(projectId, 'checking')
   async function poll() {
+    if (!active() || polling) return
+    clearTimeout(timer)
+    polling = true
     try {
-      if (submittingAssetExtraction.value) return
+      if (assetExtractionSubmissions.has(projectId)) return
       const prior = assetExtractionJobs.get(projectId)
       const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(8000)])
-      const job = await scriptVideoRequest<AssetExtractionJob | null>(assetExtractionPath(projectId), 'GET', undefined, signal)
-      if (controller.signal.aborted || submittingAssetExtraction.value || assetExtractionJobs.get(projectId) !== prior) return
+      const result = await scriptVideoRequest<unknown>(assetExtractionPath(projectId), 'GET', undefined, signal)
+      if (!active() || assetExtractionSubmissions.has(projectId) || assetExtractionJobs.get(projectId) !== prior) return
+      const job = readAssetExtractionJob(result)
       if (job) {
-        if (job.status === 'completed' && prior?.id === job.id && prior.status === 'running') await completeAssetExtraction(projectId, job)
-        if (job.status === 'failed' && prior?.id === job.id && prior.status === 'running' && dialog.value !== 'asset-extract')
-          toast.error(job.error || '资产提取失败，请重试')
+        const wasRunning = prior?.id === job.id && prior.status === 'running'
+        if (job.status === 'completed' && assetExtractionApplied.get(projectId) !== job.id) {
+          await completeAssetExtraction(projectId, job, wasRunning, signal)
+          if (!active() || assetExtractionSubmissions.has(projectId) || assetExtractionJobs.get(projectId) !== prior) return
+        }
+        if ((job.status === 'failed' || job.status === 'interrupted') && wasRunning && dialog.value !== 'asset-extract')
+          toast.error(job.resumable ? '资产提取中断，已保存进度，可继续提取。' : job.error || '资产提取中断，请查看详情。')
         assetExtractionJobs.set(projectId, job)
-      } else if (prior?.status === 'running') {
+        assetExtractionPollStates.set(projectId, 'ready')
+        if (prior?.id !== job.id || prior.status !== job.status) assetExtractionErrors.delete(projectId)
+      } else {
         assetExtractionJobs.delete(projectId)
-        assetExtractionError.value = '提取任务已结束，请检查资产清单后重试'
+        if ((prior && prior.status !== 'completed') || assetExtractionPollStates.get(projectId) === 'missing')
+          assetExtractionPollStates.set(projectId, 'missing')
+        else assetExtractionPollStates.set(projectId, 'ready')
       }
-    } catch { /* A temporary network error should leave the current extraction status visible. */ }
-    finally { if (!controller.signal.aborted) timer = setTimeout(() => { void poll() }, 2500) }
+    } catch {
+      if (active() && !assetExtractionSubmissions.has(projectId)) assetExtractionPollStates.set(projectId, 'unavailable')
+    } finally {
+      polling = false
+      const unavailable = assetExtractionPollStates.get(projectId) === 'unavailable'
+      if (active() && (unavailable || assetExtractionSubmissions.has(projectId) ||
+        dialog.value === 'asset-extract' || assetExtractionJobs.get(projectId)?.status === 'running')) {
+        timer = setTimeout(() => { void poll() }, unavailable ? 6000 : 2500)
+      }
+    }
   }
-  void poll()
-  onCleanup(() => { controller.abort(); clearTimeout(timer) })
+  const wake = () => { void poll() }
+  requestAssetExtractionStatus = wake
+  wake()
+  onCleanup(() => {
+    controller.abort()
+    clearTimeout(timer)
+    if (requestAssetExtractionStatus === wake) requestAssetExtractionStatus = undefined
+  })
 })
 let requestActivityRefresh: (() => void) | undefined
 type EpisodeActivity = {
@@ -6329,6 +6571,37 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   color: var(--text-2);
   font-size: 12px;
+}
+.vp-asset-extraction-source-details {
+  display: grid;
+  gap: 6px;
+}
+.vp-asset-extraction-source-list {
+  max-block-size: min(10rem, 30vh);
+  overflow: auto;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  list-style: none;
+  overflow-wrap: anywhere;
+}
+.vp-asset-extraction-source-list:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.vp-asset-extraction-source-list li {
+  display: grid;
+  gap: 2px;
+  padding: 7px 10px;
+  font-size: 12px;
+}
+.vp-asset-extraction-source-list li + li {
+  border-top: 1px solid var(--border);
+}
+.vp-asset-extraction-source-list span {
+  color: var(--text-3);
+  font-size: 11px;
 }
 .vp-asset-extraction-progress progress {
   width: 100%;

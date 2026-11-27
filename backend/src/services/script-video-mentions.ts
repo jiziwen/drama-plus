@@ -10,6 +10,8 @@ export type MentionAsset = {
   kind?: string
   originalName?: string
   sourcePath?: string
+  assetIdentity?: string
+  aliases?: readonly string[]
 }
 export type AssetMention = {
   id: string
@@ -263,12 +265,14 @@ export function describeScriptVideoReferenceProblem(text: string, problem: Scrip
 function assetNames(asset: MentionAsset) {
   if (asset.kind === 'audio') return [asset.name]
   const names = new Set([asset.name])
+  let chibiSubject: string | undefined
   if (asset.kind === 'character' || !asset.kind) {
     const characterNames = [asset]
     if (asset.originalName && asset.originalName !== asset.name) {
       characterNames.push({ ...asset, name: asset.originalName })
     }
     const stylized = isScriptVideoChibiAppearance(asset)
+    if (stylized) chibiSubject = scriptVideoCharacterBase(asset).normalize('NFKC')
     for (const candidate of characterNames) {
       const base = scriptVideoCharacterBase(candidate)
       names.add(scriptVideoCharacterName(candidate))
@@ -287,7 +291,13 @@ function assetNames(asset: MentionAsset) {
       if (location && location.length >= 2) names.add(location)
     }
   }
-  return [...names].filter(name => name && (name === asset.name || (name.length > 1 && name !== '群体')))
+  const usableAlias = (name: string) => name && name !== '群体' && name.normalize('NFKC') !== chibiSubject
+  const resolvedNames = [...names].filter(name => name === asset.name || name.length > 1 && usableAlias(name))
+  for (const saved of asset.aliases ?? []) {
+    const alias = saved.trim()
+    if (usableAlias(alias)) resolvedNames.push(alias)
+  }
+  return resolvedNames
 }
 
 const aliasLabel = /^(?:(?:本段)?(?:报姓名|名为|本名|名叫|又名|别名|真名|化名)\s*[：:]?\s*)?([\p{Script=Han}·]{2,8})$/u
@@ -344,6 +354,7 @@ export function annotateScriptVideoAssets(
   for (const asset of assets) {
     if (!bound.has(asset.id)) continue
     if (asset.kind === 'character') {
+      if (isScriptVideoChibiAppearance(asset)) continue
       const identity = scriptVideoCharacterBase(asset)
       if (identity.endsWith('/群体')) {
         boundCrowds.push(asset)
@@ -493,7 +504,8 @@ export function annotateScriptVideoAssets(
     const speakers = !contextual && attribution ? visualCandidates.filter(asset => !asset.kind || asset.kind === 'character') : []
     let candidates = speakers.length ? speakers : visualCandidates
     let scoped: MentionAsset[] | undefined
-    if (!contextual && !explicit) {
+    const exactSelection = explicit && candidates.some(asset => asset.name === name)
+    if (!contextual && !exactSelection) {
       if (speakers.length) {
         const ids = shot?.speakerAssetIds
         const sameShot = ids?.length ? speakers.filter(asset => ids.includes(asset.id) && !excluded.has(asset.id)) : []
@@ -509,9 +521,10 @@ export function annotateScriptVideoAssets(
         if (Array.isArray(ids)) {
           const visible = candidates.filter(asset => ids.includes(asset.id) && !excluded.has(asset.id))
           // Descriptive cast headers can cover several different costumes. The
-          // executable references belong to the individual shots.
-          if (!visible.length || castHeader && visible.length > 1) contextual = true
-          else scoped = visible
+          // executable references belong to the individual shots. Explicit
+          // aliases can also add a reference that was absent from the shot.
+          if (visible.length && (!castHeader || visible.length === 1)) scoped = visible
+          else if (!explicit) contextual = true
         }
       }
     }

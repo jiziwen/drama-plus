@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { isScriptVideoChibiAppearance, scriptVideoCharacterBase, scriptVideoCharacterName } from '../src/services/script-video-asset-identity'
 import { annotateScriptVideoAssets as scan, type MentionAsset } from '../src/services/script-video-mentions'
 
 const character = (name: string, id = name): MentionAsset => ({ name, id, kind: 'character' })
@@ -18,6 +19,70 @@ test('an earlier natural-language ambiguity cannot hide a later explicit referen
     assert.deepEqual(result.ambiguous, ['御书房'])
     assert.deepEqual(result.problems.map(problem => text[problem.start]), ['御', '@'])
   }
+})
+
+test('persisted aliases automatically bind characters and visual assets and support explicit references without a cast declaration', () => {
+  const assets = [
+    { ...character('阿宁·官服', 'guard'), assetIdentity: '陆宁｜官服', aliases: ['小陆'] },
+    { id: 'hall', kind: 'scene', name: '南院议事厅', aliases: ['议事堂'] },
+    { id: 'sword', kind: 'prop', name: '包银佩剑', aliases: ['银剑'] },
+  ]
+  const text = '画面与动作：小陆在议事堂拔出@银剑。\n对白／音效：小陆：“把银剑放回议事堂。”'
+  const result = scan(text, assets, [], { autoBind: true, detectUnboundSpeakers: true })
+  assert.equal(result.text, '画面与动作：@阿宁·官服在@南院议事厅拔出@包银佩剑。\n对白／音效：@阿宁·官服：“把银剑放回议事堂。”')
+  assert.deepEqual(result.assetIds, ['guard', 'hall', 'sword'])
+  assert.deepEqual(result.unboundSpeakers, [])
+  assert.equal(result.mentions.find(hit => hit.usage === 'speaker')?.id, 'guard')
+  assert.deepEqual(scan('@小陆。', assets, []).assetIds, ['guard'])
+})
+
+test('shared aliases use known or same-shot bindings while exact explicit names and unresolved variants stay distinct', () => {
+  const guard = { ...character('陆宁官服', 'guard'), assetIdentity: '陆宁｜官服', aliases: ['小陆', '陆宁便装'] }
+  const casual = { ...character('陆宁便装', 'casual'), assetIdentity: '陆宁｜便装', aliases: ['小陆'] }
+  const assets = [guard, casual]
+  assert.deepEqual(scan('小陆抬眼。', assets, [guard.id], { autoBind: true }).assetIds, [guard.id])
+  for (const name of ['小陆', '@小陆']) {
+    const result = scan(name + '抬眼。', assets, [], { autoBind: true })
+    assert.deepEqual(result.assetIds, [])
+    assert.deepEqual(result.problems.map(problem => [problem.type, problem.candidates]),
+      [['ambiguous', [guard.name, casual.name]]])
+  }
+  const scoped = { autoBind: true, card: { shots: [
+    { visualAssetIds: [guard.id], speakerAssetIds: [guard.id] },
+    { visualAssetIds: [casual.id], speakerAssetIds: [casual.id] },
+  ] } }
+  const text = [
+    '镜头 01（0–5秒）',
+    '画面与动作：小陆走近@陆宁便装。',
+    '对白／音效：@小陆：“来吧。”',
+    '镜头 02（5–10秒）',
+    '画面与动作：@小陆回身。',
+    '对白／音效：小陆：“走吧。”',
+  ].join('\n')
+  const result = scan(text, assets, assets.map(asset => asset.id), scoped)
+  assert.deepEqual(result.mentions.map(({ id, usage }) => [id, usage]),
+    [[guard.id, 'visual'], [casual.id, 'visual'], [guard.id, 'speaker'], [casual.id, 'visual'], [casual.id, 'speaker']])
+  assert.deepEqual(result.problems, [])
+
+  const emptyShot = { autoBind: true, card: { shots: [{ visualAssetIds: [] }] } }
+  assert.equal(scan('镜头 01（0–5秒）\n画面与动作：小陆走近。', [guard], [], emptyShot).mentions[0]?.usage, 'context')
+  assert.equal(scan('镜头 01（0–5秒）\n画面与动作：@小陆走近。', [guard], [], emptyShot).mentions[0]?.usage, 'visual')
+})
+
+test('structured identities preserve editable display names and separate a Q form from its live subject', () => {
+  const live = { ...character('白衣妇人', 'live'), assetIdentity: '陆宁' }
+  const q = { ...character('章纹小人偶', 'q'), assetIdentity: '陆宁｜3DＱ版', aliases: ['陆宁', '袖珍阿宁'] }
+  assert.equal(scriptVideoCharacterName(q), q.name)
+  assert.equal(scriptVideoCharacterBase(q), '陆宁')
+  assert.equal(scriptVideoCharacterBase({ ...q, assetIdentity: '陆宁|常服' }), '陆宁')
+  assert.equal(isScriptVideoChibiAppearance(q), true)
+  assert.equal(isScriptVideoChibiAppearance({ ...q, assetIdentity: '陆宁｜常服', originalName: '陆宁_小剧场' }), true)
+  assert.equal(isScriptVideoChibiAppearance(live), false)
+  const result = scan('3DQ版小陆宁跳到陆宁右肩。@袖珍阿宁随后。', [live, q], [live.id, q.id], { autoBind: true })
+  assert.deepEqual(result.mentions.map(hit => hit.id), [q.id, live.id, q.id])
+  assert.deepEqual(scan('陆宁回头。', [q], [q.id], { autoBind: true }).assetIds, [])
+  const disambiguated = { ...q, name: '陆宁-2', originalName: '陆宁' }
+  assert.deepEqual(scan('陆宁回头，@陆宁-2跳起来。', [disambiguated], [q.id], { autoBind: true }).mentions.map(hit => hit.explicit), [true])
 })
 
 test('camera, action, OS attribution and established aliases bind to the same costume while literal dialogue is preserved', () => {

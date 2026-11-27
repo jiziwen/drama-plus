@@ -89,7 +89,7 @@
               </div>
               <div v-for="c in byType(st.type)" :key="c.id" class="config-row">
                 <div class="provider-badge" :class="{ 'has-icon': !!providerIconUrl(c.provider) }" :data-provider="c.provider">
-                  <img v-if="providerIconUrl(c.provider)" class="provider-badge-icon" :src="providerIconUrl(c.provider)" alt="" />
+                  <img v-if="providerIconUrl(c.provider)" class="provider-badge-icon" :src="providerIconUrl(c.provider)" alt="" loading="lazy" decoding="async" />
                   <template v-else>{{ c.provider === 'jimeng' ? '即' : c.provider.slice(0, 1).toUpperCase() }}</template>
                 </div>
                 <div class="config-main">

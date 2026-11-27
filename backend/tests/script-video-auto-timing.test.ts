@@ -208,7 +208,7 @@ test('HTTP 524 during batched generation saves the accepted prefix and resumes w
   }, {
     batchSize: 1,
     onProgress: (_, checkpoint) => { saved = structuredClone(checkpoint) },
-  }), { code: 'MODEL_TIMEOUT', message: '第2段分镜的上游文字模型响应超时。' })
+  }), { code: 'MODEL_TIMEOUT', message: '第2段分镜的文字模型服务返回 HTTP 524（网关等待上游响应超时）。' })
   assert.deepEqual(requested, [['mail-1'], ['mail-2']])
   assert.deepEqual(saved?.cards.map(card => card.id), ['mail-1'])
   assert.equal(saved?.repairAttempts, 0)
@@ -226,6 +226,29 @@ test('HTTP 524 during batched generation saves the accepted prefix and resumes w
   assert.deepEqual(requested, [['mail-1'], ['mail-2'], ['mail-2'], ['mail-3']])
   assert.deepEqual(result.cards[0].shots, saved?.cards[0].shots)
   assert.deepEqual(result.cards.map(card => card.id), ['mail-1', 'mail-2', 'mail-3'])
+})
+
+test('the storyboard reports a lost connection separately from a received provider response and a local deadline', async () => {
+  const original = anchoredInput(['请把信收好。'], [6])
+  const socket = Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' })
+  const lost = new TypeError('fetch failed', { cause: socket })
+  const provider = Object.assign(new Error('private provider details'), { statusCode: 429, cause: socket })
+  const closed = { code: 'MODEL_CONNECTION_CLOSED', message: '第1段分镜与文字模型服务之间的连接中断，未收到完整结果。' }
+  for (const [error, expected] of [
+    [lost, closed],
+    [new Error('Cannot connect to API: other side closed'), closed],
+    [Object.assign(new Error('private SDK details'), { lastError: provider }),
+      { code: 'MODEL_FAILED', message: '第1段分镜的文字模型服务返回 HTTP 429。' }],
+    [new DOMException('private local deadline', 'TimeoutError'),
+      { code: 'MODEL_TIMEOUT', message: '第1段分镜等待文字模型响应超时。' }],
+  ] as const) {
+    let calls = 0
+    await assert.rejects(generateScriptVideoCards(original, async () => {
+      calls++
+      throw error
+    }, { batchSize: 1 }), expected)
+    assert.equal(calls, 1)
+  }
 })
 
 test('a batch outside its planned dialogue boundary remains editable and warns without spending repair calls', async () => {

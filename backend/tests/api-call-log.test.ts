@@ -14,6 +14,10 @@ const { db, schema } = await import('../src/db/index.js')
 const route = (await import('../src/routes/apiCallLogs.js')).default
 const server = http.createServer(async (req, res) => {
   for await (const _chunk of req) { /* consume body */ }
+  if (req.url === '/redirect-to-stream') {
+    res.writeHead(307, { Location: '/stream' }).end()
+    return
+  }
   if (req.url?.startsWith('/stream')) {
     res.setHeader('Content-Type', 'text/event-stream')
     res.write('data: {"choices":[{"delta":{"content":"中文提示词"}}]}\n\n')
@@ -56,8 +60,15 @@ test('captures full JSON bodies with task context and strips secrets before pers
 })
 
 test('SSE stays consumable and is recorded as structured events; multipart records file metadata', async () => {
-  const stream = await recordedFetch(`${base}/stream`)
-  const text = await stream.text()
+  const stream = await recordedFetch(`${base}/redirect-to-stream`)
+  const clone = stream.clone()
+  for (const response of [stream, clone]) {
+    assert.equal(response.url, `${base}/stream`)
+    assert.equal(response.redirected, true)
+    assert.equal(response.type, 'basic')
+  }
+  const [text, copy] = await Promise.all([stream.text(), clone.text()])
+  assert.equal(copy, text)
   assert.match(text, /中文提示词/)
   assert.match(text, /\[DONE\]/)
   const form = new FormData()
@@ -68,8 +79,70 @@ test('SSE stays consumable and is recorded as structured events; multipart recor
   const upload = rows.find(row => row.url.endsWith('/upload/image'))!
   assert.equal(JSON.parse(upload.request!).body.fields.image[0].name, 'reference.png')
   assert.ok(!upload.request!.includes('binary-image'))
-  const record = rows.find(row => row.url.endsWith('/stream'))!
+  const record = rows.find(row => row.url.endsWith('/redirect-to-stream'))!
   assert.equal(JSON.parse(record.response!).body.events[0].choices[0].delta.content, '中文提示词')
+})
+
+for (const interrupted of [false, true]) {
+  test(`oversized SSE stays pending until the stream ${interrupted ? 'fails' : 'finishes'}`, async t => {
+    const url = `https://example.test/large-stream-${interrupted}`
+    const source = new TransformStream<Uint8Array, Uint8Array>()
+    t.mock.method(globalThis, 'fetch', async () => new Response(source.readable, {
+      headers: { 'Content-Type': 'text/event-stream; charset=utf-8' },
+    }))
+    const stream = await recordedFetch(url)
+    const reader = stream.body!.getReader()
+    const writer = source.writable.getWriter()
+    const prefix = new TextEncoder().encode('data: ' + 'x'.repeat(1024 * 1024) + '\n\n')
+    const [first] = await Promise.all([reader.read(), writer.write(prefix)])
+    assert.deepEqual(first.value, prefix)
+    await new Promise(resolve => setImmediate(resolve))
+    const pending = db.select().from(schema.apiCallLogs).where(eq(schema.apiCallLogs.url, url)).get()!
+    assert.equal(pending.status, 'pending')
+    assert.equal(pending.durationMs, null)
+
+    if (interrupted) {
+      const interruptedRead = assert.rejects(reader.read(), /fixture connection closed/)
+      await writer.abort(new Error('fixture connection closed'))
+      await interruptedRead
+    } else {
+      const last = new TextEncoder().encode('data: private-tail-beyond-log-limit\n\ndata: [DONE]\n\n')
+      const [end] = await Promise.all([reader.read(), writer.write(last)])
+      assert.deepEqual(end.value, last)
+      await writer.close()
+      assert.equal((await reader.read()).done, true)
+    }
+    const row = (await completed()).find(item => item.id === pending.id)!
+    assert.equal(row.status, interrupted ? 'error' : 'success')
+    assert.equal(typeof row.durationMs, 'number')
+    if (interrupted) assert.match(row.error!, /fixture connection closed/)
+    else {
+      assert.equal(JSON.parse(row.response!).truncated, true)
+      assert.ok(!row.response!.includes('private-tail-beyond-log-limit'))
+    }
+  })
+}
+
+test('a slow SSE consumer applies backpressure and cancellation closes the source', async t => {
+  const url = 'https://example.test/cancel-stream'
+  let pulled = 0
+  const canceled = Promise.withResolvers<unknown>()
+  const source = new ReadableStream<Uint8Array>({
+    pull(controller) { pulled++; controller.enqueue(new Uint8Array(1024)) },
+    cancel: canceled.resolve,
+  }, { highWaterMark: 0 })
+  t.mock.method(globalThis, 'fetch', async () => new Response(source, {
+    headers: { 'Content-Type': 'text/event-stream' },
+  }))
+  const response = await recordedFetch(url)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.ok(pulled <= 1, 'the logger must not read ahead of the consumer')
+  const reason = new Error('fixture consumer stopped')
+  await response.body!.cancel(reason)
+  assert.equal(await canceled.promise, reason)
+  const row = (await completed()).find(item => item.url === url)!
+  assert.equal(row.status, 'error')
+  assert.match(row.error!, /fixture consumer stopped/)
 })
 
 test('records HTTP and network failures and masks nested credentials without hiding token usage', async () => {

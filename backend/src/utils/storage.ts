@@ -4,18 +4,67 @@
 import fs from 'fs'
 import path from 'path'
 import sharp from 'sharp'
+import { Agent } from 'undici'
 import { v4 as uuid } from 'uuid'
 import { STORAGE_ROOT } from './paths.js'
 import { recordedFetch as fetch } from '../services/api-call-log.js'
 
+const IMAGE_DOWNLOAD_TIMEOUT_MS = 120_000
+const DIRECT_IMAGE_DOWNLOAD_TIMEOUT_MS = 30_000
+const MJ_RESULT_CDN = 'https://mjcn-midjourney.googlec.cc'
+const proxyTransportErrors = new Set([
+  'ECONNREFUSED', 'ECONNRESET', 'EHOSTUNREACH', 'ENETUNREACH', 'EPIPE', 'ETIMEDOUT', 'EAI_AGAIN', 'ENOTFOUND',
+  'ERR_SSL_UNEXPECTED_EOF_WHILE_READING', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'UND_ERR_SOCKET',
+])
+let directImageDispatcher: Agent | undefined
+
+function canRetryMidjourneyResultDirectly(url: string): boolean {
+  const result = URL.parse(url)
+  if (result?.origin !== MJ_RESULT_CDN || result.username || result.password) return false
+  const proxyFlag = [...(process.env.NODE_OPTIONS || '').split(/\s+/u), ...process.execArgv]
+    .filter(flag => flag === '--use-env-proxy' || flag === '--no-use-env-proxy').at(-1)
+  if (!(proxyFlag ? proxyFlag === '--use-env-proxy' : process.env.NODE_USE_ENV_PROXY === '1')) return false
+  const httpsProxy = process.env.https_proxy ?? process.env.HTTPS_PROXY
+  const httpProxy = process.env.http_proxy ?? process.env.HTTP_PROXY
+  if (!httpsProxy && !httpProxy) return false
+
+  const noProxy = (process.env.no_proxy ?? process.env.NO_PROXY ?? '').trim().toLowerCase()
+  return noProxy !== '*' && !noProxy.split(/[,\s]+/u).some(entry => {
+    const host = entry.match(/^(?:\*?\.)?([^:]+)(?::443)?$/u)?.[1]
+    return host && (result.hostname === host || result.hostname.endsWith('.' + host))
+  })
+}
+
+function isProxyTransportError(error: unknown, depth = 0): boolean {
+  if (!error || typeof error !== 'object' || depth === 5) return false
+  const { name, code, cause } = error as { name?: string; code?: string; cause?: unknown }
+  return name === 'TimeoutError' || name === 'AbortError' || proxyTransportErrors.has(code || '') ||
+    (error instanceof AggregateError && error.errors.some(item => isProxyTransportError(item, depth + 1))) ||
+    isProxyTransportError(cause, depth + 1)
+}
+
 /** 响应头和完整图片共用下载时限。 */
-export async function downloadImage(url: string, headers?: Record<string, string>): Promise<Buffer> {
-  const resp = await fetch(url, { headers, signal: AbortSignal.timeout(120_000) })
-  if (!resp.ok) {
-    void resp.body?.cancel().catch(() => {})
-    throw new Error(`Download failed: ${resp.status}`)
+export async function downloadImage(url: string, options: { headers?: Record<string, string>; midjourneyResult?: boolean } = {}): Promise<Buffer> {
+  const retryDirect = options.midjourneyResult && !options.headers && canRetryMidjourneyResultDirectly(url)
+  async function download(timeoutMs: number, dispatcher?: Agent) {
+    const request = { headers: options.headers, signal: AbortSignal.timeout(timeoutMs),
+      ...(dispatcher && { dispatcher, redirect: 'error' as const }) }
+    const resp = await fetch(url, request)
+    if (!resp.ok) {
+      void resp.body?.cancel().catch(() => {})
+      throw new Error(`Download failed: ${resp.status}`)
+    }
+    return Buffer.from(await resp.arrayBuffer())
   }
-  return Buffer.from(await resp.arrayBuffer())
+
+  try {
+    return await download(IMAGE_DOWNLOAD_TIMEOUT_MS - (retryDirect ? DIRECT_IMAGE_DOWNLOAD_TIMEOUT_MS : 0))
+  } catch (error) {
+    if (!retryDirect || !isProxyTransportError(error)) throw error
+    // Keep the direct attempt on the original public CDN; redirects use the normal proxy path only.
+    directImageDispatcher ??= new Agent({ connect: { timeout: 8_000 }, autoSelectFamily: true })
+    return download(DIRECT_IMAGE_DOWNLOAD_TIMEOUT_MS, directImageDispatcher)
+  }
 }
 
 /**
@@ -54,7 +103,7 @@ export function thumbPathFor(relativePath: string): string {
 }
 
 /**
- * 为已落盘图片生成列表页缩略图（宽 400 WebP，与原图同目录）。
+ * 为已落盘图片生成列表页缩略图（最长边 400 的 WebP，与原图同目录）。
  * 失败（文件损坏/格式异常等）返回 null，不阻断主流程。
  */
 export async function generateImageThumb(relativePath: string, thumbnail?: Buffer): Promise<string | null> {
@@ -71,7 +120,49 @@ export async function generateImageThumb(relativePath: string, thumbnail?: Buffe
 }
 
 export function imageThumbnail(source: string | Buffer) {
-  return sharp(source).rotate().resize({ width: 400, withoutEnlargement: true }).webp({ quality: 78 })
+  return sharp(source).rotate().resize({ width: 400, height: 400, fit: 'inside', withoutEnlargement: true }).webp({ quality: 78 })
+}
+
+const thumbnailJobs = new Map<string, Promise<Buffer>>()
+
+/** Resolve a stored image and fill in missing derivatives without returning the original. */
+export async function readStoredImageThumbnail(urlPath: string): Promise<Buffer | null> {
+  const relative = urlPath.match(/^\/?static\/(.+)$/u)?.[1]
+  if (!relative || /_thumb\.webp$/iu.test(relative) || !/\.(?:avif|bmp|gif|heic|jpe?g|png|tiff?|webp)$/iu.test(relative) ||
+      /[\\\u0000-\u001f]/u.test(relative) || relative.split('/').some(part => !part || part.startsWith('.'))) return null
+
+  try {
+    const root = await fs.promises.realpath(STORAGE_ROOT)
+    const source = await fs.promises.realpath(path.join(root, relative))
+    if (!source.startsWith(root + path.sep)) return null
+    const original = await fs.promises.stat(source)
+    if (!original.isFile()) return null
+
+    const destination = thumbPathFor(source)
+    const cached = await fs.promises.lstat(destination).catch(() => null)
+    if (cached?.isFile() && cached.size && cached.mtimeMs >= original.mtimeMs) {
+      return await fs.promises.readFile(destination)
+    }
+
+    const active = thumbnailJobs.get(destination)
+    if (active) return await active
+    const work = (async () => {
+      const thumbnail = await imageThumbnail(source).toBuffer()
+      const temp = `${destination}.${uuid()}.tmp`
+      try {
+        await fs.promises.writeFile(temp, thumbnail, { flag: 'wx' })
+        await fs.promises.rename(temp, destination)
+      } catch {
+        // Return the generated preview even if the disk cache is unavailable.
+        await fs.promises.rm(temp, { force: true }).catch(() => {})
+      }
+      return thumbnail
+    })().finally(() => thumbnailJobs.delete(destination))
+    thumbnailJobs.set(destination, work)
+    return await work
+  } catch {
+    return null
+  }
 }
 
 export function readImageAsDataUrl(relativePath: string): string {

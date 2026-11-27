@@ -19,7 +19,7 @@
           <span class="sv-reference-thumb">
             <img
               v-if="reference.kind === 'image' && !brokenImages.has(reference.url)"
-              :src="reference.url"
+              :src="thumbOf(reference.url)"
               alt=""
               loading="lazy"
               decoding="async"
@@ -73,7 +73,7 @@
         @mouseenter="keepPreviewOpen"
         @mouseleave="leavePreview"
       >
-        <img v-if="preview.reference.kind === 'image'" :src="preview.reference.url" alt="" decoding="async" @error="previewImageFailed" />
+        <img v-if="preview.reference.kind === 'image'" :src="thumbOf(preview.reference.url)" alt="" loading="lazy" decoding="async" @error="previewImageFailed" />
         <span>{{ preview.reference.displayTag }} · {{ preview.reference.name }}</span>
         <audio
           v-if="preview.reference.kind === 'audio'"
@@ -95,6 +95,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { Headphones, Image as ImageIcon } from 'lucide-vue-next'
+import { thumbOf } from '~/composables/useMedia'
 import { activateScriptVideoAudio, deactivateScriptVideoAudio, useScriptVideoAudioPreview } from '~/composables/useScriptVideoAudioPreview'
 
 type Media = { name: string; url: string }

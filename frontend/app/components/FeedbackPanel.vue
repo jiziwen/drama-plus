@@ -26,7 +26,8 @@
         <div v-if="screenshots.length" class="feedback-screenshots">
           <div v-for="(screenshot, index) in screenshots" :key="screenshot.preview" class="feedback-screenshot">
             <a :href="screenshot.preview" :aria-label="`查看待提交的截图 ${index + 1}`" target="_blank" rel="noopener">
-              <img :src="screenshot.preview" alt="" />
+              <img v-if="screenshot.thumbnail" :src="screenshot.thumbnail" alt="" loading="lazy" decoding="async" />
+              <span v-else>截图 {{ index + 1 }}</span>
             </a>
             <button class="btn btn-sm" type="button" :disabled="submitting" @click="removeScreenshot(index)">移除截图 {{ index + 1 }}</button>
           </div>
@@ -42,7 +43,7 @@
       <div v-if="receipt?.screenshotCount" class="feedback-screenshots">
         <a v-for="position in receipt.screenshotCount" :key="position" class="feedback-screenshot"
           :href="feedbackAPI.screenshotUrl(receipt.id, position)" target="_blank" rel="noopener">
-          <img :src="feedbackAPI.screenshotUrl(receipt.id, position)" :alt="`查看已提交的截图 ${position}`" />
+          <img :src="feedbackAPI.screenshotUrl(receipt.id, position, true)" :alt="`查看已提交的截图 ${position}`" loading="lazy" decoding="async" />
         </a>
       </div>
       <p v-if="submitError" class="feedback-error" role="alert">{{ submitError }}</p>
@@ -83,7 +84,7 @@
           <div v-if="entry.screenshotCount" class="feedback-screenshots feedback-entry-screenshots" aria-label="反馈截图">
             <a v-for="position in entry.screenshotCount" :key="position" class="feedback-screenshot"
               :href="feedbackAPI.screenshotUrl(entry.id, position)" target="_blank" rel="noopener">
-              <img :src="feedbackAPI.screenshotUrl(entry.id, position)" :alt="`查看反馈截图 ${position}`" loading="lazy" />
+              <img :src="feedbackAPI.screenshotUrl(entry.id, position, true)" :alt="`查看反馈截图 ${position}`" loading="lazy" decoding="async" />
             </a>
           </div>
           <form class="feedback-update" @submit.prevent="saveEntry">
@@ -124,7 +125,7 @@ const maxScreenshots = 3
 const maxScreenshotBytes = 5 * 1024 * 1024
 const screenshotTypes = new Set(['image/png', 'image/jpeg', 'image/webp'])
 const draft = reactive({ title: '', description: '', contact: '' })
-const screenshots = ref<{ file: File; preview: string }[]>([])
+const screenshots = ref<{ file: File; preview: string; thumbnail?: string }[]>([])
 const screenshotError = ref('')
 const receipt = ref<{ id: number; screenshotCount: number } | null>(null)
 const submitError = ref('')
@@ -170,19 +171,46 @@ function addScreenshots(event: Event) {
     screenshotError.value = '请选择不超过 5 MB 的 PNG、JPEG 或 WebP 图片。'
     return
   }
-  screenshots.value.push(...files.map(file => ({ file, preview: URL.createObjectURL(file) })))
+  for (const file of files) {
+    const preview = URL.createObjectURL(file)
+    screenshots.value.push({ file, preview })
+    void createScreenshotThumbnail(file, preview).catch(() => {})
+  }
+}
+
+async function createScreenshotThumbnail(file: File, preview: string) {
+  const bitmap = await createImageBitmap(file)
+  try {
+    const scale = Math.min(1, 400 / Math.max(bitmap.width, bitmap.height))
+    const canvas = document.createElement('canvas')
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale))
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale))
+    const context = canvas.getContext('2d')
+    if (!context) return
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
+    const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/webp', 0.78))
+    const current = screenshots.value.find(screenshot => screenshot.preview === preview)
+    if (blob && current) current.thumbnail = URL.createObjectURL(blob)
+  } finally {
+    bitmap.close()
+  }
 }
 
 function removeScreenshot(index: number) {
   const [removed] = screenshots.value.splice(index, 1)
-  if (removed) URL.revokeObjectURL(removed.preview)
+  if (removed) releaseScreenshot(removed)
   screenshotError.value = ''
 }
 
 function clearScreenshots() {
-  for (const screenshot of screenshots.value) URL.revokeObjectURL(screenshot.preview)
+  for (const screenshot of screenshots.value) releaseScreenshot(screenshot)
   screenshots.value = []
   screenshotError.value = ''
+}
+
+function releaseScreenshot(screenshot: { preview: string; thumbnail?: string }) {
+  URL.revokeObjectURL(screenshot.preview)
+  if (screenshot.thumbnail) URL.revokeObjectURL(screenshot.thumbnail)
 }
 
 async function submitFeedback() {

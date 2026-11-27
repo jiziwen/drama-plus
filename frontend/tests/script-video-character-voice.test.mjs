@@ -16,7 +16,7 @@ const { outputText } = ts.transpileModule(compiled.content, {
 const exported = {}
 runInNewContext(outputText, {exports: exported, require: name => {
   assert.equal(name, 'vue')
-  return {...vue, useId: () => 'test-id'}
+  return {...vue, useId: () => 'test-id', withDirectives: (node, directives) => ({...node, directives})}
 }})
 
 const character = {id: 'hero', name: '守卫', kind: 'character', image: '/static/uploads/hero.png'}
@@ -103,7 +103,7 @@ test('角色声音显示缺少 Mini 配置，启用后默认选择并提交该�
   assert.ok(current.some(n => n.type === 'option' && n.children === '即梦积分 · 720p'))
   assert.ok(current.some(n => n.type === 'small' && typeof n.children === 'string' && n.children.includes('5 秒、720p')))
   current.find(n => n.type === 'button' && n.children === '开始生成').props.onClick()
-  assert.deepEqual(JSON.parse(JSON.stringify(events)), [['open-description'], ['generate', {configId: 7, model: option.model, description: '温暖的青年女声', dialogue: '你好，我来了。'}]])
+  assert.deepEqual(JSON.parse(JSON.stringify(events)), [['generate', {configId: 7, model: option.model, description: '温暖的青年女声', dialogue: '你好，我来了。'}]])
   props.generationOptions = [low, option]
   await vue.nextTick()
   current = nodes()
@@ -116,46 +116,101 @@ test('角色声音显示缺少 Mini 配置，启用后默认选择并提交该�
   assert.ok(busy.nodes.filter(n => n.type === 'button').every(n => n.props.disabled))
 })
 
-test('使用默认试音台词，异步描述不会覆盖用户输入', async () => {
-  const events = []
+test('打开试音直接预填已有剧本提取描述，点击生成前不提交任务', () => {
   const option = { key: '7/jimeng', label: '即梦', configId: 7, model: 'jimeng', resolution: '720p' }
-  const props = vue.reactive({asset: character, generationOptions: [option], descriptionSuggestion: undefined, descriptionLoading: true})
-  const draw = exported.default.setup(props, {emit: (...args) => events.push(args), expose() {}})
-  function nodes() {
-    const result = []
-    function visit(node) { if (!node || typeof node !== 'object') return; result.push(node); if (Array.isArray(node.children)) node.children.forEach(visit) }
-    visit(draw({$emit: (...args) => events.push(args)}, []))
-    return result
-  }
-  nodes().find(n => n.type === 'button' && n.children === '生成角色声音').props.onClick()
-  const field = nodes().filter(n => n.type === 'textarea')[0]
-  field.props['onUpdate:modelValue']('我手写的声音')
-  field.props.onInput()
-  props.descriptionSuggestion = { text: '迟到的建议', sourceLabel: '角色资料' }
-  props.descriptionLoading = false
-  await vue.nextTick()
-  nodes().find(n => n.type === 'button' && n.children === '开始生成').props.onClick()
-  assert.deepEqual(JSON.parse(JSON.stringify(events)), [['open-description'], ['generate', {
-    configId: 7, model: 'jimeng', description: '我手写的声音', dialogue: '这也不会那也不会，你到底是怎么修炼到现在的。',
+  const asset = {...character, voiceDescription: {text: '声音清亮', sourceLabel: '剧本提取'}}
+  const {nodes, redraw, events} = render({asset, generationOptions: [option]})
+  nodes.find(n => n.type === 'button' && n.children === '生成角色声音').props.onClick()
+  assert.deepEqual(events, [])
+  const form = redraw()
+  assert.equal(form.find(n => n.type === 'button' && n.children === '开始生成').props.disabled, false)
+  assert.ok(form.some(n => n.type === 'small' && n.children === '描述来源：剧本提取'))
+  redraw().find(n => n.type === 'button' && n.children === '开始生成').props.onClick()
+  assert.deepEqual(JSON.parse(JSON.stringify(events)), [['generate', {
+    configId: 7, model: 'jimeng', description: '声音清亮', dialogue: '这也不会那也不会，你到底是怎么修炼到现在的。',
   }]])
 })
 
-test('自动声音描述显示来源且可编辑', async () => {
-  const props = vue.reactive({asset: character, descriptionSuggestion: undefined})
-  const draw = exported.default.setup(props, {emit() {}, expose() {}})
-  function nodes() {
-    const result = []
-    function visit(node) { if (!node || typeof node !== 'object') return; result.push(node); if (Array.isArray(node.children)) node.children.forEach(visit) }
-    visit(draw({$emit() {}}, []))
-    return result
-  }
-  nodes().find(n => n.type === 'button' && n.children === '生成角色声音').props.onClick()
-  props.descriptionSuggestion = {text: ''}
+test('冲突显示出处和原文，用户可明确确认继续使用现有描述', () => {
+  const option = { key: '7/jimeng', label: '即梦', configId: 7, model: 'jimeng', resolution: '720p' }
+  const clue = { facet: 'timbre', value: '清亮', source: 'explicit', evidence: [{title: '来客', episodeNumber: 3, quote: '声音清亮'}] }
+  const discordant = {...clue, value: '嘶哑', evidence: [{title: '初见', episodeNumber: 1, quote: '声音嘶哑'}]}
+  const voiceProfile = {id: 'guard-adult', character: '守卫', ageStage: 'adult', clues: [], conflicts: [clue, discordant]}
+  const asset = {...character, voiceDescription: {text: '声音清亮', sourceLabel: '剧本提取'}, voiceProfile}
+  const {nodes, redraw, events} = render({asset, generationOptions: [option]})
+  assert.ok(nodes.some(n => n.type === 'small' && n.children === '剧本来源：第 1 集、第 3 集'))
+  assert.ok(nodes.some(n => n.type === 'summary' && n.children === '查看有出入的声音线索'))
+  assert.ok(nodes.some(n => n.type === 'li' && n.children === '第 1 集「声音嘶哑」'))
+  nodes.find(n => n.type === 'button' && n.children === '生成角色声音').props.onClick()
+  const generate = () => redraw().find(n => n.type === 'button' && n.children === '开始生成')
+  assert.equal(generate().props.disabled, true)
+  generate().props.onClick()
+  assert.deepEqual(events, [])
+  redraw().find(n => n.type === 'input' && n.props.type === 'checkbox' && n.props['onUpdate:modelValue'])
+    .props['onUpdate:modelValue'](true)
+  assert.equal(generate().props.disabled, false)
+  generate().props.onClick()
+  assert.equal(events[0][1].description, '声音清亮')
+  assert.equal(events[0][1].confirmVoiceConflict, true)
+})
+
+test('异步保存的描述更新空表单并保留用户已经输入的描述', async () => {
+  const option = { key: '7/jimeng', label: '即梦', configId: 7, model: 'jimeng', resolution: '720p' }
+  const props = vue.reactive({asset: {...character}, generationOptions: [option]})
+  const {nodes, redraw, events} = render(props)
+  nodes.find(n => n.type === 'button' && n.children === '生成角色声音').props.onClick()
+  const description = () => redraw().find(n => n.type === 'textarea')
+  props.asset.voiceDescription = {text: '沙哑', sourceLabel: '剧本提取'}
   await vue.nextTick()
-  assert.ok(nodes().some(n => n.type === 'small' && n.children === '剧本里的声音线索不足，请手动填写。'))
-  props.descriptionSuggestion = {text: '声音清亮', sourceLabel: '人物介绍'}
+  assert.equal(description().directives[0][1], '沙哑')
+  description().props['onUpdate:modelValue']('用户选择的声音')
+  props.asset.voiceDescription = {text: '稍沙哑', sourceLabel: '剧本提取'}
   await vue.nextTick()
-  assert.ok(nodes().some(n => n.type === 'small' && n.children === '来源：人物介绍'))
+  redraw().find(n => n.type === 'button' && n.children === '开始生成').props.onClick()
+  assert.equal(events[0][1].description, '用户选择的声音')
+})
+
+test('年龄待定时只能先确认造型的年龄，确认本身不发出生成事件', () => {
+  const voiceProfile = {id: 'guard-unknown', character: '守卫', ageStage: 'unknown', ageConflict: ['child', 'adult'], clues: [], conflicts: [],
+    ageEvidence: [{stage: 'child', title: '回忆', episodeNumber: 2, quote: '少年时的守卫'}]}
+  const {nodes, redraw, events} = render({asset: {...character, voiceProfile}})
+  assert.equal(nodes.some(n => n.type === 'button' && n.children === '生成角色声音'), false)
+  assert.ok(nodes.some(n => n.type === 'li' && n.children === '儿童 · 第 2 集「少年时的守卫」'))
+  const confirm = () => redraw().find(n => n.type === 'button' && n.children === '确认年龄阶段')
+  assert.equal(confirm().props.disabled, true)
+  confirm().props.onClick()
+  const select = nodes.find(n => n.type === 'select')
+  select.props['onUpdate:modelValue']('older_adult')
+  confirm().props.onClick()
+  assert.deepEqual(events, [])
+  select.props['onUpdate:modelValue']('adult')
+  assert.equal(confirm().props.disabled, false)
+  confirm().props.onClick()
+  assert.deepEqual(events, [['confirm-age', 'adult']])
+})
+
+test('同年龄共用生成声音可以试听，已生成的年龄组不会再次出现生成入口', () => {
+  const voiceProfile = {id: 'guard-adult', character: '守卫', ageStage: 'adult', clues: [], conflicts: []}
+  const voiceAudio = {url: '/static/uploads/voice.mp3', name: '守卫.mp3'}
+  const hasGenerate = nodes => nodes.some(n => n.type === 'button' && n.children === '生成角色声音')
+  const linked = render({asset: {...character, voiceProfile, voiceAudio}, sharedVoicePresent: true})
+  assert.equal(linked.audio.props.src, voiceAudio.url)
+  assert.ok(linked.nodes.some(n => n.type === 'small' && n.children === '同一年龄阶段的角色造型共用这段声音。'))
+  assert.equal(hasGenerate(linked.nodes), false)
+  assert.equal(hasGenerate(render({asset: {...character, voiceProfile}, alreadyGenerated: true}).nodes), false)
+  assert.equal(hasGenerate(render({asset: {...character, voiceProfile: {...voiceProfile, audioConflict: true}}}).nodes), false)
+  assert.equal(hasGenerate(render({asset: {...character, voiceAudio}}).nodes), true)
+})
+
+test('之前手动保存的声音描述可直接复用', () => {
+  const option = {key: '7/jimeng', label: '即梦', configId: 7, model: 'jimeng', resolution: '720p'}
+  const asset = {...character, voiceDescription: {text: '声音清亮', sourceLabel: '手动编辑'}}
+  const {nodes, redraw, events} = render({asset, generationOptions: [option]})
+  nodes.find(n => n.type === 'button' && n.children === '生成角色声音').props.onClick()
+  const generate = redraw().find(n => n.type === 'button' && n.children === '开始生成')
+  assert.equal(generate.props.disabled, false)
+  generate.props.onClick()
+  assert.equal(events[0][1].description, '声音清亮')
 })
 
 test('失败时显示原因，保留试音输入并允许重新生成', async () => {

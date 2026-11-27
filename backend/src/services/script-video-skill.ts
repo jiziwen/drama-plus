@@ -183,6 +183,19 @@ export async function loadScriptVideoAssetSkill() {
   return (await readScriptVideoSkillDocuments([assetExtraction], new Set([assetExtraction]))).instructions
 }
 
+// Installed workspaces keep editable copies. Update the old delivery instructions
+// in the model's copy without replacing the surrounding custom guidance.
+function workspaceStoryboardScope(name: string, text: string) {
+  if (name === files.validation)
+    return text.replaceAll('模型在一次回答中按已确认的主干事件顺序写完整集分镜',
+      '生成正式分镜时，模型按本次请求指定的片段范围和确认的事件顺序提交 cards')
+  if (name === files.adapter)
+    return text.replaceAll('正式稿在一次请求中写完整集。', '生成正式分镜时，按本次请求的片段范围交付。')
+      .replaceAll('按已确认大纲的顺序输出所有片段', '按生效时间表的顺序输出本次目标片段')
+      .replaceAll('同一次回答里上一段的实际末镜', '上一段的实际末镜')
+  return text
+}
+
 async function readScriptVideoSkillDocuments(requested: Iterable<string>, allowed: Set<string>) {
   const roots = process.env.WORKSPACE_PATH
     ? [
@@ -202,7 +215,8 @@ async function readScriptVideoSkillDocuments(requested: Iterable<string>, allowe
         const full = await realpath(path.join(parent, name))
         if (!full.startsWith(parent + path.sep))
           throw new Error('参考资料路径超出当前 Skill')
-        const content = await readFile(full, 'utf8')
+        const text = await readFile(full, 'utf8')
+        const content = root === templateDirectory ? text : workspaceStoryboardScope(name, text)
         documents.set(name, content)
         return content
       } catch (err) {

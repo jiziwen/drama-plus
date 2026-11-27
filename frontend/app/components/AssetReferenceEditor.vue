@@ -13,7 +13,7 @@
     <p class="reference-hint">{{ t(optional ? 'assetGeneration.textReferenceHint' : 'assetGeneration.referenceHint') }}</p>
     <div v-if="modelValue.length" class="reference-grid">
       <div v-for="(source, index) in modelValue" :key="source" class="reference-card">
-        <img :src="assetReferenceSrc(source)" :alt="t('assetGeneration.referenceN', { n: index + 1 })" />
+        <img :src="thumbOf(assetReferenceSrc(source))" :alt="t('assetGeneration.referenceN', { n: index + 1 })" loading="lazy" decoding="async" />
         <span v-if="index === 0" class="tag tag-accent">{{ t('assetGeneration.main') }}</span>
         <div class="reference-card-actions">
           <button v-if="index" type="button" class="btn btn-sm" :disabled="busy" @click="makeMain(index)">{{ t('assetGeneration.makeMain') }}</button>
@@ -24,7 +24,7 @@
     <div v-else-if="!optional" class="reference-empty">{{ t('assetGeneration.referenceRequired') }}</div>
     <div v-if="showHistory" class="reference-history" :aria-label="t('assetGeneration.history')">
       <button v-for="source in uniqueAssetReferences(history)" :key="source" type="button" :disabled="busy || modelValue.length >= 4 || hasReference(source)" @click="add(source)">
-        <img :src="assetReferenceSrc(source)" :alt="t('assetGeneration.chooseHistory')" loading="lazy" />
+        <img :src="thumbOf(assetReferenceSrc(source))" :alt="t('assetGeneration.chooseHistory')" loading="lazy" decoding="async" />
       </button>
     </div>
   </div>
@@ -35,6 +35,7 @@ import { computed, ref, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { uploadAPI } from '~/composables/useApi'
 import { assetReferenceSrc, canonicalAssetReference, uniqueAssetReferences } from '~/composables/useAssetGeneration'
+import { thumbOf } from '~/composables/useMedia'
 const props = withDefaults(defineProps<{ modelValue: string[]; currentImage?: string; history?: string[]; disabled?: boolean; optional?: boolean }>(), { currentImage: '', history: () => [], disabled: false })
 const emit = defineEmits<{ 'update:modelValue': [value: string[]]; error: [message: string]; uploading: [value: boolean] }>()
 const { t } = useI18n()

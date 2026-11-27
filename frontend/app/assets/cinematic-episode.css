@@ -100,28 +100,24 @@ html[data-studio-preview='cinematic'] body .dc-cinema { --dc-accent: #a6e7df; }
   html[data-studio-preview='cinematic'] body .cinematic-screening-copy { flex-basis: 240px; }
 }
 @media (max-width:650px) {
-  html[data-studio-preview='cinematic'] body .studio.cinematic-episode { padding: 17px 15px 28px; gap: 13px; overflow-y: auto; }
-  html[data-studio-preview='cinematic'] body .studio.cinematic-episode .studio-topbar { padding-bottom: 14px; gap: 12px; }
-  html[data-studio-preview='cinematic'] body .studio.cinematic-episode .studio-topbar-main { min-width: 0; gap: 10px; }
-  html[data-studio-preview='cinematic'] body .studio.cinematic-episode .studio-title { font-size: 20px; white-space: normal; }
-  html[data-studio-preview='cinematic'] body .studio.cinematic-episode .studio-topbar-side { margin-left: 0; width: 100%; gap: 8px; justify-content: space-between; }
-  html[data-studio-preview='cinematic'] body .studio.cinematic-episode .studio-actions { flex-wrap: wrap; gap: 6px; }
-  html[data-studio-preview='cinematic'] body .cinematic-screening-bar { gap: 15px; padding: 16px; border-radius: 17px; }
-  html[data-studio-preview='cinematic'] body .cinematic-screening-copy { flex-basis: 100%; gap: 11px; }
-  html[data-studio-preview='cinematic'] body .cinematic-screening-mark { width: 40px; height: 44px; border-radius: 12px; }
-  html[data-studio-preview='cinematic'] body .cinematic-screening-copy strong { font-size: 18px; }
-  html[data-studio-preview='cinematic'] body .cinematic-screening-actions { width: 100%; gap: 8px; }
+  html[data-studio-preview='cinematic'] body .studio.cinematic-episode { padding: 12px 12px 26px; gap: 10px; overflow-y: auto; }
+  html[data-studio-preview='cinematic'] body .studio.cinematic-episode .studio-title { font-size: 16px; }
+  html[data-studio-preview='cinematic'] body .studio.cinematic-episode .studio-topbar-side { margin-left: 0; width: 100%; }
+  html[data-studio-preview='cinematic'] body .cinematic-screening-bar { gap: 10px; padding: 10px 12px; border-radius: 14px; }
+  html[data-studio-preview='cinematic'] body .cinematic-screening-copy { flex-basis: 100%; align-items: start; gap: 9px; }
+  html[data-studio-preview='cinematic'] body .cinematic-screening-mark { width: 34px; height: 34px; border-radius: 9px; }
+  html[data-studio-preview='cinematic'] body .cinematic-screening-copy strong { font-size: 16px; }
+  html[data-studio-preview='cinematic'] body .cinematic-screening-actions { width: 100%; gap: 6px; }
   html[data-studio-preview='cinematic'] body .cinematic-screening-source { flex: 1 1 110px; }
-  html[data-studio-preview='cinematic'] body .cinematic-screening-source select { width: 100%; max-width: none; }
-  html[data-studio-preview='cinematic'] body .cinematic-screening-bar .cinematic-screening-button { flex: 1 0 auto; padding: 11px 12px; font-size: 12px; }
-  html[data-studio-preview='cinematic'] body .studio.cinematic-episode .studio-stage-navigation { padding: 11px; gap: 10px; }
+  html[data-studio-preview='cinematic'] body .cinematic-screening-source select { width: 100%; max-width: none; min-height: 36px; }
+  html[data-studio-preview='cinematic'] body .cinematic-screening-bar .cinematic-screening-button { flex: 1 0 auto; min-height: 32px; padding: 4px 8px; font-size: 11px; }
   html[data-studio-preview='cinematic'] body .studio.cinematic-episode .studio-episode-picker { width: 100%; justify-content: space-between; }
   html[data-studio-preview='cinematic'] body .studio.cinematic-episode .studio-stage-navigation > nav { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); width: 100%; gap: 4px; margin: 0; }
-  html[data-studio-preview='cinematic'] body .studio.cinematic-episode .studio-stage-navigation > nav > button { justify-content: center; gap: 5px; padding: 8px 4px; font-size: 12px; min-height: 43px; border-radius: 11px; }
+  html[data-studio-preview='cinematic'] body .studio.cinematic-episode .studio-stage-navigation > nav > button { gap: 4px; padding: 4px; font-size: 11px; border-radius: 9px; }
   html[data-studio-preview='cinematic'] body .studio.cinematic-episode .studio-stage-navigation > nav > button > span { width: 20px; height: 20px; font-size: 10px; }
   html[data-studio-preview='cinematic'] body .studio.cinematic-episode .studio-body > .main { overflow: visible; padding-right: 0; }
-  html[data-studio-preview='cinematic'] body .studio.cinematic-episode .story-panel .fill-textarea { padding: 21px 19px; font-size: 15px; height: clamp(280px,44dvh,540px); }
-  html[data-studio-preview='cinematic'] body .studio.cinematic-episode .story-next-bar { padding: 14px; }
+  html[data-studio-preview='cinematic'] body .studio.cinematic-episode .story-panel .fill-textarea { padding: 12px; font-size: 16px; height: clamp(260px,44dvh,540px); }
+  html[data-studio-preview='cinematic'] body .studio.cinematic-episode .story-next-bar { padding: 10px 12px; }
   html[data-studio-preview='cinematic'] body .studio.cinematic-episode .story-actions { flex-wrap: wrap; }
 }
 @media (prefers-reduced-motion:reduce) {

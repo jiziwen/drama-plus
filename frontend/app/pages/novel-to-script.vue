@@ -205,7 +205,7 @@
                   <dt>人物</dt><dd>{{ segment.cast.join('、') || '无' }}</dd>
                   <dt>独立生成</dt><dd>{{ segment.direction }}</dd>
                 </dl>
-                <div class="novel-table-wrap">
+                <div class="novel-table-wrap" tabindex="0" role="region" aria-label="分镜表">
                   <table class="novel-table">
                     <thead><tr><th>镜号</th><th>时长</th><th>景别／机位／运动</th><th>画面与动作</th><th>对白／音效</th></tr></thead>
                     <tbody>
@@ -769,8 +769,42 @@ onBeforeUnmount(() => {
 .novel-spin { animation: novel-spin 1s linear infinite; }
 @keyframes novel-spin { to { transform: rotate(360deg); } }
 @media (max-width: 720px) {
-  .novel-chapter-layout { grid-template-columns: minmax(0, 1fr); }
+  .novel-workbench { padding: 12px 12px 24px; }
+  .novel-workbench h1 { font-size: 18px; }
+  .novel-workbench h2 { font-size: 15px; }
+  .novel-header { align-items: center; gap: 10px; margin-bottom: 12px; }
+  .novel-header > .btn { margin-inline-start: auto; }
+  .novel-identity { min-width: 0; gap: 8px; }
+  .novel-identity p { font-size: 12px; }
+  .novel-mark { width: 36px; height: 36px; }
+  .novel-mark svg { width: 19px; height: 19px; }
+  .novel-paper { grid-template-columns: minmax(0, 1fr); gap: 12px; padding: 12px; }
+  .novel-project-list li { padding: 10px; }
+  .novel-project-list .novel-project-heading { flex-basis: 100%; }
+  .novel-actions, .novel-pace { gap: 8px; }
+  .novel-pace label { flex: 1; }
+  :is(.novel-import, .novel-project-list, .novel-revise) .novel-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+  .novel-import .novel-actions > :only-child { grid-column: 1 / -1; }
+  .novel-workbench .novel-switch { gap: 4px; }
+  .novel-workbench nav.novel-switch { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-block: 10px; }
+  .novel-switch button { justify-content: center; padding-inline: 6px; }
+  html:root body .novel-workbench :is(.btn, .novel-switch button, .novel-pace label),
+  .novel-model :deep(.base-select-trigger) { min-height: 32px; font-size: 11px; }
+  .novel-workbench :is(select, textarea) { font-size: 16px; }
+  .novel-model { display: grid; grid-template-columns: 6.5rem minmax(0, 1fr); flex-basis: 100%; gap: 8px; }
+  .novel-chapter-layout { grid-template-columns: minmax(0, 1fr); gap: 12px; }
   .novel-chapter-list { max-height: 172px; }
+  .novel-chapter-list button { grid-template-columns: auto minmax(0, 1fr) auto; min-height: 34px; }
+  .novel-table-wrap { overscroll-behavior-inline: contain; }
+  .novel-table-wrap:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .novel-segment-meta { grid-template-columns: minmax(0, 1fr); gap: 3px; }
+  .novel-segment-meta dd + dt { margin-top: 5px; }
+  .novel-asset-body { grid-template-columns: minmax(0, 1fr); overflow-wrap: anywhere; }
+  .novel-delete-dialog { max-height: calc(100dvh - 24px); overscroll-behavior: contain; }
 }
 @media (prefers-reduced-motion: reduce) { .novel-spin { animation: none; } }
 </style>

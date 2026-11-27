@@ -1918,4 +1918,31 @@ onBeforeUnmount(stopUsagePoll)
 .migrate-warn {
   color: var(--error);
 }
+@media (max-width: 650px) {
+  html:root body .settings-layout .settings-nav {
+    width: calc(100% - 24px);
+    min-width: 0;
+    margin: 8px 12px 0;
+    padding: 4px;
+    overscroll-behavior-inline: contain;
+  }
+  .nav-group { flex: none; }
+  html:root body .settings-layout .settings-nav .nav-item {
+    width: auto;
+    min-height: 32px;
+    padding: 4px 8px;
+    font-size: 11px;
+  }
+  html:root body .settings-page .settings-scroll { padding: 10px 12px 26px; overscroll-behavior-y: contain; }
+  .settings-head { margin-bottom: 10px; }
+  html:root body .settings-page .settings-head .settings-title { font-size: 17px; }
+  html:root body .settings-page :is(.svc-group-head, .config-actions, .setup-panel, .global-default-picker) .btn {
+    min-height: 32px;
+    padding-inline: 9px;
+    font-size: 11px;
+  }
+  .sections { gap: 10px; }
+  html:root body .settings-page :is(.setup-panel, .svc-group-head, .global-default-picker, .config-row) { padding: 10px 12px; }
+  html:root body .settings-page .config-row { gap: 8px; }
+}
 </style>

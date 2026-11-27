@@ -110,4 +110,13 @@ onMounted(() => {
 .driver-active-element .driver-popover-arrow svg polygon {
   fill: var(--accent) !important;
 }
+
+@media (max-width: 650px) {
+  .huobao-tour-popover { max-width: min(340px, calc(100vw - 24px)); }
+  [data-sonner-toaster][data-x-position="right"] {
+    inset-inline: 12px;
+    width: auto;
+  }
+  [data-sonner-toaster][data-x-position="right"] [data-sonner-toast] { width: 100%; }
+}
 </style>

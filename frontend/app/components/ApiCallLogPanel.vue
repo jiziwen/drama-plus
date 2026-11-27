@@ -152,4 +152,13 @@ td:first-child { min-width:150px; }
 .call-payloads h4 { font-size:13px; }
 pre { max-height:48vh; overflow:auto; padding:16px; background:var(--bg-2); border:1px solid var(--border); border-radius:10px; font-size:12px; line-height:1.6; white-space:pre-wrap; overflow-wrap:anywhere; }
 @media(max-width:800px) { .call-payloads { grid-template-columns:1fr; } .call-filters .field { min-width:40%; } }
+@media (max-width: 650px) {
+  .call-table-wrap {
+    /* 让末列的无障碍标题随表格一起裁切和滚动。 */
+    position: relative;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: none;
+  }
+  .call-table-wrap::-webkit-scrollbar { display: none; }
+}
 </style>

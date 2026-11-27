@@ -356,25 +356,23 @@ async function focusProjectSearch(event){if((event.ctrlKey||event.metaKey)&&even
 onMounted(()=>document.addEventListener('keydown',focusProjectSearch))
 onBeforeUnmount(()=>document.removeEventListener('keydown',focusProjectSearch))
 
-function getEpisodeNumber(d) {
-  const episodes = [...(d.episodes || [])]
-  if (!episodes.length) return 1
-  episodes.sort((a, b) => Number(a.episode_number || a.episodeNumber || 1) - Number(b.episode_number || b.episodeNumber || 1))
-  return Number(episodes[0].episode_number || episodes[0].episodeNumber || 1)
-}
-
-function getDramaPath(d) {
-  return `/drama/${d.id}`
+function firstEpisodeNumber(drama) {
+  const numbers = (drama.episodes || [])
+    .map(episode => Number(episode.episode_number ?? episode.episodeNumber))
+    .filter(number => Number.isInteger(number) && number > 0)
+  return numbers.length ? Math.min(...numbers) : null
 }
 
 function openDrama(d) {
   activeMenuId.value = null
-  navigateTo(getDramaPath(d))
+  const first = firstEpisodeNumber(d)
+  const projectPath = `/drama/${d.id}`
+  navigateTo(first === null ? projectPath : `${projectPath}/episode/${first}`)
 }
 
 function latestEpisodeLabel(d) {
-  if (!d.episodes?.length) return t('index.noEpisodes')
-  return t('index.episodeN', { n: getEpisodeNumber(d) })
+  const first = firstEpisodeNumber(d)
+  return first === null ? t('index.noEpisodes') : t('index.episodeN', { n: first })
 }
 
 function fmtDate(s) {
@@ -678,9 +676,61 @@ onMounted(() => setTimeout(() => autoTour('index', INDEX_TOUR, t), 600))
   .toolbar { flex-wrap: wrap; }
   .search-box { width: 100%; flex: 1 1 100%; }
   .sort-select-wrap { margin-left: 0; flex: 1; }
-  .project-grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
+  .project-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 160px), 1fr)); }
+  .project-card { min-width: 0; }
   .field-row { grid-template-columns: 1fr; }
-  .dialog-foot { flex-direction: column-reverse; }
-  .dialog-foot .btn { width: 100%; }
+  .create-dialog .field,
+  .create-dialog .dialog-head-copy { min-width: 0; overflow-wrap: anywhere; }
+  html:root body .create-dialog input.input { font-size: 16px; }
+  .dialog-foot { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .dialog-foot .btn { min-height: 40px; }
+  .launcher-head .head-actions .btn { min-height: 42px; }
+  html:root body .soft-home :is(.search-box .input, .bento-search input) { font-size: 16px; }
+  html:root body .soft-home .chip-row { min-width: 0; padding: 3px; overscroll-behavior-inline: contain; }
+  .filter-chip { flex: none; min-height: 40px; }
+  html:root body .soft-home .creative-bento { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  html:root body .soft-home .bento-copy > .btn { min-height: 42px; overflow-wrap: anywhere; }
+  .bento-copy > .btn svg { flex: none; }
+}
+@media (max-width: 650px) {
+  html:root body main > .soft-home.page:not(.cine-home-page) { padding: 12px 12px 24px; }
+  html:root body .soft-home .workspace-welcome { margin-bottom: 12px; }
+  html:root body .soft-home .welcome-heading { gap: 8px 12px; margin-bottom: 12px; }
+  html:root body .soft-home .welcome-heading h1 { font-size: clamp(18px, 5vw, 21px); }
+  html:root body .soft-home .creative-bento { gap: 10px; }
+  html:root body .soft-home :is(.bento-start, .bento-progress, .bento-search, .bento-nudge) { padding: 12px; }
+  html:root body .soft-home .bento-start { min-height: 0; }
+  html:root body .soft-home .bento-copy h2 { font-size: clamp(20px, 6vw, 24px); margin: 12px 0 7px; }
+  html:root body .soft-home .bento-copy > .btn { min-height: 32px; margin-top: 10px; }
+  html:root body .soft-home .bento-progress { min-height: 0; }
+  html:root body .soft-home .bento-nudge { justify-content: flex-start; gap: 10px; }
+  html:root body .soft-home .launcher-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    margin: 0 0 10px;
+  }
+  html:root body .soft-home .head-actions { gap: 6px; }
+  html:root body .soft-home .head-actions .btn { min-height: 32px; padding-inline: 9px; font-size: 11px; }
+  html:root body .soft-home .launcher-sub { margin-top: 3px; }
+  html:root body .soft-home .toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+  html:root body .soft-home .chip-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
+  html:root body .soft-home .filter-chip { min-width: 0; min-height: 32px; padding: 4px; }
+  html:root body .soft-home .sort-select-wrap { width: 100%; margin: 0; }
+  html:root body .soft-home :is(.search-box .input, .sort-select-wrap button) { min-height: 32px; }
+  html:root body .soft-home .project-grid { gap: 10px; }
+  html:root body .soft-home .project-body { padding: 10px 4px; }
+}
+@media (max-width: 360px) {
+  html:root body .soft-home .creative-bento { grid-template-columns: minmax(0, 1fr); }
+  html:root body .soft-home .creative-bento > * { grid-column: 1; grid-row: auto; }
+  html:root body .soft-home .bento-nudge { flex-direction: row; align-items: center; justify-content: flex-start; gap: 12px; }
+  html:root body .soft-home .bento-nudge > div { flex: 1; min-width: 0; }
+  html:root body .soft-home .bento-nudge strong { max-width: none; }
 }
 </style>

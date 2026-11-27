@@ -244,6 +244,31 @@ p { line-height: 1.7; }
   border-top: 1px solid var(--border);
 }
 
+@media (max-width: 650px), (max-width: 960px) and (max-height: 500px) and (pointer: coarse) {
+  html:root body :is(.cine-navigation, .soft-navigation, .settings-layout .settings-nav, .chip-row,
+    .vp-card-track, .vp-outline-index, .vp-asset-manage-tabs, .sv-tabs,
+    .drama-steps, .drama-chapter-links, .export-merge-strip) {
+    scrollbar-width: none;
+  }
+  html:root body :is(.cine-navigation, .soft-navigation, .settings-layout .settings-nav, .chip-row,
+    .vp-card-track, .vp-outline-index, .vp-asset-manage-tabs, .sv-tabs,
+    .drama-steps, .drama-chapter-links, .export-merge-strip)::-webkit-scrollbar {
+    height: 0;
+  }
+}
+
+@media (max-width: 650px), (max-height: 500px) and (pointer: coarse) {
+  .overlay:has(> .dialog) { padding: 12px; }
+  .dialog {
+    max-width: 100%;
+    max-height: calc(100dvh - 24px);
+    min-width: 0;
+  }
+  .dialog-head, .dialog-foot { flex-shrink: 0; flex-wrap: wrap; padding: 12px 14px; }
+  .dialog-title { min-width: 0; overflow-wrap: anywhere; }
+  .dialog-body { min-height: 0; padding: 14px; overscroll-behavior: contain; }
+}
+
 /* segmented control (pill track + raised active segment) */
 .seg {
   display: inline-flex;
@@ -337,6 +362,10 @@ p { line-height: 1.7; }
   box-shadow: var(--shadow-lg);
   overflow-y: auto;
   outline: none;
+}
+@media (max-width: 650px), (max-height: 500px) and (pointer: coarse) {
+  .app-menu { overscroll-behavior-y: contain; }
+  html:root body .app-menu .app-menu-item { min-height: 40px; }
 }
 .app-menu[data-placement="bottom"] { transform-origin: top center; }
 .app-menu[data-placement="top"] { transform-origin: bottom center; }

@@ -199,5 +199,18 @@ async function download() {
 .project-export-error { color: var(--action-danger); font-size: 13px; }
 @media (max-width: 640px) {
   .project-export-body, .project-export-footer { padding-inline: 15px; }
+  .project-export-toolbar,
+  .project-export-toolbar > div,
+  .project-export-footer {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .project-export-body {
+    min-height: 0;
+    overscroll-behavior-y: contain;
+  }
+  .project-export-body .btn, .project-export-footer .btn {
+    min-height: 40px;
+  }
 }
 </style>

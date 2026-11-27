@@ -1743,4 +1743,43 @@ onMounted(async () => {
   .dialog-foot { flex-wrap: wrap; gap: 10px; }
   .dialog-foot-copy { display: none; }
 }
+@media (max-width: 650px) {
+  html:root body .page:has(> .page-tabs) { padding: 12px 12px 26px; }
+  html:root body .page > .page-head.card {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 8px;
+    margin-bottom: 10px;
+    padding: 10px;
+  }
+  .head-info { gap: 4px 6px; }
+  html:root body .page-head .page-title {
+    font-size: 16px;
+    line-height: 1.4;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .page-head .page-meta { flex-basis: 100%; gap: 2px 7px; }
+  .page-head .meta-item { gap: 3px; font-size: 11px; }
+  .page-head .meta-item svg { flex: none; }
+  .page-head .back-btn { width: 32px; height: 32px; }
+  html:root body .page-head .head-action { min-height: 32px; padding-inline: 7px; font-size: 11px; }
+  html:root body .page > .page-tabs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin: 0 0 10px;
+  }
+  html:root body .page-tabs .tab-btn { justify-content: center; min-height: 32px; font-size: 11px; }
+  html:root body .ep-grid { gap: 10px; }
+  .ep-grid > * { min-width: 0; }
+  html:root body .ep-grid .ep-card { padding: 10px; }
+  .ep-card-top { gap: 8px; }
+  html:root body .assets-wrap .asset-filter { display: flex; margin-bottom: 10px; }
+  html:root body .asset-filter .seg-item { flex: 1; padding-inline: 4px; }
+  .ep-card-foot, .asset-card-actions { flex-wrap: wrap; }
+  .mat-model-field .base-select { min-width: 0; }
+  .mat-detail-edit-grid { grid-template-columns: minmax(0, 1fr); }
+  .mat-detail-head-actions, .mat-detail-secondary-actions, .mat-detail-primary-actions { flex-wrap: wrap; }
+}
 </style>

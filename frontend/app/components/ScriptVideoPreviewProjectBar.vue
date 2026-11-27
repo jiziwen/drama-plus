@@ -469,16 +469,58 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', dismissProject
   .project-controls { flex-basis: 100%; flex-wrap: wrap; }
   .project-picker { min-width: 132px; }
 }
-@media (max-width: 420px) {
-  .project-controls,
-  .episode-picker {
-    flex-basis: 100%;
-  }
+@media (max-width: 600px) {
   .project-bar {
-    padding: 8px 10px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px 6px;
+    padding: 10px;
   }
+  .project-controls {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px 6px;
+  }
+  .picker {
+    display: grid;
+    grid-template-columns: var(--vp-field-label-width, 46px) minmax(0, 1fr);
+    min-width: 0;
+    gap: 6px;
+  }
+  .episode-picker { grid-column: 1 / -1; }
+  .project-appearance {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.45fr);
+    margin-inline-start: calc(var(--vp-field-label-width, 46px) + 6px);
+    gap: 6px;
+  }
+  .project-style { width: 100%; max-width: none; }
+  .project-trigger,
+  .episode-picker :deep(.base-select-trigger),
+  .project-bar .btn-sm,
+  .project-choice {
+    min-height: 32px;
+  }
+  .project-bar .btn-sm { padding-inline: 7px; font-size: 11px; }
   .episode-actions {
-    gap: 5px;
+    margin: 0;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
   }
+  .project-options {
+    min-width: 0;
+    max-height: min(300px, 45dvh);
+    overscroll-behavior: contain;
+  }
+  .project-delete {
+    width: 36px;
+    height: 36px;
+  }
+}
+@media (max-width: 350px) {
+  .episode-count, .episode-actions { grid-column: 1 / -1; }
 }
 </style>

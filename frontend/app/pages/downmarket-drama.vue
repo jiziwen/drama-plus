@@ -172,11 +172,13 @@
         <aside class="drama-paper drama-chapter-list">
           <h2>章节目录</h2>
           <p>{{ draft.chapters.length }} / {{ draft.brief.chapterCount }} 章 · {{ formatCount(totalWords) }} 字</p>
-          <button v-for="(plan, index) in draft.outline?.chapters" :key="index" type="button" class="drama-chapter-link"
-            :aria-pressed="chapterNumber === index + 1" @click="selectChapter(index + 1)">
-            <span>第 {{ index + 1 }} 章</span><strong>{{ draft.chapters[index]?.title || plan.title }}</strong>
-            <Check v-if="draft.chapters[index]" :size="14" aria-label="已写" />
-          </button>
+          <div class="drama-chapter-links">
+            <button v-for="(plan, index) in draft.outline?.chapters" :key="index" type="button" class="drama-chapter-link"
+              :aria-pressed="chapterNumber === index + 1" @click="selectChapter(index + 1)">
+              <span>第 {{ index + 1 }} 章</span><strong>{{ draft.chapters[index]?.title || plan.title }}</strong>
+              <Check v-if="draft.chapters[index]" :size="14" aria-label="已写" />
+            </button>
+          </div>
         </aside>
         <section class="drama-paper">
           <div class="drama-section-head">
@@ -870,6 +872,7 @@ onBeforeUnmount(() => { alive = false; if (pollTimer) clearTimeout(pollTimer) })
 .drama-outline { display: grid; gap: 12px; }
 .drama-outline-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: end; }
 .drama-chapter-list { gap: 7px; }
+.drama-chapter-links { display: contents; }
 .drama-chapter-list p, .drama-chapter-count { font-size: 13px; }
 .drama-chapter-link { display: grid; grid-template-columns: auto 1fr auto; align-items: center; text-align: left; gap: 8px; min-width: 0; padding: 8px; border: 1px solid var(--surface-outline); border-radius: 7px; background: transparent; color: var(--text-1); cursor: pointer; }
 .drama-chapter-link span { color: var(--text-2); font-size: 12px; }
@@ -883,10 +886,43 @@ onBeforeUnmount(() => { alive = false; if (pollTimer) clearTimeout(pollTimer) })
 .drama-asset-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 265px), 1fr)); gap: 12px; align-items: start; }
 .drama-delivery { padding-top: 12px; border-top: 1px solid var(--surface-outline); }
 @media (max-width: 760px) {
-  .drama-columns, .drama-pitches, .drama-outline-actions { grid-template-columns: 1fr; }
-  .drama-chapter-list { grid-auto-columns: minmax(125px, 1fr); grid-auto-flow: column; grid-template-rows: auto auto auto; overflow-x: auto; }
-  .drama-chapter-list > :is(h2,p) { grid-column: 1 / -1; }
-  .drama-chapter-link { grid-template-columns: minmax(0, 1fr) auto; }
+  .drama-bench { padding: 12px 12px 24px; }
+  .drama-bench h1 { font-size: 18px; }
+  .drama-bench h2 { font-size: 15px; }
+  .drama-heading { gap: 8px; }
+  .drama-heading p { font-size: 12px; }
+  .drama-heading .drama-mark { width: 36px; height: 36px; flex-basis: 36px; }
+  .drama-heading .drama-mark svg { width: 19px; height: 19px; }
+  .drama-bench :is(p, h2, h3, .drama-models > small) { overflow-wrap: anywhere; }
+  .drama-paper { grid-template-columns: minmax(0, 1fr); gap: 12px; padding: 12px; }
+  .drama-empty, .drama-start { margin-top: 12px; }
+  .drama-columns, .drama-pitches, .drama-outline-actions { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .drama-top > .drama-inline, .drama-start > .drama-inline {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+    gap: 8px;
+  }
+  .drama-bench .project-picker { grid-column: 1 / -1; display: grid; grid-template-columns: 5.5em minmax(0, 1fr); min-width: 0; }
+  .drama-start > .drama-inline > :only-child { grid-column: 1 / -1; }
+  .drama-bench .project-picker select { max-width: none; }
+  .drama-steps { margin-block: 12px; overscroll-behavior-inline: contain; }
+  .drama-steps button { min-width: 90px; min-height: 32px; padding: 5px; font-size: 11px; }
+  .drama-model { display: grid; grid-template-columns: 6.5rem minmax(0, 1fr); flex-basis: 100%; }
+  html:root body .drama-bench .btn { min-height: 32px; font-size: 11px; }
+  .drama-bench :is(.drama-field input:not([type]), .drama-field input[type="number"], .drama-field select, .project-picker select, textarea) {
+    font-size: 16px;
+  }
+  .drama-chapter-links {
+    display: flex;
+    gap: 7px;
+    min-width: 0;
+    padding: 3px;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+  }
+  .drama-chapter-link { flex: 0 0 132px; grid-template-columns: minmax(0, 1fr) auto; }
   .drama-chapter-link span { grid-column: 1 / -1; }
+  .drama-delete-dialog { max-height: calc(100dvh - 24px); overscroll-behavior: contain; }
 }
 </style>

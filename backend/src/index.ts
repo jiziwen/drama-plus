@@ -106,6 +106,8 @@ app.use('/static/*', requireLocalSiteSession, async (c, next) => {
   if (c.res.ok) c.header('Cache-Control', localSiteLogin ? 'private, no-store' : 'public, max-age=31536000, immutable')
 })
 app.use('/static/*', serveStatic({ root: DATA_ROOT }))
+// 缺失的素材应返回 404，避免把前端页面当图片缓存。
+app.get('/static/*', c => c.text('素材不存在', 404, { 'Cache-Control': 'no-store' }))
 
 // Serve frontend (production build) — 桌面版由主进程注入 FRONTEND_DIST（resources/frontend）
 const distPath = process.env.FRONTEND_DIST || path.join(projectRoot, 'frontend', 'dist')

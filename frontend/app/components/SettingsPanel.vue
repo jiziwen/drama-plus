@@ -34,5 +34,10 @@ function trapFocus(event: KeyboardEvent) {
 .settings-panel { width: min(1400px, 100%); height: min(900px, 94vh); display: flex; flex-direction: column; min-height: 0; background: var(--bg-base); border: 1px solid var(--border); border-radius: 16px; box-shadow: 0 24px 80px rgba(0,0,0,.3); outline: none; overflow: hidden; }
 .settings-panel-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 20px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
 .settings-panel-body { flex: 1; min-height: 0; }
-@media (max-width: 700px) { .settings-panel-backdrop { padding: 0; } .settings-panel { height: 100dvh; border-radius: 0; } }
+@media (max-width: 700px), (max-height: 500px) and (pointer: coarse) {
+  .settings-panel-backdrop { padding: 0; }
+  .settings-panel { height: 100dvh; border-radius: 0; }
+  .settings-panel-header { padding: 5px 12px; font-size: 13px; }
+  html:root body .settings-panel-header > .btn { min-height: 32px; padding-inline: 10px; font-size: 11px; }
+}
 </style>

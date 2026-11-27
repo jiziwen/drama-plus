@@ -6234,4 +6234,42 @@ button.video-task-metric.on { box-shadow: 0 0 0 2px var(--accent); }
   }
 
 }
+
+@media (max-width: 650px) {
+  html:root body .studio { padding-inline: 12px; overscroll-behavior-y: contain; }
+  html:root body .studio .studio-topbar-main { align-items: start; gap: 8px; }
+  .studio-identity { gap: 4px 6px; }
+  html:root body .studio .studio-title { font-size: 16px; white-space: normal; overflow-wrap: anywhere; }
+  .studio-meta-row { flex: 1 0 100%; flex-wrap: wrap; }
+  html:root body .studio .studio-topbar-side,
+  html:root body .studio .studio-actions { justify-content: flex-start; gap: 5px; }
+  html:root body .studio .studio-topbar :is(.btn, .topbar-back),
+  html:root body .studio .studio-model-disclosure > summary { min-height: 32px; padding: 3px 7px; font-size: 11px; }
+  html:root body .studio .studio-actions .tour-help-btn { width: 32px; padding: 0; }
+  html:root body .studio .studio-stage-navigation { padding: 8px; gap: 8px; }
+  html:root body .studio .studio-episode-picker { gap: 8px; }
+  html:root body .studio .studio-stage-navigation > nav {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  html:root body .studio .studio-stage-navigation > nav > button {
+    min-width: 0;
+    min-height: 32px;
+    justify-content: center;
+    padding-inline: 4px;
+    white-space: normal;
+  }
+  html:root body .studio .studio-episode-picker > span { min-width: 0; }
+  html:root body .studio .step-toolbar { align-items: center; flex-wrap: wrap; padding: 10px 12px; }
+  html:root body .studio .story-mode-tabs { margin-bottom: 10px; }
+  .toolbar-right, .story-actions, .prod-section-bar > .ml-auto { min-width: 0; flex-wrap: wrap; }
+  .asset-card-actions, .asset-detail-head-actions { flex-wrap: wrap; }
+  .asset-detail-edit-grid { grid-template-columns: minmax(0, 1fr); }
+  html:root body .studio .video-task-workbench { overflow: visible; }
+  html:root body .shot-editor-scrim { padding: 10px; }
+  html:root body .shot-editor-sheet { padding: 12px; max-height: calc(100dvh - 20px); }
+  html:root body .shot-editor-sheet .video-task-side { overscroll-behavior: contain; }
+  html:root body .shot-sheet-header { flex-wrap: wrap; margin-bottom: 10px; }
+  html:root body .shot-sheet-header > div:last-child { margin-left: auto; }
+}
 </style>

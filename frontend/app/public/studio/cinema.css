@@ -190,6 +190,34 @@
   .dc-credits h2 { font-size: 24px; margin: 10px 0; }
   .dc-credit-actions { margin-top: 14px; }
 }
+@media(max-width:700px), (max-width:960px) and (pointer:coarse) {
+  .dc-room {
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  .dc-credit-actions { flex-wrap: wrap; justify-content: center; }
+  .dc-scrubber { touch-action: pan-y; }
+}
+@media(max-width:400px) {
+  .dc-header { padding-inline: 10px; gap: 6px; }
+  .dc-transport { width: calc(100% - 24px); }
+  .dc-main-controls { gap: 2px; }
+}
+@media (min-width: 600px) and (max-width: 960px) and (max-height: 570px) and (pointer: coarse) {
+  .dc-transport {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: 32px auto;
+    align-content: start;
+    align-items: center;
+    gap: 0 14px;
+    width: calc(100% - 32px);
+  }
+  .dc-timeline { grid-column: 1 / -1; }
+  .dc-controls-row { margin-block: 0; }
+  .dc-time, .dc-format { width: auto; }
+  .dc-format > span:last-child { display: none; }
+  .dc-shot-strip { display: flex; justify-content: flex-start; }
+}
 /* A landscape film on a small phone has very little projection height. Keep
    its title, episode and 44px actions readable instead of shrinking all text. */
 @container dc-projection (max-height: 240px) or (max-width: 260px) {

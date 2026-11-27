@@ -66,7 +66,7 @@
       <h2>暂无项目</h2>
     </div>
     <div v-else-if="!episodeOpen" class="vp-empty vp-panel" role="status">
-      <p>{{ loadingProjects ? '正在加载项目…' : loadError || (selectingEpisode ? '正在进入分集…' : episodeAccessNotice || '请选择要制作的分集。') }}</p>
+      <p>{{ loadingProjects ? '正在加载项目…' : loadError || (selectingEpisode ? '正在进入分集…' : episodeAccessNotice || (episodeOptions.length ? '请选择要制作的分集。' : '暂无分集，请新增分集或批量导入剧本。')) }}</p>
     </div>
     <div v-else class="vp-workflow">
       <nav aria-label="剧本转视频流程">
@@ -2700,6 +2700,7 @@ onMounted(async () => {
   const route = useRoute()
   const requestedProject = typeof route.query.project === 'string' ? route.query.project : undefined
   const requestedEpisode = typeof route.query.episode === 'string' ? route.query.episode : undefined
+  const navigation = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined
   lastViewPosition = requestedProject
     ? { projectId: requestedProject, episodeId: requestedEpisode }
     : readScriptVideoViewPosition()
@@ -2746,18 +2747,19 @@ onMounted(async () => {
     selectedProjectId.value = projects.value.find(project => project.id === remembered)?.id || projects.value[0]?.id || ''
     await nextTick()
     syncing.value = false
-    loadingProjects.value = false
     const project = currentProject.value
+    const restorePosition = lastViewPosition?.projectId === project.id && (requestedEpisode || navigation?.type === 'reload')
+      ? lastViewPosition
+      : undefined
     if (project.id !== 'loading' && !directory.error) {
-      const requestedEpisode = lastViewPosition?.projectId === project.id ? lastViewPosition.episodeId : undefined
+      const requestedEpisode = restorePosition?.episodeId
       try { await refreshProject(project.id, requestedEpisode) }
       catch (error) {
         if (error instanceof ScriptVideoRequestError && error.status === 404 && requestedEpisode) await refreshProject(project.id)
         else if (!project.episodes.length) throw error
       }
     }
-    let position = lastViewPosition?.projectId === project.id ? lastViewPosition : undefined
-    const navigation = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined
+    let position = restorePosition
     // Apply the old saved selection on the first reload after an upgrade.
     if (!lastViewPosition && remembered === project.id && navigation?.type === 'reload') {
       position = { projectId: project.id, episodeId: project.episodeId }
@@ -2776,6 +2778,8 @@ onMounted(async () => {
           }
         })
       }
+    } else {
+      await enterFirstEpisode()
     }
     agentPrompt.value = currentProject.value.settings?.systemPrompt || defaultAgentPrompt
     if (canSend && !directory.error) for (const id of pendingEdits.value) void saveProjectNow(id).catch(() => {})
@@ -2784,6 +2788,7 @@ onMounted(async () => {
     loadError.value = error instanceof Error ? error.message : '项目加载失败'
     loadingProjects.value = false
   } finally {
+    loadingProjects.value = false
     restoringView = false
     if (alive && episodeOpen.value) keepViewPosition()
   }
@@ -2990,8 +2995,12 @@ function showProject(id: string) {
   dialog.value = null
 }
 async function selectProject(id: string) {
-  if (episodeNavigationBusy.value || id === selectedProjectId.value ||
+  if (episodeNavigationBusy.value ||
       !projects.value.some((project) => project.id === id)) return
+  if (id === selectedProjectId.value) {
+    if (!episodeOpen.value) await enterFirstEpisode()
+    return
+  }
   selectingEpisode.value = true
   try {
     await persistBeforeNavigation()
@@ -3001,9 +3010,19 @@ async function selectProject(id: string) {
     agentPrompt.value = currentProject.value.settings?.systemPrompt || defaultAgentPrompt
   } catch (error: any) {
     toast.error(error.message)
+    return
   } finally {
     selectingEpisode.value = false
   }
+  if (alive && selectedProjectId.value === id) await enterFirstEpisode()
+}
+
+async function enterFirstEpisode() {
+  const first = currentProject.value.episodes.reduce<PreviewEpisode | undefined>(
+    (earliest, episode) => !earliest || episode.number < earliest.number ? episode : earliest,
+    undefined,
+  )
+  if (alive && first) await selectEpisode(first.id)
 }
 async function deleteProject(projectId: string) {
   if (episodeNavigationBusy.value) return
@@ -3448,7 +3467,6 @@ async function createProject() {
     )
     acceptProject(materialize(project, project.episodes))
     await selectProject(project.id)
-    if (selectedProjectId.value === project.id) await selectEpisode(project.episodeId)
     toast.success('项目已创建，可以导入分集剧本和资产包')
   } catch (error: any) {
     toast.error(error.message)
@@ -7196,13 +7214,19 @@ button.vp-asset-preview-trigger {
 }
 @media (max-width: 850px) {
   .video-preview-page {
-    height: auto;
-    min-height: 100%;
-    overflow: visible;
+    height: 100%;
+    min-height: 0;
+    overflow: auto;
+    padding-bottom: max(18px, env(safe-area-inset-bottom));
+  }
+  .vp-production,
+  .vp-workbench,
+  .vp-materials {
+    flex: none;
+    min-height: 0;
   }
   .vp-workbench {
     grid-template-columns: minmax(0, 1fr);
-    min-height: 600px;
   }
   .vp-inspector {
     grid-column: 1/-1;
@@ -7219,8 +7243,10 @@ button.vp-asset-preview-trigger {
   .vp-workflow nav {
     flex: 1;
   }
-  .vp-materials {
-    min-height: 800px;
+  .vp-script-editor,
+  .vp-material-assets {
+    min-width: 0;
+    overflow: visible;
   }
   .vp-material-grid {
     grid-template-columns: repeat(2, 1fr);
@@ -7228,14 +7254,11 @@ button.vp-asset-preview-trigger {
   .vp-material-footer {
     padding: 15px;
   }
-  .vp-material-footer > span {
-    max-width: 45%;
-  }
   .vp-title p {
     display: none;
   }
 }
-@media (max-width: 760px) {
+@media (max-width: 760px), (max-width: 960px) and (max-height: 500px) and (pointer: coarse) {
   .vp-asset-edit-grid {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -7244,20 +7267,70 @@ button.vp-asset-preview-trigger {
     flex-direction: column;
     gap: 12px;
   }
+  .vp-assets-body {
+    overflow: auto;
+    overscroll-behavior-y: contain;
+  }
+  .vp-managed-assets,
+  .vp-binding-grid,
+  .vp-confirmed-script {
+    flex: none;
+    max-height: none;
+    overflow: visible;
+  }
+  .vp-modal-overlay {
+    padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+  }
+  .vp-modal {
+    max-height: 100%;
+  }
+  .vp-assets-modal {
+    height: 100%;
+  }
+  .vp-modal > header,
+  .vp-modal-body,
+  .vp-modal > footer,
+  .vp-project-form-footer {
+    padding: 12px;
+  }
+  .vp-modal > header {
+    gap: 8px;
+    flex-shrink: 0;
+  }
+  .vp-modal h2 {
+    font-size: 17px;
+    overflow-wrap: anywhere;
+  }
+  .vp-modal-body {
+    min-height: 0;
+    overscroll-behavior-y: contain;
+  }
+  .vp-modal > footer,
+  .vp-project-form-footer {
+    flex-wrap: wrap;
+    flex-shrink: 0;
+    gap: 6px;
+  }
+  .vp-assets-body {
+    padding: 0;
+  }
 }
 @media (max-width: 600px) {
   .video-preview-page {
-    height: 100%;
-    min-height: 0;
-    overflow-y: auto;
-    padding: 12px;
+    --vp-field-label-width: 46px;
+    padding: 10px 12px;
+    gap: 10px;
+    padding-bottom: max(16px, env(safe-area-inset-bottom));
   }
   .vp-heading {
-    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 5px 4px;
   }
   .vp-heading-actions {
-    flex-direction: column;
+    justify-content: flex-end;
+    flex-wrap: wrap;
     gap: 6px;
+    margin-inline-start: auto;
   }
   .vp-title-icon {
     display: none;
@@ -7267,53 +7340,126 @@ button.vp-asset-preview-trigger {
     gap: 6px;
   }
   .vp-title h1 {
-    font-size: 20px;
+    font-size: 18px;
   }
+  .vp-preview-label { display: none; }
   .vp-heading-actions .btn {
-    min-height: 30px;
-  }
-  .vp-production,
-  .vp-workbench {
-    flex: none;
+    min-height: 34px;
+    padding-inline: 7px;
+    font-size: 11px;
   }
   .vp-workbench {
     display: flex;
     flex-direction: column;
   }
-  .vp-editor-panel {
-    min-height: 620px;
-  }
   .vp-inspector {
     display: flex;
+    padding: 10px;
+    gap: 9px;
   }
+  .vp-inspector .vp-field { gap: 4px; }
+  .vp-inspector .vp-section-header h2 { font-size: 12px; }
+  .vp-inspector :deep(.sv-model-select) { gap: 4px; }
+  .vp-inspector :deep(.sv-model-select .base-select-trigger) { padding-block: 3px; }
+  .vp-workflow nav,
+  .vp-output-switch {
+    display: grid;
+    flex: 1 0 100%;
+    min-width: 0;
+    gap: 4px;
+  }
+  .vp-workflow nav {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .vp-workflow { padding: 10px; gap: 8px; }
+  .vp-output-switch {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .vp-output-switch:has(> button:nth-of-type(4)) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .vp-episode-status {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: var(--vp-field-label-width) minmax(0, 1fr);
+    margin: 0;
+  }
+  .vp-episode-status :deep(.base-select) {
+    flex: 1;
+    min-width: 0;
+  }
+  .vp-output-switch .vp-workflow-assets {
+    margin: 0;
+  }
+  .vp-storyboard-mode { min-width: 0; }
+  .vp-storyboard-mode :deep(.base-select) { min-width: 0; }
+  .vp-storyboard-mode :deep(.base-select-trigger) { min-width: 0; min-height: 34px; }
+  .vp-workflow nav button,
+  .vp-output-switch > button {
+    justify-content: center;
+    min-height: 34px;
+    padding: 4px 2px;
+    gap: 3px;
+  }
+  .vp-output-switch > button { white-space: normal; border: 1px solid var(--border); }
+  .vp-output-switch > button > svg { flex: none; width: 12px; }
   .vp-workflow nav button {
-    padding: 5px;
-    font-size: 10px;
+    font-size: 11px;
     gap: 5px;
+  }
+  .vp-workflow nav button > span {
+    flex: none;
   }
   .vp-workflow nav button > svg {
     display: none;
   }
   .vp-preview-notice {
+    flex-wrap: wrap;
+    padding-inline: 10px;
+    gap: 4px 6px;
+    font-size: 11px;
     line-height: 1.7;
-    align-items: flex-start;
   }
+  .vp-preview-notice [role='status'] {
+    flex: 1 0 calc(100% - 19px);
+  }
+  .vp-preview-notice button {
+    margin-left: 0;
+    min-height: 36px;
+  }
+  .vp-preview-notice > button:last-child { margin-inline-start: auto; }
+  .vp-preview-notice :deep(.model-select) { flex: 1 1 175px; min-width: 0; }
+  .vp-preview-notice :deep(.model-select-label) { white-space: nowrap; }
+  .vp-preview-notice :deep(.app-menu-anchor) { flex: 1; }
+  .vp-preview-notice :deep(.model-select-trigger) { width: 100%; }
   .vp-materials {
     display: flex;
     flex-direction: column;
   }
   .vp-script-editor {
-    border-right: 0;
-    min-height: 460px;
+    border: 0;
   }
+  .vp-script-editor,
   .vp-material-assets {
-    overflow: visible;
+    padding: 10px;
+    gap: 8px;
+  }
+  .vp-script-textarea {
+    flex: none;
+    min-height: clamp(220px, 42dvh, 420px);
+    font-size: 14px;
+    padding: 10px;
+  }
+  .vp-dropzone {
+    padding: 12px;
   }
   .vp-material-grid {
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
   .vp-material-footer {
     flex-wrap: wrap;
+  }
+  .vp-material-footer > .btn {
+    width: 100%;
+    min-height: 34px;
   }
   .vp-outline > .vp-section-header,
   .vp-outline-index,
@@ -7333,44 +7479,88 @@ button.vp-asset-preview-trigger {
   .vp-outline-footer {
     flex-wrap: wrap;
   }
-  .vp-combat {
-    display: none;
-  }
-  .vp-modal-overlay {
-    padding: 10px;
-  }
-  .vp-modal > header,
-  .vp-modal-body,
-  .vp-modal > footer {
-    padding: 17px;
-  }
-  .vp-assets-body {
-    padding: 0;
-  }
-  .vp-assets-toolbar {
-    padding: 16px 17px 0;
-    gap: 14px;
-  }
-  .vp-managed-assets {
-    padding: 14px 17px 17px;
-  }
-  .vp-asset-manage-tabs {
-    gap: 16px;
-  }
-  .vp-asset-edit-row {
-    grid-template-columns: 56px minmax(0, 1fr);
-    gap: 10px;
-    padding: 10px;
-  }
-  .vp-asset-edit-image {
-    width: 56px;
-    height: 72px;
-  }
-  .vp-asset-edit-row .input {
-    font-size: 12px;
-  }
-  .vp-rail-head {
+  .vp-outline-time {
     flex-wrap: wrap;
   }
+  .vp-modal :is(.input, .textarea, input[type='search']),
+  .vp-script-editor .vp-project-title,
+  .vp-outline-form :is(input, textarea) {
+    font-size: 14px;
+  }
+  .vp-assets-toolbar {
+    padding: 8px 10px 0;
+    gap: 6px;
+  }
+  .vp-managed-assets {
+    padding: 8px 10px;
+    scrollbar-gutter: auto;
+  }
+  .vp-assets-modal > header, .vp-assets-modal > footer { padding: 8px 10px; }
+  .vp-assets-modal h2 { font-size: 15px; }
+  .vp-assets-modal :is(.btn, .vp-asset-manage-tabs button) { min-height: 34px; }
+  .vp-assets-modal .btn { font-size: 11px; padding-inline: 7px; }
+  .vp-assets-modal .btn svg { width: 12px; flex: none; }
+  .vp-asset-edit-grid { gap: 7px; }
+  .vp-asset-manage-tabs {
+    gap: 12px;
+  }
+  .vp-asset-edit-row {
+    grid-template-columns: 52px minmax(0, 1fr);
+    gap: 6px 8px;
+    padding: 8px;
+  }
+  .vp-asset-edit-image {
+    width: 52px;
+    height: 54px;
+  }
+  .vp-asset-edit-actions,
+  .vp-rail-head,
+  .vp-rail-head > div {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    gap: 6px;
+  }
+  .vp-asset-edit-actions > .btn:not(.vp-asset-delete) {
+    flex: 1 0 auto;
+    justify-content: center;
+  }
+  .vp-rail {
+    padding: 10px;
+  }
+  .vp-card-track,
+  .vp-outline-index,
+  .vp-asset-manage-tabs {
+    overscroll-behavior-x: contain;
+  }
+  .vp-segment-item {
+    flex-basis: clamp(130px, 42vw, 170px);
+  }
+  .vp-segment-delete {
+    min-width: 36px;
+    min-height: 36px;
+  }
+  .vp-rail-head :is(.vp-link, .btn),
+  .vp-modal > header .btn,
+  .vp-modal > footer .btn {
+    min-height: 34px;
+    font-size: 11px;
+  }
+  .vp-inspector :deep(.base-select-trigger),
+  html:root body .vp-inspector-actions .btn {
+    min-height: 32px;
+    font-size: 11px;
+  }
+  .vp-assets-modal > header .btn, .vp-assets-modal > footer .btn { min-height: 34px; }
+  .vp-export-clip {
+    gap: 5px;
+    padding-inline: 7px;
+  }
+}
+@media (max-width: 350px) {
+  .vp-heading-actions {
+    flex-basis: 100%;
+    margin-inline-start: 0;
+  }
+  .vp-heading-actions > button { flex: 1 1 auto; }
 }
 </style>

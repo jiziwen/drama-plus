@@ -62,11 +62,13 @@
     <div v-else class="gallery-grid">
       <article v-for="asset in visibleAssets" :key="`${asset.kind}-${asset.id}`" class="gallery-card card">
         <div class="gallery-art" :class="{ 'gallery-art-fit': asset.aspect }">
-          <button v-if="imageOf(asset)" type="button" class="gallery-preview-trigger"
+          <button v-if="thumbnailOf(asset)" type="button" class="gallery-preview-trigger"
             :aria-label="`查看${asset.name}大图`" aria-haspopup="dialog" title="点击查看大图"
             @click="imagePreview?.open(imageOf(asset), asset.name, $event.currentTarget)">
-            <img :key="imageOf(asset)" :src="thumbOf(imageOf(asset))" :alt="asset.name" loading="lazy" decoding="async" />
+            <img :key="thumbnailOf(asset)" :src="thumbnailOf(asset)" :alt="asset.name" loading="lazy" decoding="async"
+              @error="onThumbnailError(asset, $event)" />
           </button>
+          <span v-else-if="imageOf(asset)" class="gallery-initial" role="img" :aria-label="`${asset.name} 图片暂不可用`" title="图片暂不可用">{{ asset.name.slice(0, 1) || '·' }}</span>
           <span v-else class="gallery-initial">{{ asset.name.slice(0, 1) || '·' }}</span>
           <span class="gallery-kind">{{ kindLabels[asset.kind] }}</span>
         </div>
@@ -209,6 +211,7 @@ const modelError = ref('')
 const deleteTarget = ref<{ projectId: number; asset: GalleryAsset } | null>(null)
 const deleting = ref(false)
 const recovering = ref(new Set<number>())
+const failedImages = reactive(new Map<string, string>())
 let requestId = 0
 let modelRequestId = 0
 let pollTimer: ReturnType<typeof setTimeout> | undefined
@@ -234,12 +237,26 @@ function imageOf(asset: GalleryAsset) {
   return source && !source.startsWith('/') && !/^https?:\/\//i.test(source) ? `/${source}` : source
 }
 
+function thumbnailOf(asset: GalleryAsset) {
+  const original = imageOf(asset)
+  const failed = failedImages.get(original)
+  if (!original || failed === original) return ''
+  const thumbnail = thumbOf(original)
+  return failed === thumbnail ? original : thumbnail
+}
+
+function onThumbnailError(asset: GalleryAsset, event: Event) {
+  const source = (event.currentTarget as HTMLImageElement).getAttribute('src')
+  if (source && source === thumbnailOf(asset)) failedImages.set(imageOf(asset), source)
+}
+
 function assetStatus(asset: GalleryAsset) {
   if (isRecovering(asset) || (asset.task?.status === 'processing' && asset.task.stage === 'downloading')) return '已生成，取图中'
   if (asset.task?.status === 'processing' && asset.task.stage === 'saving') return '保存图片中'
   if (asset.task?.status === 'delivery_pending') return asset.task.canRetryDelivery ? '已生成，待取回' : '已生成，保存中断'
   if (isGenerating(asset)) return '生成中'
   if (asset.task?.status === 'failed') return asset.image ? '生成失败，保留旧图' : '生成失败'
+  if (asset.image && !thumbnailOf(asset)) return '图片暂不可用'
   return asset.image ? '图片已就绪' : '等待生成'
 }
 
@@ -253,6 +270,7 @@ async function loadDetail(id: number | null, background = false) {
   if (!background) {
     loading.value = Boolean(id)
     assets.value = []
+    failedImages.clear()
     error.value = ''
   }
   if (!id) return
@@ -469,5 +487,98 @@ onBeforeUnmount(() => {
 .gallery-model-hint { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 12px; color: var(--text-3); }
 .gallery-editor-error { font-size: 13px; overflow-wrap: anywhere; }
 .gallery-editor-actions { justify-content: flex-end; border-top: 1px solid var(--surface-outline); }
-@media (max-width: 480px) { .gallery-editor-fields { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 650px) {
+  html:root body .asset-gallery-page.page {
+    padding: 12px 12px 24px;
+  }
+  html:root body .asset-gallery-page .welcome-heading {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+    margin: 0 0 12px;
+  }
+  .asset-gallery-page .soft-eyebrow { display: none; }
+  html:root body .asset-gallery-page .welcome-heading h1 {
+    margin: 0 0 4px;
+    font-size: clamp(16px, 4.8vw, 19px);
+    line-height: 1.4;
+    letter-spacing: 0;
+    text-wrap: pretty;
+  }
+  html:root body .asset-gallery-page .welcome-heading p { font-size: 12px; line-height: 1.6; }
+  html:root body .asset-gallery-page .welcome-heading > .gallery-project-select { width: 100%; }
+  html:root body .asset-gallery-page .gallery-project-select :deep(.base-select-trigger) { min-height: 32px; }
+  html:root body .asset-gallery-page .gallery-controls {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin: 0 0 12px;
+    padding: 8px;
+  }
+  html:root body .asset-gallery-page .gallery-controls > :is(.seg, .gallery-search) {
+    grid-column: 1 / -1;
+    width: 100%;
+    min-width: 0;
+    margin-inline: 0;
+  }
+  html:root body .asset-gallery-page .gallery-controls > .seg {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    min-height: 0;
+    padding: 3px;
+  }
+  html:root body .asset-gallery-page .gallery-controls .seg-item {
+    min-width: 0;
+    min-height: 32px;
+    padding: 4px;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  html:root body .asset-gallery-page .gallery-controls > .gallery-search {
+    height: 36px;
+    padding: 0 9px;
+    gap: 6px;
+  }
+  html:root body .asset-gallery-page .gallery-controls > .btn {
+    min-height: 32px;
+    height: auto;
+    justify-content: center;
+    gap: 5px;
+    padding: 4px 6px;
+    font-size: 11px;
+  }
+  html:root body .asset-gallery-page .gallery-search > input.input {
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+    font-size: 16px;
+  }
+  .gallery-search > input.input::placeholder { font-size: 13px; }
+  html:root body .asset-gallery-page .gallery-grid { gap: 10px; }
+  html:root body .asset-gallery-page .gallery-card { padding: 8px; border-radius: 14px; }
+  html:root body .asset-gallery-page .gallery-art { aspect-ratio: 16 / 9; }
+  .gallery-kind { inset: auto 7px 7px auto; }
+  html:root body .asset-gallery-page .gallery-copy { padding: 9px 4px 2px; }
+  html:root body .asset-gallery-page .gallery-copy h2 { font-size: 15px; line-height: 1.5; }
+  html:root body .asset-gallery-page .gallery-copy p { min-height: 0; margin: 4px 0 8px; font-size: 12px; line-height: 1.5; }
+  .gallery-card-footer { padding-top: 6px; }
+  html:root body .gallery-card-actions .btn { min-height: 32px; font-size: 11px; }
+  html:root body .asset-gallery-page > .empty-state { min-height: 240px; padding: 16px 12px; }
+  html:root body .asset-gallery-page > .empty-state h2 { font-size: 18px; }
+}
+@media (max-width: 650px), (max-height: 480px) and (pointer: coarse) {
+  .gallery-editor { width: min(570px, calc(100% - 24px)); max-height: calc(100dvh - 24px); overflow: hidden; }
+  .gallery-editor form { display: flex; flex-direction: column; max-height: calc(100dvh - 26px); }
+  .gallery-editor-head, .gallery-editor-body, .gallery-editor-actions { padding: 12px; }
+  .gallery-editor-head, .gallery-editor-actions { flex: none; }
+  .gallery-editor-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+  .gallery-editor-body label { min-width: 0; }
+  .gallery-editor-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  html:root body .gallery-editor .btn { min-height: 32px; font-size: 11px; }
+  .gallery-editor select.input { min-height: 36px; }
+  html:root body .gallery-editor :is(input.input, select.input, textarea.textarea) { font-size: 16px; }
+}
+@media (max-width: 480px) {
+  .gallery-editor-fields { grid-template-columns: minmax(0, 1fr); }
+}
 </style>

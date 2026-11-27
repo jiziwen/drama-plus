@@ -38,4 +38,15 @@ defineProps<{ preset: { name: string; text: string } }>()
   overflow-wrap: anywhere;
   line-height: 1.8;
 }
+@media (max-width: 850px) {
+  .sv-style p {
+    max-height: none;
+    overflow: visible;
+  }
+}
+@media (max-width: 650px) {
+  .sv-style { font-size: 11px; }
+  .sv-style summary { padding: 6px 9px; }
+  .sv-style p { padding: 0 9px 8px; line-height: 1.65; }
+}
 </style>

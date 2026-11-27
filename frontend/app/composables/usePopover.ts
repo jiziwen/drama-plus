@@ -46,7 +46,9 @@ export function usePopover(opts: PopoverOptions = {}): PopoverReturn {
   async function position() {
     const rect = anchorEl.value?.getBoundingClientRect()
     if (!rect) return
-    const width = opts.matchWidth ? rect.width : Math.max(minWidth, rect.width)
+    const compact = window.matchMedia('(max-width: 650px), (max-height: 500px) and (pointer: coarse)').matches
+    const preferredWidth = opts.matchWidth ? rect.width : Math.max(minWidth, rect.width)
+    const width = compact ? Math.min(preferredWidth, window.innerWidth - margin * 2) : preferredWidth
 
     let left = rect.left
     if (opts.placement === 'bottom-end') left = rect.right - width
@@ -65,6 +67,19 @@ export function usePopover(opts: PopoverOptions = {}): PopoverReturn {
     // 面板渲染后测真实高度，下方不够且上方更大则翻转
     await nextTick()
     const h = panelEl.value?.offsetHeight ?? 0
+    if (compact) {
+      const below = Math.max(0, window.innerHeight - rect.bottom - margin - offset)
+      const above = Math.max(0, rect.top - margin - offset)
+      const opensUp = below < h && above > below
+      const availableHeight = opensUp ? above : below
+      placement.value = opensUp ? 'top' : 'bottom'
+      panelStyle.value = {
+        ...panelStyle.value,
+        top: `${opensUp ? rect.top - offset - Math.min(h, availableHeight) : rect.bottom + offset}px`,
+        maxHeight: `${Math.min(maxHeight, availableHeight)}px`,
+      }
+      return
+    }
     const below = window.innerHeight - rect.bottom - margin
     const above = rect.top - margin
     if (below < Math.min(h, 240) && above > below) {

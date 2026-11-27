@@ -5,7 +5,10 @@
         <h2 :id="titleId">{{ asset?.name }}</h2>
         <button type="button" class="btn btn-icon" aria-label="关闭大图" autofocus @click="dialog?.close()"><X :size="18" /></button>
       </header>
-      <div class="asset-image-body"><img v-if="asset" :src="asset.image" :alt="asset.name" /></div>
+      <div class="asset-image-body">
+        <img v-if="asset && !imageUnavailable" :src="asset.image" :alt="asset.name" @error="imageUnavailable = true" />
+        <p v-else-if="imageUnavailable" role="status">图片暂不可用</p>
+      </div>
     </dialog>
   </Teleport>
 </template>
@@ -16,6 +19,7 @@ import { X } from 'lucide-vue-next'
 const titleId = useId()
 const dialog = ref<HTMLDialogElement>()
 const asset = shallowRef<{ image: string; name: string }>()
+const imageUnavailable = ref(false)
 let trigger: HTMLElement | undefined
 
 async function open(image: string, name: string, source: EventTarget | null) {
@@ -36,6 +40,7 @@ function closeOnBackdrop(event: MouseEvent) {
 
 function onClose() {
   asset.value = undefined
+  imageUnavailable.value = false
   trigger?.focus({ preventScroll: true })
   trigger = undefined
 }

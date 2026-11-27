@@ -73,4 +73,13 @@ const { state } = useMigrateState()
   font-size: 11px;
   color: var(--text-3);
 }
+@media (max-width: 650px), (max-height: 500px) and (pointer: coarse) {
+  .migrate-box {
+    max-width: calc(100vw - 24px);
+    max-height: calc(100dvh - 24px);
+    padding: 20px;
+    overflow: auto;
+    overflow-wrap: anywhere;
+  }
+}
 </style>

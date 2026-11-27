@@ -280,11 +280,35 @@ defineExpose({ open })
   text-align: center;
 }
 @media (max-width: 650px) {
+  .sample-dialog {
+    width: calc(100% - 16px);
+    max-height: calc(100dvh - 16px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    overscroll-behavior: contain;
+  }
+  .sample-header {
+    padding: 10px 12px;
+  }
+  .sample-header h2 {
+    font-size: 17px;
+    overflow-wrap: anywhere;
+  }
   .sample-body {
     grid-template-columns: minmax(0, 1fr);
+    padding: 12px;
+  }
+  .sample-player-footer {
+    flex-wrap: wrap;
   }
   .sample-queue {
-    max-height: 30dvh;
+    max-height: none;
+  }
+  .sample-queue ol {
+    overflow: visible;
+  }
+  .sample-clip,
+  .sample-header button,
+  .sample-player-footer button {
+    min-height: 40px;
   }
 }
 </style>

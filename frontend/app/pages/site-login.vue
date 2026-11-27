@@ -85,4 +85,26 @@ onBeforeUnmount(() => { disposed = true; username.value = ''; password.value = '
 .site-login-form input { width: 100%; }
 .site-login-form button { margin-top: 12px; }
 .site-login-form [role="alert"] { color: var(--error); font-size: 13px; }
+@media (max-width: 760px), (max-height: 480px) and (pointer: coarse) {
+  .site-login {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    height: 100dvh;
+    overflow-y: auto;
+    padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right))
+      max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+  }
+  .site-login-panel { flex: none; margin: auto; min-width: 0; padding: 18px; }
+  .site-login-mark { width: 36px; height: 36px; }
+  .site-login h1 { margin: 10px 0 12px; font-size: 18px; }
+  .site-login-form { gap: 6px; }
+  .site-login-form label:not(:first-child) { margin-top: 6px; }
+  .site-login-form input { min-height: 36px; font-size: 16px; }
+  .site-login-form button { min-height: 34px; margin-top: 7px; font-size: 12px; }
+}
+@media (max-height: 480px) and (pointer: coarse) {
+  .site-login-panel { padding-block: 16px; }
+  .site-login h1 { margin-block: 8px 12px; }
+}
 </style>

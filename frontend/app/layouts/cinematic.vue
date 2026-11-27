@@ -65,3 +65,46 @@ watch(isOpen, visibility)
 watch(revision, checkConfigs)
 onBeforeUnmount(() => { alive = false; document.removeEventListener('visibilitychange', visibility); window.removeEventListener('cinematic-screening-change', screeningChange); field?.destroy() })
 </script>
+
+<style scoped>
+@media (max-width: 900px) {
+  .cine-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: auto auto;
+    height: auto;
+    gap: 3px 8px;
+    padding: 7px clamp(10px, 3vw, 22px) 0;
+  }
+  .cine-header-actions { grid-column: 2; grid-row: 1; }
+  .cine-navigation {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    min-width: 0;
+    height: 44px;
+    justify-content: flex-start;
+    gap: 16px;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: thin;
+  }
+  .cine-navigation a { flex: 0 0 auto; }
+  .cine-navigation a::after { bottom: 4px; }
+}
+@media (max-width: 650px) {
+  .cine-header { padding: 5px 12px 0; gap: 2px 8px; }
+  .cine-navigation { height: 34px; gap: 12px; scroll-snap-type: inline proximity; scrollbar-width: none; }
+  .cine-navigation a { font-size: 10.5px; scroll-snap-align: start; }
+  .cine-icon, .cine-original { min-height: 32px; }
+  .cine-header :deep(.theme-toggle), .cine-header :deep(.site-account-menu summary) { min-height: 32px; }
+  .cine-config-notice { padding-inline: 12px; }
+  .cine-config-notice > svg { flex: none; }
+  .cine-config-notice > span { min-width: 0; overflow-wrap: anywhere; }
+  .cine-config-notice > button { flex: none; min-height: 36px; }
+}
+@media (max-width: 400px) {
+  .cine-header :deep(.site-account-menu summary) { width: 34px; justify-content: center; padding: 0; }
+  .cine-header :deep(.site-account-menu summary span),
+  .cine-header :deep(.site-account-menu summary svg:last-child) { display: none; }
+}
+</style>

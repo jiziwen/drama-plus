@@ -31,16 +31,46 @@ watch(settingsRevision,checkAiConfigs)
 watch(()=>route.path,checkAiConfigs)
 </script>
 <style scoped>
+@media (max-width: 900px) {
+  html:root body .soft-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: auto auto;
+    height: auto;
+    gap: 4px 8px;
+    padding: 6px clamp(10px, 3vw, 22px) 7px;
+  }
+  html:root body .soft-header-actions { grid-column: 2; grid-row: 1; }
+  html:root body .soft-navigation {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-content: flex-start;
+    min-width: 0;
+    margin: 0;
+    padding: 2px 4px;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: thin;
+  }
+  html:root body .soft-navigation > a { flex: 0 0 auto; min-height: 40px; }
+}
 @media (max-width: 650px) {
+  html:root body .soft-header { padding: 5px 12px; }
+  html:root body .soft-navigation { scroll-snap-type: inline proximity; scrollbar-width: none; }
+  html:root body .soft-navigation > a { min-height: 32px; padding: 4px 9px; font-size: 10.5px; scroll-snap-align: start; }
   .soft-header .soft-header-actions { gap: 6px; }
-  .soft-header .interface-version-switch { padding: 0 9px; min-height: 32px; font-size: 11px; gap: 4px; }
+  .soft-header .interface-version-switch { padding: 0 8px; min-height: 32px; font-size: 11px; gap: 4px; }
+  .soft-header .soft-icon { min-height: 32px; }
+  .soft-header :deep(.theme-toggle), .soft-header :deep(.site-account-menu summary) { min-height: 32px; }
+  .config-banner > svg { flex: none; }
+  .config-banner > span { min-width: 0; overflow-wrap: anywhere; }
 }
 @media (max-width: 400px) {
   .soft-header .soft-brand { font-size: 15px; gap: 7px; }
   .soft-header .soft-brand > span { width: 30px; height: 32px; }
   .soft-header .soft-brand small { font-size: 6px; letter-spacing: 0; }
-}
-@media (max-width: 480px) {
-  .soft-header .soft-navigation { min-width: 0; overflow-x: auto; }
+  .soft-header :deep(.site-account-menu summary) { width: 34px; justify-content: center; padding: 0; }
+  .soft-header :deep(.site-account-menu summary span),
+  .soft-header :deep(.site-account-menu summary svg:last-child) { display: none; }
 }
 </style>

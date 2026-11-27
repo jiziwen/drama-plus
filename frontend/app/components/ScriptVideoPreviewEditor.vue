@@ -76,8 +76,8 @@
             <p>编辑本段画面与动作，输入 @ 引用素材。</p>
           </div>
           <div class="sv-prompt-actions">
-            <span class="sv-caption">{{ card.prompt.length }} 字</span
-            ><button
+            <span class="sv-caption">{{ card.prompt.length }} 字</span>
+            <button
               class="sv-button sv-quiet"
               type="button"
               :disabled="!!uploadingPromptMedia || !canUploadPromptMedia"
@@ -85,15 +85,15 @@
             >
               <Upload :size="13" />{{ uploadingPromptMedia === 'image' ? '上传中…' : '上传图片' }}
             </button>
-            ><button
+            <button
               class="sv-button sv-quiet"
               type="button"
               :disabled="!!uploadingPromptMedia || !canUploadPromptMedia"
               @click="promptAudioInput?.click()"
             >
               <Headphones :size="13" />{{ uploadingPromptMedia === 'audio' ? '上传中…' : '上传音频' }}
-            </button
-            ><button
+            </button>
+            <button
               class="sv-button sv-quiet"
               type="button"
               @click="tab = 'revise'"
@@ -264,22 +264,24 @@
             <button type="button" class="sv-button sv-quiet" @click="addShot">＋ 添加镜头</button>
           </div>
         </div>
-        <div v-if="card.shots.length" class="sv-table-wrap">
-          <table class="sv-shot-table" aria-label="正式分镜五列表格">
+        <div v-if="card.shots.length" class="sv-table-wrap sv-shot-table-wrap">
+          <table class="sv-shot-table" role="table" aria-label="正式分镜">
             <colgroup><col class="sv-col-number" /><col class="sv-col-time" /><col class="sv-col-camera" /><col class="sv-col-action" /><col /></colgroup>
-            <thead><tr>
-              <th scope="col">镜号</th><th scope="col">时长</th><th scope="col">景别／机位／运动</th><th scope="col">画面与动作</th><th scope="col">对白／音效</th>
+            <thead role="rowgroup"><tr role="row">
+              <th scope="col" role="columnheader">镜号</th><th scope="col" role="columnheader">时长</th><th scope="col" role="columnheader">景别／机位／运动</th><th scope="col" role="columnheader">画面与动作</th><th scope="col" role="columnheader">对白／音效</th>
             </tr></thead>
-            <tbody><tr v-for="(shot, index) in card.shots" :key="shot.id">
-              <th scope="row"><span class="sv-shot-number">{{ String(index + 1).padStart(2, '0') }}</span>
+            <tbody role="rowgroup"><tr v-for="(shot, index) in card.shots" :key="shot.id" role="row">
+              <th scope="row" role="rowheader"><span class="sv-shot-mobile-label" aria-hidden="true">镜号</span><span class="sv-shot-number">{{ String(index + 1).padStart(2, '0') }}</span>
                 <button v-if="editingShots" class="sv-remove" type="button" :aria-label="`删除镜头 ${index + 1}`" @click="removeShot(index)">删除</button>
               </th>
-              <td>
+              <td role="cell">
+                <span class="sv-shot-mobile-label" aria-hidden="true">时长</span>
                 <label v-if="editingShots" class="sv-duration"><input type="number" min="0.1" max="30" step="0.1" :value="shot.duration"
                   :aria-label="`镜头 ${index + 1} 时长（秒）`" @change="updateShot(index, 'duration', ($event.target as HTMLInputElement).value)" /> 秒</label>
                 <span v-else>{{ shot.duration }} 秒</span>
               </td>
-              <td v-for="column in shotColumns" :key="column.key">
+              <td v-for="column in shotColumns" :key="column.key" role="cell">
+                <span class="sv-shot-mobile-label" aria-hidden="true">{{ column.label }}</span>
                 <textarea v-if="editingShots" :value="shot[column.key]" rows="5" :aria-label="`镜头 ${index + 1} ${column.label}`"
                   @input="updateShot(index, column.key, ($event.target as HTMLTextAreaElement).value)" />
                 <template v-else>{{ shot[column.key] || '—' }}</template>
@@ -1501,6 +1503,7 @@ p {
 .sv-table-wrap { min-width: 0; overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
 .sv-shot-table, .sv-voices { width: 100%; border-spacing: 0; table-layout: fixed; text-align: left; }
 .sv-shot-table { min-width: 580px; }
+.sv-shot-mobile-label { display: none; }
 .sv-voices { min-width: 360px; }
 .sv-shot-table th, .sv-shot-table td, .sv-voices th, .sv-voices td {
   padding: 9px 7px;
@@ -1705,24 +1708,169 @@ p {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+@media (max-width: 850px) {
+  .sv-editor {
+    height: auto;
+  }
+  .sv-body,
+  .sv-action-warning {
+    flex: none;
+    max-height: none;
+    overflow: visible;
+  }
+  .sv-player video {
+    height: auto;
+    max-height: 68dvh;
+  }
+  .sv-tabs,
+  .sv-table-wrap {
+    overscroll-behavior-x: contain;
+  }
+}
 @media (max-width: 650px) {
   .sv-head,
   .sv-body {
-    padding-left: 16px;
-    padding-right: 16px;
+    padding-inline: 12px;
+  }
+  .sv-head h2 { font-size: 17px; margin-top: 5px; }
+  .sv-body h3 { font-size: 12px; }
+  .sv-badge { padding: 3px 6px; font-size: 10px; }
+  .sv-head > div {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .sv-meta {
+    flex-wrap: wrap;
+    gap: 5px 8px;
+    margin-top: 5px;
+    font-size: 11px;
   }
   .sv-tabs {
-    padding: 0 16px;
-    gap: 15px;
+    padding: 0 12px;
+    gap: 12px;
+  }
+  .sv-tabs button,
+  .sv-button {
+    min-height: 32px;
+    font-size: 11px;
+  }
+  .sv-button { padding: 4px 6px; gap: 4px; }
+  .sv-button > svg { flex: none; width: 12px; }
+  .sv-section-head,
+  .sv-reference-head {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 5px 8px;
+    margin-bottom: 8px;
+  }
+  .sv-section-head p, .sv-reference-head p { margin-top: 3px; font-size: 11px; }
+  .sv-reference-head { margin-top: 16px; }
+  .sv-prompt-actions {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    width: 100%;
+    gap: 4px;
+  }
+  .sv-prompt-actions button { justify-content: center; padding-inline: 3px; gap: 3px; }
+  .sv-prompt-actions .sv-caption { grid-column: 1 / -1; }
+  .sv-editor :deep(.sv-prompt-input),
+  .sv-prompt-dialog-body :deep(.sv-prompt-input) {
+    font-size: 14px;
+    line-height: 1.65;
+    padding: 10px;
+  }
+  .sv-shot-table textarea,
+  .sv-duration input {
+    font-size: 14px;
+  }
+  .sv-shot-table-wrap {
+    border: 0;
+    overflow: visible;
+  }
+  .sv-shot-table {
+    position: relative;
+    display: block;
+    min-width: 0;
+  }
+  .sv-shot-table colgroup { display: none; }
+  .sv-shot-table thead {
+    position: absolute;
+    inset: 0 auto auto 0;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .sv-shot-table tbody {
+    display: grid;
+    gap: 8px;
+  }
+  .sv-shot-table tbody tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .sv-shot-table tbody :is(th, td) {
+    padding: 0;
+    border: 0;
+    font-size: 13px;
+  }
+  .sv-shot-table td:nth-child(n + 3) {
+    display: block;
+    grid-column: 1 / -1;
+    min-width: 0;
+  }
+  .sv-shot-mobile-label {
+    display: block;
+    margin-bottom: 3px;
+    color: var(--text-2);
+    font-weight: 650;
+  }
+  .sv-duration input {
+    width: 5em;
+  }
+  .sv-remove {
+    min-height: 36px;
+  }
+  .sv-voices {
+    min-width: 0;
+  }
+  .sv-facts > div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
   }
   .sv-footer {
-    padding: 12px 16px;
+    padding: 9px 12px;
   }
-  .sv-footer-actions, .sv-action-warning {
-    flex-wrap: wrap;
+  .sv-footer-actions {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    align-items: stretch;
+    gap: 5px;
   }
+  .sv-footer-secondary { display: contents; }
+  .sv-footer-actions .sv-button { justify-content: center; text-align: center; }
+  .sv-footer-actions .sv-button > svg { display: none; }
+  .sv-action-warning { flex-wrap: wrap; }
   .sv-asset {
     width: calc(50% - 4px);
+    padding: 5px;
   }
+  .sv-reference-dialog {
+    width: calc(100% - 16px);
+    max-height: calc(100dvh - 16px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+  }
+  .sv-prompt-dialog-header {
+    padding: 10px;
+  }
+  .sv-prompt-dialog-body {
+    padding: 10px;
+  }
+}
+@media (max-width: 360px) {
+  .sv-prompt-actions, .sv-footer-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 </style>

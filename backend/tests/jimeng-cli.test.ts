@@ -43,11 +43,22 @@ switch (cmd) {
   case 'auth status': ok({loggedIn: true}); break;
   case 'auth account': console.log('{"ok":true,"data":{"userId":' + userId + ',"displayName":"Test User","availableCredits":"120.5"}}'); break;
   case 'space current': ok({ userId, kind: state.teamSpace ? 'team' : 'personal' }); break;
+  case 'model ls':
+    if (state.legacyModels || state.modelError) {
+      console.error(JSON.stringify({ok:false,error:{code:state.modelError || 2,message:'bad request'}}));
+      process.exitCode = 2; break;
+    }
   case 'model list': ok({items: [
     {model: 'seedance_2.5', displayName: 'Seedance 2.5'},
     {model: 'seedance_2.5_draft', displayName: 'Seedance 2.5', aliases: ['Seedance 2.5']},
     {model: 'seedance_2.5_flash', displayName: 'Seedance 2.5 Flash', aliases: ['Seedance 2.5']},
   ]}); break;
+  case 'schema model ls':
+    if (state.legacyModels) {
+      console.error(JSON.stringify({ok:false,error:{code:2,diagnostics:[{detail:'The requested command path is not available in this CLI schema.'}]}}));
+      process.exitCode = 2;
+    } else ok({command:'dreamina-canvas model ls'});
+    break;
   case 'node create': ok({node:{nodeId}}); break;
   case 'node show': ok({nodes: [{result: 'FOUND', node}]}); break;
   case 'node quote': ok({consumptionSubject: subject, items: [{nodeId,maxCredits:state.credits}], totalMaxCredits: state.credits, confirmable: true, draftVersion: 2}); break;
@@ -60,7 +71,7 @@ switch (cmd) {
       ok({items:[{nodeId,submitId:flag('submit-id'),state:'ACCEPTED'}]});
     }
     break;
-  case 'operation status': ok({state:'succeeded', resources:[{resourceId:'resource_1', state:'succeeded'}]}); break;
+  case 'operation status': ok(state.operation || {state:'succeeded', resources:[{resourceId:'resource_1', state:'succeeded'}]}); break;
   case 'resource get': ok({resourceId:'resource_1', type:'video', status:'succeeded', video:{durationSeconds:4}}); break;
   case 'resource download': {
     const media = Buffer.concat([Buffer.from([0, 0, 0, 12]), Buffer.from('ftypmp42')]);
@@ -84,12 +95,22 @@ switch (cmd) {
     ['jimeng-seedance-2.5', 'seedance_2.5'], ['jimeng-seedance-2.5-draft', 'seedance_2.5_draft'],
     ['jimeng-seedance-2.5-flash', 'seedance_2.5_flash'],
   ])
+  await reset({ legacyModels: true })
+  assert.equal((await getJimengVideoModels()).length, 3)
+  assert.deepEqual((await commands()).map(entry => entry.cmd), ['model ls', 'schema model ls', 'model list'])
+  await reset({ modelError: 2 })
+  await assert.rejects(getJimengVideoModels(), error => error instanceof JimengCliError && error.code === 2)
+  assert.deepEqual((await commands()).map(entry => entry.cmd), ['model ls', 'schema model ls'])
+  await reset({ modelError: 3 })
+  await assert.rejects(getJimengVideoModels(), error => error instanceof JimengCliError && error.reason === 'auth_required')
+  assert.deepEqual((await commands()).map(entry => entry.cmd), ['model ls'])
+  await reset()
   const draft = {
     projectId: randomUUID(), model: 'jimeng-seedance-2.5', prompt: '--literal',
     mode: 't2v', aspectRatio: '16:9', duration: 4, resolution: '720p',
   } as const
   const runInput = await createJimengVideoDraft(draft, account.accountId!)
-  assert.deepEqual((await commands()).slice(-3).map(entry => entry.cmd), ['model list', 'node create', 'node show'])
+  assert.deepEqual((await commands()).slice(-3).map(entry => entry.cmd), ['model ls', 'node create', 'node show'])
   assert.ok((await commands()).find(entry => entry.cmd === 'node create').args.includes('--prompt=--literal'))
 
   const references = [
@@ -131,6 +152,23 @@ switch (cmd) {
 
   const result = await inspectJimengVideo(runInput.projectId, runInput.submitId)
   assert.deepEqual(result, { state: 'completed', resourceId: 'resource_1', duration: 4 })
+  await reset({ operation: { state: 'failed', resources: [
+    { state: 'succeeded', message: '不应展示已成功资源' },
+    { state: 'failed', serviceCode: 20115, message: 'Generated video copyright verification failed.' },
+  ] } })
+  const copyright = await inspectJimengVideo(runInput.projectId, runInput.submitId)
+  assert.equal(copyright.state, 'failed')
+  assert.match(copyright.message!, /生成视频版权校验未通过/)
+  assert.match(copyright.message!, /20115/)
+  assert.doesNotMatch(copyright.message!, /不应展示已成功资源/)
+  await reset({ operation: { state: 'failed', resources: [{ state: 'failed', serviceCode: 22001, message: '音频审核失败 token=private-token' }] } })
+  const other = await inspectJimengVideo(runInput.projectId, runInput.submitId)
+  assert.match(other.message!, /音频审核失败/)
+  assert.match(other.message!, /22001/)
+  assert.doesNotMatch(other.message!, /private-token/)
+  await reset({ operation: { state: 'failed', resources: [] } })
+  const noDetail = await inspectJimengVideo(runInput.projectId, runInput.submitId)
+  assert.equal(noDetail.message, '即梦视频生成失败（平台未提供具体原因）')
   const destination = path.join(folder, 'result.mp4')
   await downloadJimengVideo(runInput.projectId, 'resource_1', destination)
   assert.equal((await fs.stat(destination)).size, 12)

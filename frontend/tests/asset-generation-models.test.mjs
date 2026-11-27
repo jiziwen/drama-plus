@@ -14,6 +14,11 @@ test('mode filters unsupported workflows and providers before submission', () =>
   assert.equal(assetModelOptions(configs, 'text').some(o => o.model === 'wf-qwen-image'), false)
   assert.deepEqual(assetModelOptions(configs, 'text', true).map(o => o.key), ['1/wf-image', '2/gpt-image-2', '3/gpt-image-2'])
 })
+test('eligible image menus put the exact global model before another config or a service’s first model', () => {
+  const mixed = configs.map(config => config.id === 2 ? { ...config, global_default_model: 'dall-e-3' } : config)
+  assert.equal(assetModelOptions(mixed)[0].key, '2/dall-e-3')
+  assert.equal(assetModelOptions(mixed, 'reference')[0].key, '1/wf-image')
+})
 test('Midjourney fusion appears only in reference mode for both new and existing services', () => {
   const models = ['mj_imagine', 'mj_blend']
   const midjourney = [

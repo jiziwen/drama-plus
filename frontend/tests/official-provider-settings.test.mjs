@@ -17,6 +17,39 @@ function providerPresetBlock(serviceType) {
   return settingsPage.slice(start, end)
 }
 
+test('each global model chooser sends the exact service and model without reordering or changing priority', async () => {
+  const source = settingsPage.slice(settingsPage.indexOf('function defaultModelOf('), settingsPage.indexOf('async function toggleCfg('))
+  const current = { id: 1, service_type: 'text', provider: '302ai', model: ['current-model'], is_active: true, priority: 3, global_default_eligible: true, global_default_model: 'current-model' }
+  const target = { id: 2, service_type: 'text', provider: 'openai', model: ['other-model', 'selected/model', 'selected/model', '', ' model-with-space '], is_active: true, priority: 0, global_default_eligible: true, global_default_model: null }
+  const image = { id: 3, service_type: 'image', provider: 'openai', model: ['image-a', 'image-b'], is_active: true, global_default_eligible: true, global_default_model: 'image-a' }
+  const video = { id: 4, service_type: 'video', provider: 'volcengine', model: ['video-a'], is_active: true, global_default_eligible: true, global_default_model: 'video-a' }
+  const excluded = { id: 5, service_type: 'video', provider: 'jimeng', model: ['jimeng'], is_active: true, global_default_eligible: false }
+  const calls = []
+  const context = {
+    cfgs: { value: [current, target, image, video, excluded] }, ref: value => ({ value }), loadCfgs: async () => {}, modelLabel: x => x,
+    serviceMeta: { value: { text: { label: '文本' }, image: { label: '图片' }, video: { label: '视频' } } }, t: key => key,
+    toast: { success() {} }, toastError(error) { throw error },
+    aiConfigAPI: { async setDefault(type, payload) { calls.push([type, payload]); for (const c of context.cfgs.value) if (c.service_type === type) c.global_default_model = c.id === payload.configId ? payload.model : null } },
+  }
+  runInNewContext(`${source}\nObject.assign(this, { defaultModelOf, globalDefaultOptions, defaultModelKey, setDefaultModel })`, context)
+  assert.equal(context.defaultModelKey('text'), '1/current-model')
+  assert.deepEqual(Array.from(context.globalDefaultOptions('text'), o => o.value), ['1/current-model', '2/other-model', '2/selected/model', '2/ model-with-space '])
+  assert.deepEqual(Array.from(context.globalDefaultOptions('video'), o => o.value), ['4/video-a'])
+  await context.setDefaultModel('text', '2/selected/model')
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [['text', {configId: 2, model: 'selected/model'}]])
+  assert.equal(context.defaultModelKey('text'), '2/selected/model')
+  assert.equal(context.defaultModelKey('image'), '3/image-a')
+  assert.equal(context.defaultModelKey('video'), '4/video-a')
+  assert.deepEqual(target.model, ['other-model', 'selected/model', 'selected/model', '', ' model-with-space '])
+  assert.equal(target.priority, 0)
+  await context.setDefaultModel('image', '3/image-b')
+  assert.equal(context.defaultModelKey('image'), '3/image-b')
+  assert.equal(context.defaultModelKey('text'), '2/selected/model')
+  assert.match(settingsPage, /global-default-picker/)
+  assert.doesNotMatch(settingsPage, /pinModelTop|cfgForm\.priority\s*[,}]/)
+  assert.match(useApi, /\/ai-configs\/default\/\$\{serviceType\}/)
+})
+
 test('settings page retains the supported provider templates', () => {
   assert.doesNotMatch(settingsPage, /provider:\s*'chatfire'/i)
   assert.doesNotMatch(settingsPage, /openrouter/i)
@@ -92,7 +125,6 @@ test('AICost is offered only for video and its preset starts without models', ()
   const providers = settingsPage.slice(settingsPage.indexOf('const providers ='), settingsPage.indexOf('const serviceMeta ='))
   const presets = settingsPage.slice(settingsPage.indexOf('const providerPresets ='), settingsPage.indexOf('function byType(t)'))
   const applyPreset = settingsPage.slice(settingsPage.indexOf('function applyProviderPreset('), settingsPage.indexOf('async function loadCfgs('))
-  const defaultModel = settingsPage.slice(settingsPage.indexOf('function defaultModelOf('), settingsPage.indexOf('function isDefaultModel('))
   const cfgForm = { models: ['previous-video-model'], service_type: 'video' }
   const cfgs = { value: [
     { id: 1, service_type: 'video', provider: 'aicost', model: [], is_active: true, priority: 5 },
@@ -100,15 +132,12 @@ test('AICost is offered only for video and its preset starts without models', ()
   ] }
   const libtvVideoModels = ['star-video2.5-flash', 'star-video2.5-draft', 'star-video2.5']
   const context = { cfgForm, cfgs, computed: fn => fn, cfgTestResult: { value: null }, comfyConfigError: { value: '' }, libtvVideoModels }
-  runInNewContext(`${providers}\n${presets}\n${applyPreset}\n${defaultModel}\nObject.assign(this, { providerSelectOptions, providerPresets, applyProviderPreset, defaultModelOf })`, context)
+  runInNewContext(`${providers}\n${presets}\n${applyPreset}\nObject.assign(this, { providerSelectOptions, providerPresets, applyProviderPreset })`, context)
   assert.equal(context.providerSelectOptions().find(option => option.value === 'aicost')?.label, 'AICost')
   context.applyProviderPreset('video', 'aicost')
   assert.equal(cfgForm.provider, 'aicost')
   assert.equal(cfgForm.base_url, 'https://www.aicost.me')
   assert.equal(cfgForm.models.length, 0)
-  assert.equal(context.defaultModelOf('video').configId, 2)
-  cfgs.value[0].model.push('user-entered-model')
-  assert.equal(context.defaultModelOf('video').model, 'user-entered-model')
   context.applyProviderPreset('video', 'libtv')
   assert.equal(cfgForm.base_url, '')
   assert.deepEqual(Array.from(cfgForm.models), libtvVideoModels)

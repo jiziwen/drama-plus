@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray } from 'drizzle-orm'
 import { z } from 'zod'
 import { db, schema } from '../db/index.js'
-import { isOfficialProvider } from './ai.js'
+import { getGlobalDefaultModel, isOfficialProvider } from './ai.js'
 import { parseComfySettings } from './comfyui.js'
 import { assertImageMode } from './media-selection.js'
 
@@ -22,7 +22,7 @@ export function projectModelOptions(filters: { configId?: number; imageMode?: 't
     filters.configId === undefined ? undefined : eq(configs.id, filters.configId)))
     .orderBy(desc(configs.priority), configs.id).all()
 
-  return rows.flatMap(row => {
+  const options = rows.flatMap(row => {
     const kind = row.serviceType as ProjectModelKind
     const provider = row.provider || ''
     if (!isOfficialProvider(kind, provider)) return []
@@ -39,4 +39,8 @@ export function projectModelOptions(filters: { configId?: number; imageMode?: 't
       return [{ kind, configId: row.id, model, configName: row.name }]
     })
   })
+  const defaults = { text: getGlobalDefaultModel('text'), image: getGlobalDefaultModel('image') }
+  const isDefault = (option: ProjectModelOption) => defaults[option.kind]?.configId === option.configId && defaults[option.kind]?.model === option.model
+  // If a default is not eligible for a filtered view, preserve the view's existing order.
+  return options.sort((a, b) => Number(isDefault(b)) - Number(isDefault(a)))
 }

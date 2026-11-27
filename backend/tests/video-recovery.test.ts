@@ -15,13 +15,14 @@ process.env.MYSQL_AUTO_IMPORT = 'false'
 process.env.FFMPEG_BIN = '/usr/bin/false'
 process.env.FFPROBE_BIN = '/usr/bin/false'
 const { db, schema } = await import('../src/db/index.ts')
-const { generateVideo, recoverVideoTask, resumeInterruptedTasks } = await import('../src/services/generation.ts')
+const { generateVideo, isGenerationTaskActive, recoverVideoTask, resumeInterruptedTasks, resumeRecoverableVideoTask } = await import('../src/services/generation.ts')
 const tasksRoute = (await import('../src/routes/tasks.ts')).default
-let submissionCount = 0, downloads = 0, recoveryCalls = 0, available = false, brokenResponse = false
+let submissionCount = 0, downloads = 0, recoveryCalls = 0, statusChecks = 0, available = false, brokenResponse = false
+let lastStatusPath: string | undefined
 const video = Buffer.concat([Buffer.from([0,0,0,24]), Buffer.from('ftypisom'), Buffer.alloc(32)])
 const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url?.endsWith('/recover')) { recoveryCalls++; res.end('{}'); return }
-  if (req.url?.startsWith('/v2/query/')) { res.end(JSON.stringify({ task: { id:'upstream-1', status:'succeeded', duration:12, content:{url:base+'/content'} } })); return }
+  if (req.url?.startsWith('/v2/query/')) { statusChecks++; lastStatusPath = req.url; res.end(JSON.stringify({ task: { id:'upstream-1', status:'succeeded', duration:12, content:{url:base+'/content'} } })); return }
   if (req.url === '/expired') { res.writeHead(403).end(); return }
   if (req.method === 'POST' && brokenResponse) { submissionCount++; res.setHeader('X-Firemux-Task-Id','gateway-known'); res.end('{invalid'); return }
   if (req.method === 'POST') { submissionCount++; res.setHeader('Content-Type','application/json'); res.end(JSON.stringify({ task: { id:'upstream-1', status:'succeeded', duration:12, content:{url:base+'/content'} } })); return }
@@ -68,9 +69,16 @@ test('restart resumes persisted results, leaves unknown submissions for manual r
   const latest=db.insert(schema.sysTask).values({type:'video',storyboardId:sb.id,status:'completed',createdAt:ts,updatedAt:ts}).returning().get()
   db.update(schema.storyboards).set({videoUrl:'static/videos/newer.mp4'}).where(eq(schema.storyboards.id,sb.id)).run()
   const unknown=db.insert(schema.sysTask).values({type:'video',status:'processing',createdAt:ts,updatedAt:ts}).returning().get()
+  const preparing = db.insert(schema.sysTask).values({
+    type: 'video', provider: 'minimax', configId: config.id, configBaseUrl: base,
+    taskId: 'prepared-id', stage: 'preparing', status: 'processing', createdAt: ts, updatedAt: ts,
+  }).returning().get()
+  const previousQueries = statusChecks
   await resumeInterruptedTasks()
   await waitFor(older.id,'completed')
   assert.equal(row(unknown.id).errorCode,'submission_unknown')
+  assert.equal(row(preparing.id).errorCode, 'submission_unknown')
+  assert.equal(statusChecks, previousQueries)
   assert.equal(row(latest.id).status,'completed')
   assert.equal(db.select().from(schema.storyboards).where(eq(schema.storyboards.id,sb.id)).get()!.videoUrl,'static/videos/newer.mp4')
   assert.equal(submissionCount,1)
@@ -96,11 +104,90 @@ test('Firemux delivery recovery calls only its recovery endpoint and task query'
 
 test('response header preserves recovery ID when response JSON is interrupted; changed configuration is rejected',async()=>{
   brokenResponse=true
+  available = true
   const id=await generateVideo({prompt:'test',configId:config.id})
-  await waitFor(id,'failed');assert.equal(row(id).taskId,'gateway-known')
+  const failed = await waitFor(id, 'failed')
+  assert.equal(failed.taskId, 'gateway-known')
+  assert.equal(failed.errorCode, 'submission_unknown')
   db.update(schema.aiServiceConfigs).set({baseUrl:'https://different.example'}).where(eq(schema.aiServiceConfigs.id,config.id)).run()
   await assert.rejects(recoverVideoTask(id),/原视频服务配置/)
   db.update(schema.aiServiceConfigs).set({baseUrl:base}).where(eq(schema.aiServiceConfigs.id,config.id)).run()
+  const before = submissionCount
+  db.update(schema.sysTask).set({ updatedAt: new Date(Date.now() - 3 * 60_000).toISOString() }).where(eq(schema.sysTask.id, id)).run()
+  await resumeRecoverableVideoTask(failed)
+  assert.equal((await waitFor(id, 'completed')).taskId, 'gateway-known')
+  assert.equal(lastStatusPath, '/v2/query/video_generation/gateway-known')
+  assert.equal(submissionCount, before)
+})
+
+test('automatic recovery resumes overnight polling of the original video once and leaves confirmed failures alone', async () => {
+  available = true
+  const yesterday = new Date(Date.now() - 12 * 60 * 60_000).toISOString()
+  const prior = {
+    type: 'video', provider: 'minimax', configId: config.id, configBaseUrl: base,
+    taskId: 'upstream-1', stage: 'polling', status: 'failed', createdAt: yesterday, updatedAt: yesterday,
+  }
+  const [timedOut, upstreamFailed, missingTask] = db.insert(schema.sysTask).values([
+    { ...prior, errorMsg: 'Timeout: polling attempts exhausted' },
+    { ...prior, errorCode: 'generation_failed', errorMsg: 'Provider confirmed failure' },
+    { ...prior, taskId: null, errorCode: 'submission_unknown' },
+  ]).returning().all()
+  const previousQueries = statusChecks, previousSubmissions = submissionCount
+  await Promise.all([resumeRecoverableVideoTask(timedOut), resumeRecoverableVideoTask(timedOut)])
+  const completed = await waitFor(timedOut.id, 'completed')
+  assert.equal(completed.taskId, 'upstream-1')
+  assert.equal(completed.localPath, `static/videos/task-${timedOut.id}.mp4`)
+  assert.equal((await resumeRecoverableVideoTask(upstreamFailed)).status, 'failed')
+  assert.equal((await resumeRecoverableVideoTask(missingTask)).status, 'failed')
+  assert.equal(statusChecks - previousQueries, 1)
+  assert.equal(submissionCount, previousSubmissions)
+})
+
+test('status reads back off after the original provider configuration is unavailable', async () => {
+  available = true
+  const old = new Date(Date.now() - 3 * 60_000).toISOString()
+  const task = db.insert(schema.sysTask).values({
+    type: 'video', provider: 'minimax', configId: config.id, configBaseUrl: base,
+    taskId: 'upstream-1', stage: 'polling', status: 'failed', errorCode: 'poll_timeout',
+    createdAt: old, updatedAt: old,
+  }).returning().get()
+  const previousQueries = statusChecks, previousSubmissions = submissionCount
+
+  db.update(schema.aiServiceConfigs).set({ isActive: false }).where(eq(schema.aiServiceConfigs.id, config.id)).run()
+  try {
+    const deferred = await resumeRecoverableVideoTask(task)
+    assert.equal(deferred.status, 'failed')
+    assert.equal(deferred.errorCode, 'recovery_failed')
+    assert.notEqual(deferred.updatedAt, old)
+  } finally {
+    db.update(schema.aiServiceConfigs).set({ isActive: true }).where(eq(schema.aiServiceConfigs.id, config.id)).run()
+  }
+
+  assert.equal((await resumeRecoverableVideoTask(task)).status, 'failed')
+  assert.equal(statusChecks, previousQueries)
+  db.update(schema.sysTask).set({ updatedAt: old }).where(eq(schema.sysTask.id, task.id)).run()
+  await resumeRecoverableVideoTask(task)
+  await waitFor(task.id, 'completed')
+  assert.equal(statusChecks - previousQueries, 1)
+  assert.equal(submissionCount, previousSubmissions)
+})
+
+test('automatic recovery keeps tasks canceled or completed while retrieving the original provider configuration', async () => {
+  const old = new Date(Date.now() - 3 * 60_000).toISOString()
+  const previousQueries = statusChecks
+  for (const status of ['canceled', 'completed']) {
+    const task = db.insert(schema.sysTask).values({
+      type: 'video', provider: 'minimax', configId: config.id, configBaseUrl: base,
+      taskId: 'upstream-1', stage: 'polling', status: 'failed', errorCode: 'poll_timeout',
+      createdAt: old, updatedAt: old,
+    }).returning().get()
+    const recovering = resumeRecoverableVideoTask(task)
+    assert.equal(isGenerationTaskActive(task.id), true)
+    db.update(schema.sysTask).set({ status, errorCode: null }).where(eq(schema.sysTask.id, task.id)).run()
+    assert.equal((await recovering).status, status)
+    assert.equal(isGenerationTaskActive(task.id), false)
+  }
+  assert.equal(statusChecks, previousQueries)
 })
 
 test.after(async()=>{

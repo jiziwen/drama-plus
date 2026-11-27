@@ -4,12 +4,13 @@ import { Hono } from 'hono'
 import { and, desc, eq } from 'drizzle-orm'
 import { db, schema } from '../db/index.js'
 import { success, created, badRequest } from '../utils/response.js'
-import { generateImage, generateVideo, recoverImageTask, recoverVideoTask } from '../services/generation.js'
+import { generateImage, generateVideo, recoverImageTask, recoverVideoTask, resumeRecoverableVideoTask } from '../services/generation.js'
 import { safeTaskError } from '../services/video-download.js'
 import { resolveMediaConfig } from '../services/media-selection.js'
 import { videoPosterResponse } from '../services/video-poster-response.js'
 import { getDramaStylePrompt } from '../services/style-preset.js'
 import { logTaskError, logTaskPayload, logTaskStart, logTaskSuccess } from '../utils/task-logger.js'
+import { resumeLatestStoryboardVideoTasks } from './latest-storyboard-video-tasks.js'
 
 const app = new Hono()
 
@@ -277,7 +278,7 @@ app.get('/:id', async (c) => {
   const id = Number(c.req.param('id'))
   const [row] = await db.select().from(schema.sysTask)
     .where(eq(schema.sysTask.id, id))
-  return success(c, row || null)
+  return success(c, row?.type === 'video' ? await resumeRecoverableVideoTask(row) : row || null)
 })
 
 // GET /tasks — history scoped to a project, shot or asset
@@ -298,7 +299,7 @@ app.get('/', async (c) => {
   if (sceneId) rows = rows.filter(r => r.sceneId === Number(sceneId))
   if (propId) rows = rows.filter(r => r.propId === Number(propId))
 
-  return success(c, rows)
+  return success(c, storyboardId ? await resumeLatestStoryboardVideoTasks(rows) : rows)
 })
 
 // DELETE /tasks/:id

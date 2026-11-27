@@ -883,6 +883,10 @@ const referenceHistory = ref([])
 const referenceUploading = ref(false)
 const editDescription = ref('')
 const imageConfigs = ref([])
+const { revision: settingsRevision } = useSettingsPanel()
+watch(settingsRevision, async () => {
+  try { imageConfigs.value = await aiConfigAPI.list('image') || [] } catch (error) { toastError(error) }
+})
 const modelLabel = useModelLabel()
 const editModelOptions = computed(() => assetModelOptions(imageConfigs.value, editMode.value, textReferenceDraft.value.length > 0))
 const editModelKey = computed(() => assetModelKey(editTarget.value, editMode.value, editModelOptions.value))

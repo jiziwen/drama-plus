@@ -7,6 +7,54 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 
+test('LibTV Mini availability uses the configured account and verifies its live voice video schema', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'libtv-mini-schema-'))
+  const previous = { VIDEO_CLI_ACCOUNTS_DIR: process.env.VIDEO_CLI_ACCOUNTS_DIR, LIBTV_CLI_BIN: process.env.LIBTV_CLI_BIN }
+  Object.assign(process.env, { VIDEO_CLI_ACCOUNTS_DIR: directory, LIBTV_CLI_BIN: process.execPath })
+  t.after(async () => {
+    t.mock.restoreAll(); syncBuiltinESMExports()
+    for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value }
+    await rm(directory, { recursive: true, force: true })
+  })
+  const accounts = await import('../src/services/video-cli-accounts.js')
+  const profile = accounts.createVideoCliAccount('libtv', '测试账号')
+  const expectedDirectory = accounts.videoCliAccountDirectory('libtv', profile.id)
+  let result: any = { modelKey: 'star-video2-mini', modality: 'video', schema: {
+    modelKey: 'star-video2-mini', properties: {
+      resolution: { enum: [{ value: '480p' }, { value: '720p' }] },
+      duration: { min: 4, max: 15, step: 1 }, enableSound: { enum: [{ value: 'on' }, { value: 'off' }] },
+    }, config: { generateTypes: { text: 47 } }, rules: [{ forModeTypes: ['text2video'], require: ['prompt'] }],
+  } }
+  t.mock.method(childProcess, 'execFile', (_binary: string, args: string[], options: { env: NodeJS.ProcessEnv }, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+    assert.deepEqual(args, ['model', 'star-video2-mini'])
+    assert.equal(options.env.LIBTV_CONFIG_DIR, expectedDirectory)
+    queueMicrotask(() => callback(null, JSON.stringify(result), ''))
+    return Object.assign(new EventEmitter(), { stdin: { end() {} } })
+  })
+  syncBuiltinESMExports()
+  const { libtvHasSeedance20Mini, withLibTVAccount, validateLibTVVideo } = await import('../src/services/libtv-cli.js')
+  const check = () => withLibTVAccount(profile.id, () => libtvHasSeedance20Mini(5, '480p'))
+  assert.equal(await check(), true)
+  result.schema.properties.duration.step = 2
+  assert.equal(await check(), false)
+  result.schema.properties.duration.step = 1
+  const input = { model: 'star-video2-mini', prompt: '说一句话', duration: 5, resolution: '480p' }
+  assert.equal(validateLibTVVideo(input).mode, 'text2video')
+  assert.throws(() => validateLibTVVideo({ ...input, duration: 16 }), /4–15/)
+  assert.throws(() => validateLibTVVideo({ ...input, referenceAudioUrls: ['/static/uploads/a.wav'] }), /同时提供图片或视频/)
+  result.schema.properties.enableSound.enum = [{ value: 'off' }]
+  assert.equal(await check(), false)
+  result.schema.properties.enableSound.enum = [{ value: 'on' }]
+  result.schema.properties.resolution.enum = [{ value: '720p' }]
+  assert.equal(await check(), false)
+  result.schema.properties.resolution.enum = [{ value: '480p' }]
+  result.schema.rules = []
+  assert.equal(await check(), false)
+  result.schema.rules = [{ forModeTypes: ['text2video'], require: ['prompt'] }]
+  result.modelKey = 'star-video2.5'
+  assert.equal(await check(), false)
+})
+
 test('LibTV 生成等待尊重有限期限，官方嵌套成片地址能够直接完成', async t => {
   const directory = await mkdtemp(path.join(tmpdir(), 'drama-libtv-cli-result-'))
   const previous = { VIDEO_CLI_ACCOUNTS_DIR: process.env.VIDEO_CLI_ACCOUNTS_DIR, LIBTV_CLI_BIN: process.env.LIBTV_CLI_BIN }

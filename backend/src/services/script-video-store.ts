@@ -14,7 +14,7 @@ import { annotateScriptVideoAssets, scriptVideoAudioReferences, scriptVideoMater
 import { annotateScriptVideoInnerOs } from './script-video-inner-os.js'
 import { hasScriptVideoShotHeadings } from './script-video-asset-scope.js'
 import { replaceScriptVideoPromptStyle } from './script-video-format.js'
-import { getScriptVideoOutlineDurationIssues, scriptVideoAssetImageStatuses } from './script-video-types.js'
+import { getScriptVideoOutlineDurationIssues, scriptVideoAssetImageStatuses, scriptVideoVoiceDescriptionSchema, type ScriptVideoVoiceDescription } from './script-video-types.js'
 import { getScriptVideoVoiceInputs, scriptVideoVoiceSource, type ScriptVideoDeliveryAsset, type ScriptVideoDeliveryCard } from './script-video-delivery.js'
 import type { ScriptVideoStoryboardCheckpoint, ScriptVideoStoryboardProgress } from './script-video-ai.js'
 import type { LightingCheck } from './script-video-lighting.js'
@@ -169,6 +169,8 @@ function validateAsset(asset: any) {
   if (asset.voiceMode !== undefined && (asset.kind !== 'character' || !['model', 'reference'].includes(asset.voiceMode))) {
     throw new ScriptVideoStoreError('角色配音设置无效')
   }
+  if (asset.voiceDescription !== undefined && (asset.kind !== 'character' || !scriptVideoVoiceDescriptionSchema.safeParse(asset.voiceDescription).success))
+    throw new ScriptVideoStoreError('角色声音描述无效')
   if (asset.voiceAudio !== undefined || asset.kind === 'audio') {
     const voice = asset.voiceAudio
     if (!['character', 'audio'].includes(asset.kind) || !voice || typeof voice !== 'object' || Array.isArray(voice) || Object.keys(voice).some(key => !['url', 'name', 'mimeType', 'duration'].includes(key)) || typeof voice.url !== 'string' || !/^\/static\/uploads\/[a-z0-9_-]+\.(?:mp3|wav|m4a|aac)$/iu.test(voice.url) || typeof voice.name !== 'string' || !voice.name.trim() || voice.name.length > 255 || (voice.mimeType !== undefined && (typeof voice.mimeType !== 'string' || voice.mimeType.length > 100 || !/^audio\/[a-z0-9.+-]+$/iu.test(voice.mimeType))) || (voice.duration !== undefined && (typeof voice.duration !== 'number' || !Number.isFinite(voice.duration) || voice.duration <= 0 || voice.duration > 86400))) {
@@ -198,13 +200,15 @@ function validateAsset(asset: any) {
 
 const imageJobFields = ['imageStatus', 'imageError', 'imageTaskId', 'imageRequestId'] as const
 
-function preserveAssetImageJobs(input: any, previous: ScriptVideoProject) {
+function preserveServerAssetFields(input: any, previous: ScriptVideoProject) {
   if (!Array.isArray(input?.assets)) return input
   const priorAssets = new Map(previous.assets.map(asset => [asset.id, asset]))
   const assets = input.assets.map((asset: any) => {
     if (!asset || typeof asset !== 'object' || Array.isArray(asset)) return asset
     const prior = priorAssets.get(asset.id)
     const next = { ...asset }
+    delete next.voiceDescription
+    if (asset.kind === 'character' && prior?.voiceDescription) next.voiceDescription = prior.voiceDescription
     for (const field of imageJobFields) {
       delete next[field]
       if (prior && prior.image === asset.image && prior[field] !== undefined) next[field] = prior[field]
@@ -647,6 +651,10 @@ export function defaultScriptVideoStoreDirectory() {
     process.env.SQLITE_PATH || path.join(repoRoot, 'data/huobao.sqlite3')
   return path.join(path.dirname(path.resolve(dbPath)), 'script-video/projects')
 }
+let defaultStore: ScriptVideoStore | undefined
+export function getDefaultScriptVideoStore(): ScriptVideoStore {
+  return defaultStore ??= new ScriptVideoStore()
+}
 export class ScriptVideoStore {
   private locks = new Map<string, Promise<void>>()
   private builtinStyleVersions = new Map<string, { source: string; storage: number }>()
@@ -1079,7 +1087,7 @@ export class ScriptVideoStore {
         )
       if ((input as any)?.id !== id)
         throw new ScriptVideoStoreError('项目标识不匹配')
-      const project = sanitizeProject(preserveAssetImageJobs(input, record.project), record.project)
+      const project = sanitizeProject(preserveServerAssetFields(input, record.project), record.project)
       assertChangedReferenceSources(project, record.project, project.episodes.map(episode => episode.id))
       this.assertRemovalsAllowed(record.project, project.episodes)
       project.revision = record.project.revision + 1
@@ -1142,7 +1150,7 @@ export class ScriptVideoStore {
             else if (change.value && change.id && !nextOrder.includes(change.id)) nextOrder = [...nextOrder, change.id]
           }
           next.episodeId = ''
-          next = sanitizeProject(preserveAssetImageJobs(next, before), before, true)
+          next = sanitizeProject(preserveServerAssetFields(next, before), before, true)
           assertChangedReferenceSources(next, before, nextOrder, eid => this.catalog.episode(id, eid)?.episode)
           if (voiceModesOnly) {
             // A persisted toggle only affects speakers that actually use the
@@ -1205,6 +1213,21 @@ export class ScriptVideoStore {
       assets[index] = next
       record.project = sanitizeProject({ ...project, assets }, project)
       return { result: record.project, documentChanged: true }
+    })
+  }
+  async saveCharacterVoiceDescription(
+    projectId: string, assetId: string, description: ScriptVideoVoiceDescription, keepExisting = false,
+  ): Promise<ScriptVideoVoiceDescription> {
+    return this.mutateAssets(projectId, assets => {
+      const index = assets.findIndex(asset => asset.id === assetId && asset.kind === 'character')
+      const asset = assets[index]
+      if (!asset) throw new ScriptVideoStoreError('角色资产不存在', 404, 'NOT_FOUND')
+      const current: ScriptVideoVoiceDescription | undefined = asset.voiceDescription
+      if (current && (keepExisting || current.text === description.text)) return { result: current }
+      if (!description.text) return { result: description }
+      const next = assets.slice()
+      next[index] = { ...asset, voiceDescription: description }
+      return { assets: next, result: description }
     })
   }
   mutateAssets<T>(id: string, update: (assets: ScriptVideoProject['assets'], project: ScriptVideoProject) => {
@@ -1271,12 +1294,19 @@ export class ScriptVideoStore {
     if (!row) throw new ScriptVideoStoreError('任务不属于此项目', 404, 'NOT_FOUND')
     return JSON.parse(row.document)
   }
-  async listPendingVideoJobs(projectId: string, episodeId?: string) {
+  async listPendingVideoJobs(projectId: string, episodeId?: string, includeFailed = false) {
     await this.init
     assertId(projectId)
     if (episodeId && !this.catalog.db.prepare('SELECT 1 FROM episodes WHERE project_id=? AND id=?').get(projectId, episodeId))
       throw new ScriptVideoStoreError('分集不存在', 404, 'NOT_FOUND')
-    const sql = "SELECT document FROM jobs WHERE project_id=? AND action='video' AND task_id IS NOT NULL AND status IN ('queued','running')"
+    const failed = includeFailed ? `OR (jobs.status='failed'
+      AND json_extract(jobs.document,'$.code') IN ('VIDEO_FAILED','SUBMISSION_UNKNOWN','DELIVERY_FAILED')
+      AND json_extract(jobs.document,'$.cardId') IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM jobs newer
+        WHERE newer.project_id=jobs.project_id AND newer.episode_id=jobs.episode_id AND newer.action='video'
+          AND newer.rowid>jobs.rowid AND json_extract(newer.document,'$.cardId')=json_extract(jobs.document,'$.cardId')))` : ''
+    const sql = `SELECT document FROM jobs WHERE project_id=? AND action='video' AND task_id IS NOT NULL
+      AND (status IN ('queued','running') ${failed})`
     const rows = this.catalog.db.prepare<unknown[], { document: string }>(sql + (episodeId ? ' AND episode_id=?' : '') + ' ORDER BY rowid')
       .all(...(episodeId ? [projectId, episodeId] : [projectId]))
     return rows.map(row => JSON.parse(row.document) as ScriptVideoJob & { taskId: number })

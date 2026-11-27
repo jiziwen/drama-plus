@@ -14,7 +14,7 @@ import { createGoogleGenerativeAI } from '@ai-sdk/google'
 import { createOpenAI } from '@ai-sdk/openai'
 import { Agent as HttpAgent, EnvHttpProxyAgent } from 'undici'
 import { adaptAicostTextFetch, adaptOfficialOpenAIFetch, isAicostHaiku55, selectAgentOpenAIModel, withExplicitOpenAIStream } from './openai-model.js'
-import { getTextConfig, getTextProviderBaseUrl, getConfigById } from '../services/ai.js'
+import { configModels, getTextConfig, getTextProviderBaseUrl, getConfigById } from '../services/ai.js'
 import { resolveTextModelLimits } from '../services/script-video-output-limit.js'
 import { SCRIPT_VIDEO_TEXT_TIMEOUT_MS } from '../services/script-video-text-timeout.js'
 import { logTaskProgress } from '../utils/task-logger.js'
@@ -313,8 +313,17 @@ const fetchScriptVideoText: typeof fetch = (input, init) => {
 }
 
 async function getModel(fileModel: string | undefined, modelOverride?: string, textConfigId?: number, retryTls = false, standardParameters = false) {
-  // 请求可指定文本配置（含其 provider/baseUrl/apiKey），否则回退到当前启用配置
-  const textConfig = (textConfigId ? await getConfigById(textConfigId) : null) || await getTextConfig()
+  // An explicit account must never fall through to a different billing provider.
+  let textConfig
+  if (textConfigId !== undefined) {
+    if (!Number.isSafeInteger(textConfigId) || textConfigId < 1) throw new Error('文字模型配置无效')
+    const row = db.select().from(schema.aiServiceConfigs).where(eq(schema.aiServiceConfigs.id, textConfigId)).get()
+    textConfig = row?.serviceType === 'text' ? await getConfigById(textConfigId) : null
+    if (!textConfig || !row) throw new Error('所选文字模型配置不可用，请重新选择')
+    if (modelOverride && !configModels(row.model).includes(modelOverride)) throw new Error('所选文字模型不属于该配置')
+  } else {
+    textConfig = await getTextConfig()
+  }
   const modelName = modelOverride || fileModel || textConfig.model
   const providerName = textConfig.provider.toLowerCase()
   const resolvedBaseURL = getTextProviderBaseUrl(textConfig)

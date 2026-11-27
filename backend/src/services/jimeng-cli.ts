@@ -151,7 +151,16 @@ function invoke(args: readonly string[], timeout = 30_000, signal?: AbortSignal)
       if (!error && output.ok === true) return resolve(object(output.data))
       // Failed commands emit the official JSON envelope on stderr. Never return raw output or execFile errors.
       const failure = output.ok === false ? output : readEnvelope(stderr)
-      if (failure.ok === false) return reject(cliError({ ...object(failure.error), diagnostics: failure.diagnostics }))
+      if (failure.ok === false) {
+        const info = object(failure.error)
+        // A generic parameter error is not enough to retry: ask the CLI schema
+        // whether this exact read command is missing before using its old name.
+        if (args[0] === 'schema' && args[1] === 'model ls' && info.code === 2 &&
+            list(info.diagnostics).some(item => item.detail === 'The requested command path is not available in this CLI schema.')) {
+          return reject(new JimengCliError('当前即梦 CLI 不支持 model ls', 2, 'unsupported_cli_command'))
+        }
+        return reject(cliError({ ...info, diagnostics: failure.diagnostics }))
+      }
       if (error?.code === 'ENOENT' || error?.code === 'EACCES') {
         return reject(new JimengCliError('当前服务环境无法运行即梦官方画布 CLI，请检查安装及执行权限', undefined, 'unavailable'))
       }
@@ -306,7 +315,21 @@ function disconnectScopedJimengAccount(options: { removeIfUnauthenticated?: bool
 }
 
 export async function getJimengVideoModels(): Promise<JimengVideoModel[]> {
-  const data = await invoke(['model', 'list', '--type=video'])
+  let data: CliData | undefined
+  try {
+    data = await invoke(['model', 'ls', '--type=video'])
+  } catch (error) {
+    if (!(error instanceof JimengCliError) || error.code !== 2) throw error
+    try {
+      await invoke(['schema', 'model ls'])
+    } catch (schemaError) {
+      if (schemaError instanceof JimengCliError && schemaError.reason === 'unsupported_cli_command') {
+        data = await invoke(['model', 'list', '--type=video'])
+      } else throw schemaError
+    }
+    // If the schema supports the command, preserve its original error.
+    if (!data) throw error
+  }
   const catalog = list(data.items)
   return Object.entries(jimengVideoModelSpecs).flatMap(([id, { canonicalModel }]) => {
     const item = catalog.find(item => item.model === canonicalModel)
@@ -473,8 +496,10 @@ async function inspectScopedJimengVideo(projectId: string, submitId: string): Pr
   }
   const state = String(operation.state).toLowerCase()
   if (state === 'failed' || state === 'awaiting_confirmation' || state === 'rejected') {
-    const message = videoCliFailure('jimeng', operation.submissionError ?? operation.error ?? operation,
-      state === 'awaiting_confirmation' ? '即梦未受理生成，请检查积分授权后重试' : '即梦视频生成失败')
+    const failedResources = list(operation.resources).filter(item =>
+      ['failed', 'failure', 'rejected', 'error'].includes(String(item.state ?? item.status).toLowerCase()))
+    const message = videoCliFailure('jimeng', { ...operation, resources: failedResources },
+      state === 'awaiting_confirmation' ? '即梦未受理生成，请检查积分授权后重试' : '即梦视频生成失败（平台未提供具体原因）')
     return { state: 'failed', message }
   }
   if (!['succeeded', 'success', 'completed'].includes(state)) return { state: 'pending' }

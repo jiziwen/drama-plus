@@ -36,7 +36,7 @@ function setup(kind = 'character') {
     watch: (...args) => { const stop = watch(...args); stops.push(stop); return stop },
     assetDetail: ref({ open: false, type: '', item: null }),
     assetDetailDraft: ref({}), assetPromptDraft: ref(''), assetPromptDirty: ref(false), savingAssetDetail: ref(false),
-    assetGenerationMode: ref('text'), assetGenerationModels: ref({ text: '', reference: '' }),
+    assetGenerationMode: ref('text'), assetGenerationModels: ref({ text: '', reference: '' }), assetUsesBlend: ref(false),
     assetTextReferenceDraft: ref([]), assetReferenceDraft: ref([]), assetEditDraft: ref(''), assetReferenceHistory: ref([]),
     assetReferenceUploading: ref(false), assetDialogElement: ref(null),
     imageConfigs: ref(configs), imageModel: ref('openai/gpt-image-2'),
@@ -69,6 +69,7 @@ function setup(kind = 'character') {
     + section('function openAssetDetail(', 'function trapAssetDialogFocus(')
     + section('async function saveAssetDetail(', 'function assetImageSrc(')
     + section('function hasActiveAssetImage(', 'function getVideoUrl(')
+    + section('function latestVideoTask(', 'function videoAwaitingDelivery(')
     + section('async function loadGenTasks()', 'const genTaskDoneCount =')
     + section('let refreshingTasks = false', 'const productionBlockMessage =')
     + '\nglobalThis.activeCount = genTaskActiveCount;', ctx)
@@ -228,6 +229,46 @@ test('refresh updates the open modal result image without replacing unsaved text
   assert.equal(h.ctx.assetEditDraft.value, 'unsaved edit')
   assert.deepEqual(plain(h.ctx.assetReferenceDraft.value), ['static/unsaved-reference.png'])
   assert.deepEqual(h.errors, [])
+})
+
+test('refresh reads the reconciled video task before reading the storyboard result', async t => {
+  const h = setup()
+  t.after(h.cleanup)
+  let savedVideo = ''
+  h.ctx.taskAPI.listByEpisode = async () => {
+    savedVideo = 'static/videos/recovered.mp4'
+    return { tasks: [{ id: 42, type: 'video', status: 'completed', storyboard_id: 1, local_path: savedVideo }], merges: [] }
+  }
+  Object.assign(h.ctx, {
+    drama: ref(null), episode: ref(null), episodeNumber: 1,
+    selectedVideoSbIds: ref([]), selectedSb: ref(null), scriptStep: ref(0),
+    dramaAPI: { get: async () => ({ episodes: [{ id: 1, episode_number: 1 }] }) },
+    episodeAPI: {
+      characters: async () => [], scenes: async () => [], props: async () => [],
+      storyboards: async () => [{ id: 1, video_url: savedVideo }],
+    },
+    mergeData: ref(null), mergeAPI: { status: async () => null }, loadExportMerges: async () => {},
+  })
+  runInNewContext('let panelRestored = false;\n' + section('async function refresh()', 'function saveRaw()'), h.ctx)
+  await h.ctx.refresh()
+  assert.equal(h.ctx.selectedSb.value.video_url, 'static/videos/recovered.mp4')
+  assert.equal(h.ctx.activeCount.value, 0)
+})
+
+test('a recoverable video task keeps polling until the original returns a result', async t => {
+  const h = setup(); t.after(h.cleanup)
+  h.ctx.sbs.value = [{ id: 1 }]
+  const task = { id: 7, storyboard_id: 1, type: 'video', task_id: 'original' }
+  h.setTaskResults({ tasks: [{ ...task, status: 'failed', error_code: 'poll_timeout' }], merges: [] })
+  await h.ctx.loadGenTasks()
+  await nextTick()
+  const timer = h.timers.at(-1)
+  assert.ok(timer && !timer.cleared)
+
+  h.setTaskResults({ tasks: [{ ...task, status: 'completed' }], merges: [] })
+  await h.ctx.loadGenTasks()
+  await nextTick()
+  assert.equal(timer.cleared, true)
 })
 
 test('a task which fails before the first status read produces exactly one toast and releases submitted tracking', async t => {

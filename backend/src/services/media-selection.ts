@@ -7,7 +7,9 @@ type MediaType = 'image' | 'video'
 type Selection = { model?: string | null; configId?: number | null }
 
 /** Explicit choices never fall through to a different provider or billing account. */
-export async function resolveMediaConfig(type: MediaType, selection: Selection): Promise<AIConfig> {
+export async function resolveMediaConfig(type: MediaType, selection: Selection,
+  allowsRuntimeModel?: (provider: string, model: string) => boolean,
+): Promise<AIConfig> {
   if (selection.model != null && typeof selection.model !== 'string') throw new Error('模型必须为字符串')
   if (selection.configId != null && (!Number.isSafeInteger(selection.configId) || selection.configId <= 0)) throw new Error('模型配置 ID 无效')
   const config = selection.configId != null ? await getConfigById(selection.configId) : await getActiveConfig(type)
@@ -17,7 +19,8 @@ export async function resolveMediaConfig(type: MediaType, selection: Selection):
   let models: unknown
   try { models = JSON.parse(row.model || '[]') } catch { models = [] }
   const model = selection.model?.trim() || config.model
-  if (!Array.isArray(models) || !models.includes(model)) throw new Error('所选模型不在该服务配置中，请重新选择')
+  if (!(Array.isArray(models) && models.includes(model)) && !allowsRuntimeModel?.(config.provider, model))
+    throw new Error('所选模型不在该服务配置中，请重新选择')
   return { ...config, model }
 }
 

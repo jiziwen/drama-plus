@@ -23,7 +23,10 @@ function supportsAssetMode(config: any, model: string, mode: AssetGenerationMode
 }
 
 export function assetModelOptions(configs: any[], mode: AssetGenerationMode = 'text', withReferences = false): AssetModelOption[] {
-  return [...configs].filter(c => c.is_active ?? c.isActive).sort((a, b) => (b.priority || 0) - (a.priority || 0)).flatMap(config =>
+  const active = configs.filter(c => c.is_active ?? c.isActive).sort((a, b) => (b.priority || 0) - (a.priority || 0))
+  const defaultConfig = active.find(c => c.global_default_model)
+  const defaultKey = defaultConfig ? `${defaultConfig.id}/${defaultConfig.global_default_model}` : ''
+  const options = active.flatMap(config =>
     models(config).flatMap(model => {
       const midjourney = isMidjourneyModel(config, model)
       const blend = midjourney && model === 'mj_blend'
@@ -34,6 +37,7 @@ export function assetModelOptions(configs: any[], mode: AssetGenerationMode = 't
         provider: config.provider, configName: config.name || config.provider, ...(blend && { blend: true as const }),
       }]
     }))
+  return options.sort((a, b) => Number(b.key === defaultKey) - Number(a.key === defaultKey))
 }
 
 function fields(mode: AssetGenerationMode) { return mode === 'reference' ? ['reference_model', 'reference_config_id', 'referenceModel', 'referenceConfigId'] : ['image_model', 'image_config_id', 'imageModel', 'imageConfigId'] }

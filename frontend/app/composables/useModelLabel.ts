@@ -10,6 +10,7 @@ export function useModelLabel() {
     'jimeng-seedance-2.5-draft': 'settings.jimeng.seedance25Draft',
     'jimeng-seedance-2.5-flash': 'settings.jimeng.seedance25Flash',
     'jimeng-seedance-2.0': 'settings.jimeng.seedance20',
+    'jimeng-seedance-2.0-mini': 'settings.jimeng.seedance20Mini',
     'star-video2.5': 'settings.libtv.standard',
     'star-video2.5-draft': 'settings.libtv.draft',
     'star-video2.5-flash': 'settings.libtv.flash',

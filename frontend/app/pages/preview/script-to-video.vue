@@ -140,6 +140,7 @@
         v-model="textSelection"
         label="编排文字模型"
         :options="textOptions"
+        :default-label="textDefaultLabel"
         :show-config="true"
         :disabled="!canEditSharedProject"
       />
@@ -488,7 +489,7 @@
             <h2>生成设置</h2>
             <span class="vp-live-dot" />
           </div>
-          <ScriptVideoPreviewModelSelect v-model="videoModel" @change="setVideoModel" />
+          <ScriptVideoPreviewModelSelect :key="episodeKey" v-model="videoModel" @change="setVideoModel" @loading="videoModelLoading = $event" />
           <div class="vp-two-fields">
             <div class="vp-field">
               <span>画幅</span>
@@ -1125,13 +1126,25 @@
                     </div>
                     <ScriptVideoCharacterVoice
                       v-if="asset.kind === 'character'"
+                      :key="`${currentProject.id}/${currentEpisode.id}/${asset.id}`"
                       class="vp-asset-voice"
                       :asset="asset"
                       :disabled="!episodeOpen || voiceEdits.has(asset.id)"
                       :uploading="voiceEdits.get(asset.id)?.operation === 'upload'"
+                      :generating="voiceStarting(asset.id) || voiceJobs.get(asset.id)?.status === 'processing'"
+                      :generation-error="voiceGenerationError(asset.id)"
+                      :video-url="voiceJobs.get(asset.id)?.videoUrl"
+                      :generation-options="voiceGenerationOptions"
+                      :generation-message="voiceGenerationMessage"
+                      :generation-loading="voiceOptionsLoading"
+                      :description-suggestion="voiceDescriptionState(asset.id)?.result"
+                      :description-loading="voiceDescriptionState(asset.id)?.loading"
+                      :description-error="voiceDescriptionState(asset.id)?.error"
                       @upload="uploadCharacterVoice(asset.id, $event)"
                       @remove="removeCharacterVoice(asset.id)"
                       @model-voice="setCharacterModelVoice(asset.id, $event)"
+                      @open-description="loadCharacterVoiceDescription(asset.id)"
+                      @generate="generateCharacterVoice(asset.id, $event)"
                     />
                     <audio v-else-if="asset.kind === 'audio' && asset.voiceAudio?.url" class="vp-asset-voice"
                       :key="asset.voiceAudio.url" :src="asset.voiceAudio.url" :aria-label="`试听音频 ${asset.name}`" controls preload="none" />
@@ -1925,6 +1938,99 @@ const styleProjectId = ref('')
 const voiceEdits = ref(new Map<string, {
   projectId: string; operation: 'upload' | 'save'; completion: Promise<void>
 }>())
+type VoiceGenerationJob = { id: number; assetId: string; status: 'processing' | 'completed' | 'failed'; error?: string; videoUrl?: string }
+type VoiceGenerationOption = { key: string; label: string; configId: number; model: string; resolution: '480p' | '720p' }
+const voiceGenerationOptions = ref<VoiceGenerationOption[]>([])
+const voiceGenerationMessage = ref('')
+const voiceOptionsLoading = ref(false)
+const voiceJobs = ref(new Map<string, VoiceGenerationJob>())
+const voiceStarts = ref(new Set<string>())
+const voiceStartErrors = ref(new Map<string, { detail: string; previousJobId?: number }>())
+type VoiceDescriptionState = { loading: boolean; result?: { text: string; sourceLabel?: string }; error?: string }
+const voiceDescriptions = ref(new Map<string, VoiceDescriptionState>())
+const voiceDescriptionKey = (projectId: string, episodeId: string, assetId: string) => JSON.stringify([projectId, episodeId, assetId])
+const voiceDescriptionState = (assetId: string) => voiceDescriptions.value.get(voiceDescriptionKey(currentProject.value.id, currentEpisode.value.id, assetId))
+const voiceStarting = (assetId: string) => voiceStarts.value.has(`${currentProject.value.id}/${assetId}`)
+function voiceFailureDetail(message?: string) {
+  const detail = message?.trim()
+  return detail && detail !== '角色声音生成失败' ? detail : '服务未提供具体原因，请重试。'
+}
+function voiceGenerationError(assetId: string) {
+  const startError = voiceStartErrors.value.get(`${currentProject.value.id}/${assetId}`)
+  const job = voiceJobs.value.get(assetId)
+  if (startError && (!job || job.id <= (startError.previousJobId ?? 0))) return startError.detail
+  return job?.status === 'failed' ? voiceFailureDetail(job.error) : ''
+}
+function notifyVoiceGenerationFailure(name: string | undefined, detail: string) {
+  toast.error(name ? `${name}的角色声音生成失败` : '角色声音生成失败', { description: detail, duration: 5000 })
+}
+let wakeVoicePoll: (() => void) | undefined
+const { revision: voiceSettingsRevision } = useSettingsPanel()
+let voiceOptionsVersion = 0
+let voiceOptionsProject = ''
+async function loadVoiceGenerationOptions() {
+  const version = ++voiceOptionsVersion
+  const projectId = selectedProjectId.value
+  if (voiceOptionsProject !== projectId) { voiceOptionsProject = projectId; voiceGenerationOptions.value = [] }
+  voiceGenerationMessage.value = ''
+  if (!projectId || loadingProjects.value) { voiceOptionsLoading.value = false; return }
+  voiceOptionsLoading.value = true
+  try {
+    const result = await scriptVideoRequest<{ options: Omit<VoiceGenerationOption, 'key'>[]; message?: string }>(`/projects/${encodeURIComponent(projectId)}/assets/voice-generation-models`)
+    if (!alive || version !== voiceOptionsVersion || selectedProjectId.value !== projectId) return
+    voiceGenerationOptions.value = (Array.isArray(result.options) ? result.options : []).map(option => ({ ...option, key: `${option.configId}/${option.model}` }))
+    voiceGenerationMessage.value = result.message || ''
+  } catch (error) {
+    if (alive && version === voiceOptionsVersion) { voiceGenerationOptions.value = []; voiceGenerationMessage.value = error instanceof Error ? error.message : '无法读取可用的视频服务' }
+  } finally { if (alive && version === voiceOptionsVersion) voiceOptionsLoading.value = false }
+}
+watch([selectedProjectId, loadingProjects, voiceSettingsRevision], () => { void loadVoiceGenerationOptions() }, { immediate: true })
+watch([selectedProjectId, loadingProjects], ([projectId, loading], _, onCleanup) => {
+  voiceJobs.value = new Map()
+  if (!projectId || loading) return
+  const controller = new AbortController()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let polling = false
+  let pending = false
+  const synchronized = new Set<number>()
+  const poll = async () => {
+    if (controller.signal.aborted) return
+    if (polling) { pending = true; return }
+    pending = false
+    polling = true
+    let failedRequest = false
+    try {
+      const jobs = await scriptVideoRequest<VoiceGenerationJob[]>(`/projects/${encodeURIComponent(projectId)}/assets/voice-generations`, 'GET', undefined, controller.signal)
+      // A new submission may have arrived while this request was reading the older jobs.
+      if (controller.signal.aborted || !alive || selectedProjectId.value !== projectId || pending) return
+      const previous = voiceJobs.value
+      const next = new Map((Array.isArray(jobs) ? jobs : []).map(job => [job.assetId, job]))
+      voiceJobs.value = next
+      for (const job of next.values()) {
+        const prior = previous.get(job.assetId)
+        if (job.status === 'failed' && prior?.id === job.id && prior.status === 'processing') {
+          const name = currentProject.value.assets.find(asset => asset.id === job.assetId)?.name
+          notifyVoiceGenerationFailure(name, voiceFailureDetail(job.error))
+        }
+      }
+      const completed = [...next.values()].filter(job => job.status === 'completed' && !synchronized.has(job.id))
+      if (completed.length) {
+        await refreshProject(projectId, undefined, controller.signal)
+        for (const job of completed) synchronized.add(job.id)
+      }
+    } catch { failedRequest = true /* Retry a temporary connection error, including the initial restore. */ }
+    finally {
+      polling = false
+      if (!controller.signal.aborted && (pending || failedRequest || [...voiceJobs.value.values()].some(job => job.status === 'processing'))) {
+        timer = setTimeout(() => { void poll() }, pending ? 0 : 3000)
+      }
+    }
+  }
+  const wake = () => { if (timer) clearTimeout(timer); void poll() }
+  wakeVoicePoll = wake
+  void poll()
+  onCleanup(() => { controller.abort(); if (timer) clearTimeout(timer); if (wakeVoicePoll === wake) wakeVoicePoll = undefined })
+}, { immediate: true })
 function pendingAudioEdits(projectId: string) {
   const edits = [...voiceEdits.value.values()].filter(edit => edit.projectId === projectId)
   if (edits.length) return Promise.all(edits.map(edit => edit.completion))
@@ -2009,6 +2115,7 @@ const statusLabel = (status: string) =>
     draft: '待生成',
     queued: '排队中',
     generating: '生成中',
+    awaitingResult: '待同步成片',
     ready: '视频已生成',
     failed: '生成失败',
     canceled: '已取消',
@@ -2034,6 +2141,7 @@ const dialog = ref<
   >(null),
   editingAssetId = ref(''),
   configTab = ref('skills')
+watch(dialog, value => { if (value === 'assets') { wakeVoicePoll?.(); void loadVoiceGenerationOptions() } })
 const dialogTitle = computed(
   () =>
     ({
@@ -2098,12 +2206,15 @@ const agentPrompt = ref(defaultAgentPrompt),
   lockDialogue = ref(true),
   requireOutline = ref(true),
   keepContinuity = ref(true)
+const videoSelectionPending = ref(false)
 const videoModel = computed({
-  get: () => currentEpisode.value.modelKey,
+  get: () => currentEpisode.value.modelKey || '',
   set: (value: string) => {
+    if (currentEpisode.value.modelKey !== value) videoSelectionPending.value = true
     currentEpisode.value.modelKey = value
   },
 })
+const videoModelLoading = ref(true)
 const selectedSeedance = computed(() => {
   const episode = currentEpisode.value
   return episode.modelProvider === 'volcengine' ? seedanceModelLimits(episode.modelName || '') : null
@@ -2215,8 +2326,13 @@ const textOptions = ref<
     provider: string
     configId: number
     configName: string
+    isGlobalDefault: boolean
   }[]
 >([])
+const textDefaultLabel = computed(() => {
+  const option = textOptions.value.find(item => item.isGlobalDefault)
+  return option ? `全局默认 · ${option.model} · ${option.configName}` : '全局默认（未配置）'
+})
 const textSelection = computed({
   get: () => currentProject.value.settings?.textSelection || '',
   set: (value: string) => {
@@ -2436,9 +2552,8 @@ async function persistBeforeNavigation(id = currentProject.value.id) {
 }
 
 function textRequestOptions(project = currentProject.value) {
-  const selected = textOptions.value.find(
-    (item) => item.key === project.settings?.textSelection,
-  )
+  const key = project.settings?.textSelection || ''
+  const selected = key ? textOptions.value.find(item => item.key === key) : textOptions.value.find(item => item.isGlobalDefault)
   return {
     configId: selected?.configId,
     model: selected?.model,
@@ -2580,8 +2695,14 @@ onMounted(async () => {
     restoringView = false
     if (alive && episodeOpen.value) keepViewPosition()
   }
+  void loadTextModelOptions()
+})
+let textOptionsVersion = 0
+async function loadTextModelOptions() {
+  const version = ++textOptionsVersion
   try {
     const configs = await aiConfigAPI.list('text')
+    if (!alive || version !== textOptionsVersion) return
     textOptions.value = (Array.isArray(configs) ? configs : [])
       .filter((row: any) => row.is_active)
       .flatMap((row: any) => {
@@ -2597,12 +2718,15 @@ onMounted(async () => {
             provider: row.provider,
             configId: Number(row.id),
             configName: row.name || row.provider,
+            isGlobalDefault: row.global_default_model === model,
           }))
       })
+      .sort((a, b) => Number(b.isGlobalDefault) - Number(a.isGlobalDefault))
   } catch (error) {
-    toast.error('文字模型配置读取失败，请检查设置')
+    if (alive && version === textOptionsVersion) { textOptions.value = []; toast.error('文字模型配置读取失败，请检查设置') }
   }
-})
+}
+watch(voiceSettingsRevision, () => { void loadTextModelOptions() })
 function coverAsset(card: PreviewCard) {
   return (
     assets.value.find(
@@ -3180,12 +3304,13 @@ function setVideoModel(selection: {
   currentEpisode.value.modelWholeSeconds = selection.wholeSeconds
   currentEpisode.value.modelMaxAudioReferences = selection.maxAudioReferences
   currentEpisode.value.modelMaxAudioDuration = selection.maxAudioDuration
-  if (selection.key && (changedModel || !modelResolutions.value.includes(resolution.value))) {
+  if (selection.model && (changedModel || !modelResolutions.value.includes(resolution.value))) {
     resolution.value = modelResolutions.value.includes('480P') ? '480P' : modelResolutions.value[0] || '480P'
   }
-  if (selection.key && !modelAspectRatios.value.includes(aspectRatio.value)) {
+  if (selection.model && !modelAspectRatios.value.includes(aspectRatio.value)) {
     aspectRatio.value = modelAspectRatios.value.includes('16:9') ? '16:9' : modelAspectRatios.value[0] || '16:9'
   }
+  videoSelectionPending.value = false
 }
 function beginTextRun(projectId: string, episodeId: string, action: TextAction, cardId?: string, jobId?: string) {
   const key = `${projectId}/${episodeId}`
@@ -3456,8 +3581,9 @@ function segmentDisplayStatus(card: PreviewCard) {
   const pending = activeVideoRun.value?.cardStatuses.get(card.id)
   if (pending) return pending
   if (segmentPlayback.value.get(card.id)?.kind === 'previous') return 'previous'
-  const latest = latestTaskByCard.value.get(card.id)?.status
-  if ((latest === 'failed' || latest === 'canceled') && card.status !== 'ready') return latest
+  const latest = latestTaskByCard.value.get(card.id)
+  if (card.status !== 'ready' && isVideoDeliveryRecovery(latest)) return 'awaitingResult'
+  if ((latest?.status === 'failed' || latest?.status === 'canceled') && card.status !== 'ready') return latest.status
   return card.status
 }
 
@@ -3826,6 +3952,7 @@ function openVideoRetry(request: VideoGenerationRequest, jobs = retryJobs(reques
 }
 async function requestVideoGeneration(cardIds: string[]) {
   if (cardIds.some(id => activeCardIds.value.includes(id))) return
+  if (videoModelLoading.value || videoSelectionPending.value) { toast.info('正在读取视频模型，请稍后再试'); return }
   if (!navigator.onLine) { toast.info('联网后可生成视频'); return }
   const episode = currentEpisode.value
   const request: VideoGenerationRequest = {
@@ -3886,7 +4013,7 @@ async function runVideoRequests(request: VideoGenerationRequest, approvedJobs?: 
   })
   let episode = videoEpisode(projectId, episodeId)
   let project = projects.value.find(item => item.id === projectId)
-  if (!alive || !project || !episode || !episodeLock.owns(projectId, episodeId) ||
+  if (!alive || !project || !episode || !episodeLock.owns(projectId, episodeId) || videoModelLoading.value || videoSelectionPending.value ||
       activeVideoRequests.value.has(scope) || cancelingVideo.value.has(scope)) return
   const canContinue = () => alive && !run.controller.signal.aborted && !!videoEpisode(projectId, episodeId)
   if (rejectVideoRequestWithoutVoices(request)) return
@@ -4779,6 +4906,46 @@ function setCharacterModelVoice(assetId: string, enabled: boolean) {
 }
 function uploadCharacterVoice(assetId: string, file: File) {
   if (validReferenceAudio(file)) return saveCharacterVoiceAudio(assetId, () => uploadReferenceAudio(file), 'upload')
+}
+async function loadCharacterVoiceDescription(assetId: string) {
+  const project = currentProject.value, episodeId = currentEpisode.value.id
+  const key = voiceDescriptionKey(project.id, episodeId, assetId)
+  if (!episodeOpen.value || !requireSharedProjectEdit() || voiceDescriptions.value.get(key)?.loading ||
+      !project.assets.some(asset => asset.id === assetId && asset.kind === 'character')) return
+  const previous = voiceDescriptions.value.get(key)
+  voiceDescriptions.value.set(key, { loading: true, result: previous?.result })
+  try {
+    await saveProjectNow(project.id)
+    const result = await scriptVideoRequest<{ text: string; sourceLabel?: string }>(
+      `/projects/${encodeURIComponent(project.id)}/assets/${encodeURIComponent(assetId)}/voice-description`, 'POST', { episodeId })
+    if (alive) voiceDescriptions.value.set(key, { loading: false, result })
+  } catch (error) {
+    if (alive) voiceDescriptions.value.set(key, { loading: false, result: previous?.result, error: error instanceof Error ? error.message : '读取声音描述失败' })
+  }
+}
+async function generateCharacterVoice(assetId: string, input: { configId: number; model: string; description: string; dialogue: string }) {
+  const project = currentProject.value
+  const key = `${project.id}/${assetId}`
+  const asset = project.assets.find(asset => asset.id === assetId && asset.kind === 'character')
+  const previousJob = voiceJobs.value.get(assetId)
+  if (!episodeOpen.value || !requireSharedProjectEdit() || voiceStarts.value.has(key) || voiceEdits.value.has(assetId) ||
+      previousJob?.status === 'processing' || !asset ||
+      !voiceGenerationOptions.value.some(option => option.configId === input.configId && option.model === input.model)) return
+  voiceStarts.value.add(key)
+  voiceStartErrors.value.delete(key)
+  try {
+    await saveProjectNow(project.id)
+    const job = await scriptVideoRequest<VoiceGenerationJob>(`/projects/${encodeURIComponent(project.id)}/assets/${encodeURIComponent(assetId)}/voice-generation`, 'POST', input)
+    if (!alive) return
+    if (currentProject.value.id === project.id) voiceJobs.value.set(assetId, job)
+    if (job.status === 'failed') notifyVoiceGenerationFailure(asset.name, voiceFailureDetail(job.error))
+  } catch (error) {
+    if (alive) {
+      const detail = voiceFailureDetail(error instanceof Error ? error.message : undefined)
+      voiceStartErrors.value.set(key, { detail, previousJobId: previousJob?.id })
+      notifyVoiceGenerationFailure(asset.name, detail)
+    }
+  } finally { voiceStarts.value.delete(key); if (alive && currentProject.value.id === project.id) wakeVoicePoll?.() }
 }
 function removeCharacterVoice(assetId: string) {
   return saveCharacterVoiceAudio(assetId, () => null)
@@ -5696,6 +5863,7 @@ onBeforeUnmount(() => {
 }
 .vp-segment-copy i.generating,
 .vp-segment-copy i.queued,
+.vp-segment-copy i.awaitingResult,
 .vp-segment-copy i.previous {
   background: var(--warning);
 }

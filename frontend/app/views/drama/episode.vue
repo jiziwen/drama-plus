@@ -42,7 +42,7 @@
             v-model="videoModel"
             :label="t('common.serviceType.video')"
             :options="videoModelOptions"
-            :default-label="t('episode.model.defaultWith', { model: modelLabel(configModels(selectedVideoConfig)[0] || videoModelOptions[0].model) })"
+            :default-label="t('episode.model.defaultWith', { model: modelLabel(currentTopVideoModel || videoModelOptions[0].model) })"
             :show-config="videoModelMultiCfg"
           />
           <ModelSelect
@@ -1035,7 +1035,7 @@
               </div>
               <span :class="['video-task-status', 'is-' + genTaskStateClass(row.status)]">
                 <span :class="['dot', genTaskStateClass(row.status) === 'done' && 'ok', genTaskStateClass(row.status) === 'pending' && 'pending']" />
-                {{ genTaskStatusLabel(row.status) }}
+                {{ genTaskStatusLabel(row.status, row.kind === 'video' && row.recoverable) }}
               </span>
             </div>
           </div>
@@ -1613,7 +1613,7 @@ const prodTabIdx = computed({
 const imageConfigs = ref([])
 const videoConfigs = ref([])
 const textConfigs = ref([])
-// 生成时可选模型：空串 = 跟随配置默认（models[0]）；选择持久化到 localStorage，刷新页面后保留
+// 空串跟随全局默认；显式选择保存在 localStorage。
 const MODEL_STORE_KEYS = { chat: 'huobao:model:chat', image: 'huobao:model:image', video: 'huobao:model:video' }
 function readStoredModel(key, legacyKey = '') {
   try { return localStorage.getItem(key) || (legacyKey && localStorage.getItem(legacyKey)) || '' } catch { return '' }
@@ -2075,8 +2075,10 @@ function latestVideoTask(id) {
 }
 const recoverableVideoCount = computed(() => sbs.value.filter(sb => canRecoverVideo(sb.id)).length)
 function canRecoverVideo(id) {
-  const task = latestVideoTask(id)
-  return !!task && task.status === 'failed' && task.error_code !== 'generation_failed'
+  return canRecoverVideoTask(latestVideoTask(id))
+}
+function canRecoverVideoTask(task) {
+  return task?.status === 'failed' && !['generation_failed', 'submission_not_sent', 'submission_rejected'].includes(task.error_code)
     && !!(task.task_id || task.result_url)
 }
 function videoAwaitingDelivery(sb) {
@@ -2135,6 +2137,7 @@ function videoTaskStatusLabel(sb) {
       : stage === 'transferring' ? t('episode.recovery.transferring') : t('episode.status.generating')
   }
   if (state === 'failed' && latestVideoTask(sb?.id)?.result_url) return t('episode.recovery.localDownloadFailed')
+  if (state === 'failed' && canRecoverVideo(sb?.id)) return t('episode.recovery.resultPending')
   if (state === 'failed') return t('episode.status.failed')
   return t('episode.status.todo')
 }
@@ -2260,18 +2263,24 @@ function configModels(cfg) {
   if (Array.isArray(raw)) return raw.filter(Boolean)
   try { const m = JSON.parse(raw); return Array.isArray(m) ? m.filter(Boolean) : [m].filter(Boolean) } catch { return [raw].filter(Boolean) }
 }
-// 汇总该类型全部启用配置的模型（按 厂商+模型 去重，按优先级排序），选中模型时连同所属配置一起调用
-// 选中值使用 'provider/model' 复合键：同名模型可能来自不同厂商（如中转站与官方），必须区分
+// 配置 ID 是选择的一部分，同一厂商的不同配置也可能提供同名模型。
 function collectModelOptions(cfgs, lockedConfigId) {
   const seen = new Set()
   const out = []
-  const sorted = [...cfgs].filter(c => c.is_active).sort((a, b) => Number(b.id === lockedConfigId) - Number(a.id === lockedConfigId) || (b.priority || 0) - (a.priority || 0))
+  const sorted = [...cfgs].filter(c => c.is_active).sort((a, b) =>
+    Number(b.id === lockedConfigId) - Number(a.id === lockedConfigId) ||
+    (!lockedConfigId ? Number(!!b.global_default_model) - Number(!!a.global_default_model) : 0) ||
+    (b.priority || 0) - (a.priority || 0) || a.id - b.id)
   for (const c of sorted) {
-    for (const m of configModels(c)) {
-      const key = c.provider === 'comfyui' ? `${c.provider}:${c.id}/${m}` : `${c.provider}/${m}`
+    const models = configModels(c)
+    if ((!lockedConfigId || c.id === lockedConfigId) && c.global_default_model && models.includes(c.global_default_model))
+      models.sort((a, b) => Number(b === c.global_default_model) - Number(a === c.global_default_model))
+    for (const m of models) {
+      const key = `${c.provider}:${c.id}/${m}`
       if (seen.has(key)) continue
       seen.add(key)
-      out.push({ key, model: m, provider: c.provider, configId: c.id, configName: c.name || c.provider })
+      out.push({ key, model: m, provider: c.provider, configId: c.id, configName: c.name || c.provider,
+        priority: c.priority || 0, locked: c.id === lockedConfigId })
     }
   }
   return out
@@ -2294,7 +2303,7 @@ const modelLabel = useModelLabel()
 const defaultImageModel = computed(() => {
   const id = episode.value?.image_config_id || episode.value?.imageConfigId
   const locked = imageConfigs.value.find(c => c.id === id && c.is_active)
-  return configModels(locked)[0] || imageModelOptions.value[0]?.model || ''
+  return locked?.global_default_model || configModels(locked)[0] || imageModelOptions.value[0]?.model || ''
 })
 const videoModelOptions = computed(() => collectModelOptions(videoConfigs.value, lockedVideoConfigId.value))
 const selectedVideoConfig = computed(() => {
@@ -2303,9 +2312,11 @@ const selectedVideoConfig = computed(() => {
   const available = videoConfigs.value.filter(config => config.is_active && (config.provider !== 'aicost' || configModels(config).length))
   const locked = available.find(config => config.id === lockedVideoConfigId.value)
   if (locked) return locked
-  return available.sort((a, b) => (b.priority || 0) - (a.priority || 0))[0]
+  const global = available.find(config => config.global_default_model && config.global_default_eligible)
+  return global || available.sort((a, b) => (b.priority || 0) - (a.priority || 0) || a.id - b.id)[0]
 })
-const currentTopVideoModel = computed(() => bareModelName(videoModel.value) || configModels(selectedVideoConfig.value)[0] || '')
+const currentTopVideoModel = computed(() => bareModelName(videoModel.value) ||
+  selectedVideoConfig.value?.global_default_model || configModels(selectedVideoConfig.value)[0] || '')
 function videoSizeForConfig(config) {
   const settings = config?.comfyui
   const [rw, rh] = dramaAspectRatio.value.split(':').map(Number)
@@ -2438,8 +2449,12 @@ function pruneStaleModel(modelRef, optionsRef) {
   watch(optionsRef, opts => {
     if (!modelRef.value || !opts.length) return
     if (opts.some(o => o.key === modelRef.value)) return
-    // 旧版本地存储只有裸模型名：能对上则升级为复合键，对不上回退默认
-    const legacy = opts.filter(o => o.model === modelRef.value)
+    // 兼容旧的 provider/model 和裸模型名，保留可辨认的供应商。
+    const slash = modelRef.value.indexOf('/')
+    const provider = slash >= 0 ? modelRef.value.slice(0, slash) : ''
+    const model = slash >= 0 ? modelRef.value.slice(slash + 1) : modelRef.value
+    const legacy = opts.filter(o => o.model === model && (!provider || o.provider === provider))
+      .sort((a, b) => Number(b.locked) - Number(a.locked) || b.priority - a.priority || a.configId - b.configId)
     modelRef.value = legacy.length ? legacy[0].key : ''
   }, { immediate: true })
 }
@@ -2518,7 +2533,7 @@ const genTaskDoneCount = computed(() =>
   genMerges.value.filter(m => m.status === 'completed').length
 )
 const genTaskFailedCount = computed(() =>
-  genTasks.value.filter(t => t.status === 'failed').length +
+  genTasks.value.filter(t => t.status === 'failed' && !(t.type === 'video' && canRecoverVideoTask(t))).length +
   genMerges.value.filter(m => m.status === 'failed').length
 )
 
@@ -2556,7 +2571,7 @@ const genTaskRows = computed(() => {
     storyboardId: t.storyboard_id,
     recoverable: t.type === 'image'
       ? t.status === 'delivery_pending' && !!(t.local_path || t.result_url)
-      : t.type === 'video' && t.error_code !== 'generation_failed' && !!(t.task_id || t.result_url),
+      : t.type === 'video' && canRecoverVideoTask(t),
     previewUrl: t.type === 'image' && t.status !== 'completed' ? '' : t.local_path || t.result_url || '',
     prompt: t.prompt || '',
     createdAt: t.created_at || '',
@@ -2583,8 +2598,9 @@ function genTaskKindLabel(kind) {
   return kind === 'image' ? t('common.serviceType.image') : kind === 'video' ? t('common.serviceType.video') : t('episode.tasks.mergeKind')
 }
 
-function genTaskStatusLabel(status) {
+function genTaskStatusLabel(status, videoRecoverable) {
   if (status === 'completed') return t('episode.status.done')
+  if (status === 'failed' && videoRecoverable) return t('episode.recovery.resultPending')
   if (status === 'failed') return t('episode.status.failed')
   if (status === 'delivery_pending') return t('assetGeneration.deliveryPending')
   return t('episode.status.generating')
@@ -2613,7 +2629,7 @@ function genTaskDuration(row) {
 
 // 后端任务在刷新/重启后仍可能运行，工作台持续同步，不依赖抽屉是否打开。
 let refreshingTasks = false
-watch(() => genTaskActiveCount.value + submittedImageTaskIds.size, active => {
+watch(() => genTaskActiveCount.value + recoverableVideoCount.value + submittedImageTaskIds.size, active => {
   stopGenTasksPolling()
   if (active > 0) genTasksTimer = setInterval(async () => {
     if (refreshingTasks) return
@@ -2967,6 +2983,7 @@ watch(rawContent, v => { localRaw.value = v }, { immediate: true })
 watch(scriptContent, v => { localScript.value = v }, { immediate: true })
 
 async function refresh() {
+  let loadedGenerationTasks = false
   try {
     drama.value = await dramaAPI.get(dramaId)
     const ep = drama.value.episodes?.find(e => (e.episode_number || e.episodeNumber) === episodeNumber)
@@ -2986,6 +3003,9 @@ async function refresh() {
           }
         }
       }
+      // 任务查询可能恢复并完成原视频。先读任务，再取回写后的分镜，避免末次轮询留下旧成片状态。
+      await loadGenTasks()
+      loadedGenerationTasks = true
       sbs.value = await episodeAPI.storyboards(ep.id)
       selectedVideoSbIds.value = selectedVideoSbIds.value.filter(id => sbs.value.some(sb => sb.id === id))
       if (sbs.value.length) {
@@ -3008,7 +3028,7 @@ async function refresh() {
     toastError(e)
   }
   try { mergeData.value = await mergeAPI.status(epId.value) } catch {}
-  await Promise.all([loadGenTasks(), loadExportMerges()])
+  await Promise.all([loadedGenerationTasks ? undefined : loadGenTasks(), loadExportMerges()])
 }
 
 function saveRaw() { episodeAPI.update(epId.value, { content: localRaw.value }); episode.value.content = localRaw.value }

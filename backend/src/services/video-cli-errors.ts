@@ -30,7 +30,7 @@ export function videoCliFailure(provider: Provider, info: unknown, fallback: str
     for (const key of ['failedReason', 'failed_reason', 'failureReason', 'errorMessage', 'error_message', 'message', 'msg', 'description', 'detail']) add(messages, fields[key])
     if (typeof fields.reason === 'string' && /^[a-z][a-z\d_]{0,79}$/iu.test(fields.reason)) add(identifiers, fields.reason)
     else add(messages, fields.reason)
-    for (const key of ['code', 'errorCode', 'error_code']) {
+    for (const key of ['code', 'errorCode', 'error_code', 'serviceCode', 'service_code']) {
       const code = fields[key]
       if (typeof code === 'number' && Number.isFinite(code) || typeof code === 'string' && /^[\w.-]{1,64}$/u.test(code)) {
         if (String(code) !== '0') add(identifiers, String(code))
@@ -46,6 +46,7 @@ export function videoCliFailure(provider: Provider, info: unknown, fallback: str
     }
     if (Array.isArray(fields.errors)) for (const error of fields.errors.slice(0, 5)) inspect(error, depth + 1)
     if (Array.isArray(fields.diagnostics)) for (const diagnostic of fields.diagnostics.slice(0, 5)) inspect(diagnostic, depth + 1)
+    if (Array.isArray(fields.resources)) for (const resource of fields.resources.slice(0, 5)) inspect(resource, depth + 1)
   }
   if (typeof info === 'string') {
     // 官方 CLI 的错误包有时输出在 stderr，只读取包内诊断字段。
@@ -59,7 +60,9 @@ export function videoCliFailure(provider: Provider, info: unknown, fallback: str
   } else inspect(info, 0)
   if (!messages.length && !identifiers.length) return clean(fallback).slice(0, 600)
   const name = provider === 'jimeng' ? '即梦' : 'LibTV'
-  const detail = messages.join('；') || clean(fallback)
+  const detail = messages.map(message => provider === 'jimeng' && identifiers.includes('20115') &&
+    /^Generated video copyright verification failed\.?$/iu.test(message)
+    ? '生成视频版权校验未通过' : message).join('；') || clean(fallback)
   const suffix = identifiers.length ? `（${identifiers.join('，')}）` : ''
   return `${name}：${detail.slice(0, Math.max(0, 600 - name.length - 1 - suffix.length))}${suffix}`.slice(0, 600)
 }

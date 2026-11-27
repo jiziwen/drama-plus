@@ -7,7 +7,7 @@ import type { GenerateVideoParams } from './generation.js'
 import {
   createJimengCanvas, createJimengVideoDraft, getJimengPersonalSpaceAccountId, getCurrentJimengAccountId, JimengCliError, uploadJimengReference, withJimengAccount,
 } from './jimeng-cli.js'
-import { jimengVideoModel } from './jimeng-video-models.js'
+import { JIMENG_SEEDANCE_20_MINI_MODEL, jimengVideoModel } from './jimeng-video-models.js'
 import { formatJimengReferenceLabel } from './jimeng-reference-labels.js'
 
 export { jimengVideoModels } from './jimeng-video-models.js'
@@ -29,6 +29,8 @@ function draftInput(params: GenerateVideoParams, config: AIConfig) {
   const images = params.referenceImageUrls?.length ? params.referenceImageUrls : params.imageUrl ? [params.imageUrl] : []
   const videos = params.referenceVideoUrls || []
   const audios = params.referenceAudioUrls || []
+  if (model === JIMENG_SEEDANCE_20_MINI_MODEL && audios.length && !images.length && !videos.length)
+    throw new Error('即梦 Seedance 2.0 Mini 使用参考音频时须同时提供图片或视频')
   const references: Reference[] = []
   let mode: 't2v' | 'm2v' | 'first_last_frame' = 't2v'
   if (params.firstFrameUrl || params.lastFrameUrl) {

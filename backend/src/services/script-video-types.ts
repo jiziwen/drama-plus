@@ -18,6 +18,11 @@ export type ScriptVideoVoiceAudio = {
   duration?: number
 }
 export type ScriptVideoVoiceMode = 'model' | 'reference'
+export const scriptVideoVoiceDescriptionSchema = z.strictObject({
+  text: z.string().trim().min(1).max(500),
+  sourceLabel: z.string().trim().min(1).max(120).optional(),
+})
+export type ScriptVideoVoiceDescription = z.infer<typeof scriptVideoVoiceDescriptionSchema>
 export const scriptVideoAssetImageStatuses = ['pending', 'generating', 'completed', 'failed'] as const
 export type ScriptVideoAssetImageFields = {
   imagePrompt?: string

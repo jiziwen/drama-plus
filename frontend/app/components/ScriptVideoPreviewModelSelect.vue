@@ -2,10 +2,10 @@
   <div class="sv-model-select">
     <span class="sv-model-label">视频模型</span>
     <BaseSelect
-      :model-value="selected?.key || ''"
+      :model-value="selectedKey"
       :options="selectOptions"
       :placeholder="loading ? '读取模型中…' : '暂无可用视频模型'"
-      :disabled="loading || !options.some(option => option.maxDuration > 0)"
+      :disabled="loading"
       :searchable="options.length > 8"
       variant="inspector"
       aria-label="视频模型"
@@ -48,30 +48,41 @@ type Config = {
   comfyui?: Parameters<typeof scriptVideoCapabilities>[2]
   is_active?: boolean | number
   priority?: number
+  global_default_model?: string | null
 }
 const props = defineProps<{ modelValue?: string }>()
 const emit = defineEmits<{
   'update:modelValue': [key: string]
   change: [selection: Selection]
+  loading: [loading: boolean]
 }>()
 const options = ref<ModelOption[]>([])
-const selectOptions = computed(() => options.value.map(option => ({
-  value: option.key,
-  label: option.label,
-  displayModel: option.displayModel,
-  serviceName: option.serviceName,
-  disabled: !option.maxDuration,
-})))
+const globalKey = ref('')
+const globalOption = computed(() => options.value.find(option => option.key === globalKey.value))
+const fallbackOption = computed(() => !globalKey.value ? options.value.find(option => ['jimeng', 'libtv'].includes(option.provider || '') && option.maxDuration > 0) : undefined)
+const followLabel = computed(() => globalOption.value ? `跟随全局默认 · ${globalOption.value.label}`
+  : globalKey.value ? '跟随全局默认 · 模型不可用' : fallbackOption.value ? `自动选择 · ${fallbackOption.value.label}` : '跟随全局默认 · 未配置')
+const selectOptions = computed(() => [
+  { value: '', label: followLabel.value, displayModel: followLabel.value, serviceName: '', disabled: false },
+  ...options.value.map(option => ({
+    value: option.key, label: option.label, displayModel: option.displayModel, serviceName: option.serviceName, disabled: !option.maxDuration,
+  })),
+  ...(selectedKey.value && !options.value.some(option => option.key === selectedKey.value)
+    ? [{ value: selectedKey.value, label: '已选模型不可用', displayModel: '已选模型不可用', serviceName: '', disabled: true }] : []),
+])
 const loading = ref(true)
 const loadFailed = ref(false)
+watch(loading, value => emit('loading', value), { immediate: true })
 const { revision: settingsRevision } = useSettingsPanel()
 const modelLabel = useModelLabel()
 const selectedKey = computed(() => props.modelValue || '')
-const selected = computed(() => options.value.find(option => option.key === selectedKey.value && option.maxDuration))
+const selected = computed(() => selectedKey.value ? options.value.find(option => option.key === selectedKey.value && option.maxDuration)
+  : globalKey.value ? (globalOption.value?.maxDuration ? globalOption.value : undefined) : fallbackOption.value)
 const hint = computed(() => {
   if (loading.value) return '正在读取视频服务配置'
   if (loadFailed.value) return '未能读取模型配置，请检查服务连接'
-  if (!selected.value) return '请在设置中启用支持的视频模型'
+  if (!selected.value) return selectedKey.value ? '已选模型不可用，请重新选择视频模型'
+    : globalKey.value ? '全局默认模型不支持当前剧本转视频流程，请选择其他模型或修改全局默认。' : '请在设置中启用支持的视频模型'
   if (selected.value.maxAudioReferences === null) return '本流程单段最长 30 秒，实际时长和参考素材限制以所选模型为准。'
   const audioDuration = selected.value.maxAudioDuration > 0 ? `，合计不超过 ${selected.value.maxAudioDuration} 秒` : ''
   const audio = selected.value.maxAudioReferences
@@ -80,20 +91,14 @@ const hint = computed(() => {
   return `本流程单段最长 ${selected.value.maxDuration} 秒。${audio}`
 })
 function selectModel(key: string | number) {
+  if (key === '') { emit('update:modelValue', ''); return }
   const option = options.value.find(item => item.key === key && item.maxDuration)
   if (option) emit('update:modelValue', option.key)
 }
 watch([selected, selectedKey, loading], ([value, key, isLoading]) => {
   if (isLoading) return
-  const preferred = value ?? options.value.find(option => option.maxDuration > 0)
-  if (preferred && preferred.key !== key) {
-    emit('update:modelValue', preferred.key)
-  } else if (preferred) {
-    emit('change', preferred)
-  } else {
-    if (key) emit('update:modelValue', '')
-    emit('change', { key: '', label: '模型不可用', minDuration: 1, maxDuration: 0, wholeSeconds: true, configId: 0, model: '', maxAudioReferences: 0, maxAudioDuration: 0 })
-  }
+  if (value) emit('change', { ...value, key })
+  else emit('change', { key, label: '模型不可用', minDuration: 1, maxDuration: 0, wholeSeconds: true, configId: 0, model: '', maxAudioReferences: 0, maxAudioDuration: 0 })
 }, { immediate: true })
 let loadVersion = 0
 async function loadConfigs() {
@@ -104,6 +109,8 @@ async function loadConfigs() {
     const result = await aiConfigAPI.list('video')
     if (version !== loadVersion) return
     const configs = Array.isArray(result) ? result as Config[] : []
+    const global = configs.find(config => config.is_active && typeof config.global_default_model === 'string' && config.global_default_model)
+    globalKey.value = global ? `config:${global.id}:${global.global_default_model}` : ''
     options.value = configs.filter(config => config.is_active && Number.isSafeInteger(config.id) && config.id > 0 && Array.isArray(config.model))
       .sort((a, b) => (b.priority || 0) - (a.priority || 0))
       .flatMap(config => [...new Set(config.model.filter(model => typeof model === 'string' && model.trim()))].map(model => {
@@ -122,7 +129,7 @@ async function loadConfigs() {
           maxAudioDuration: capabilities?.maxAudioDuration ?? 0,
         }
       }))
-  } catch { if (version === loadVersion) loadFailed.value = true }
+  } catch { if (version === loadVersion) { loadFailed.value = true; globalKey.value = ''; options.value = [] } }
   finally { if (version === loadVersion) loading.value = false }
 }
 onMounted(loadConfigs)

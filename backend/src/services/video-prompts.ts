@@ -6,6 +6,7 @@ import { and, eq, isNull } from 'drizzle-orm'
 import { db, schema } from '../db/index.js'
 import { mastra } from '../mastra/index.js'
 import { buildAgentRequestContext } from '../agents/context.js'
+import { getActiveConfig, getConfigById } from './ai.js'
 import { logTaskError, logTaskProgress, logTaskStart, logTaskSuccess } from '../utils/task-logger.js'
 
 export interface VideoPromptBatchStatus {
@@ -20,6 +21,15 @@ export interface VideoPromptBatchStatus {
 }
 
 const tasks = new Map<number, VideoPromptBatchStatus>()
+
+/** An episode without a video lock describes the actual global generator. */
+export async function videoPromptModelLabel(configId?: number | null): Promise<string> {
+  const config = configId != null ? await getConfigById(configId) : await getActiveConfig('video')
+  if (!config || !config.id) return configId != null ? '所选视频服务已失效' : '未配置视频模型'
+  const row = db.select({ name: schema.aiServiceConfigs.name }).from(schema.aiServiceConfigs)
+    .where(eq(schema.aiServiceConfigs.id, config.id)).get()
+  return `${config.model} · ${row?.name || config.provider} (${config.provider})`
+}
 
 /** 启动批量生成（立即返回）；运行中返回 started:false,total:-1；无待生成分镜返回 started:false,total:0；
  *  传入 storyboardIds 时只处理所选分镜（即使已有提示词也重新生成），否则处理全部缺失提示词的分镜 */
@@ -41,11 +51,7 @@ export async function startVideoPromptBatch(
 
   // 未覆盖的镜头跟随该集配置；每镜头已有覆盖时使用自己的模型标签。
   const [ep] = await db.select().from(schema.episodes).where(eq(schema.episodes.id, episodeId))
-  let videoLabel = '默认'
-  if (ep?.videoConfigId) {
-    const [cfg] = await db.select().from(schema.aiServiceConfigs).where(eq(schema.aiServiceConfigs.id, ep.videoConfigId))
-    if (cfg) videoLabel = `${cfg.name} (${cfg.provider})`
-  }
+  const videoLabel = await videoPromptModelLabel(ep?.videoConfigId)
 
   const task: VideoPromptBatchStatus = {
     status: 'running',

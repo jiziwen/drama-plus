@@ -80,6 +80,13 @@
                 <span v-if="countActive(st.type)" class="tag tag-accent">{{ t('settings.ai.activeCount', { n: countActive(st.type) }) }}</span>
                 <button class="btn btn-ghost btn-sm ml-auto" @click="startAddCfg(st.type)"><Plus :size="13" /> {{ t('common.add') }}</button>
               </div>
+              <div class="global-default-picker">
+                <label class="field-label" :for="`global-default-${st.type}`">{{ t('settings.ai.globalDefault') }}</label>
+                <BaseSelect :input-id="`global-default-${st.type}`" :model-value="defaultModelKey(st.type)" :options="globalDefaultOptions(st.type)"
+                  :placeholder="t('settings.ai.noGlobalDefault')" :disabled="defaultSaving || !globalDefaultOptions(st.type).length"
+                  :aria-label="`${st.label} ${t('settings.ai.globalDefault')}`" searchable @update:model-value="setDefaultModel(st.type, $event)" />
+                <span v-if="!globalDefaultOptions(st.type).length" class="field-hint">{{ t('settings.ai.noEligibleModels') }}</span>
+              </div>
               <div v-for="c in byType(st.type)" :key="c.id" class="config-row">
                 <div class="provider-badge" :class="{ 'has-icon': !!providerIconUrl(c.provider) }" :data-provider="c.provider">
                   <img v-if="providerIconUrl(c.provider)" class="provider-badge-icon" :src="providerIconUrl(c.provider)" alt="" />
@@ -93,15 +100,16 @@
                     <span v-if="!c.is_active" class="tag">{{ t('settings.common.disabled') }}</span>
                   </div>
                   <div class="config-models">
-                    <button
-                      v-for="m in c.model" :key="m" type="button"
+                    <span
+                      v-for="m in c.model" :key="m"
                       :class="['cfg-model-chip mono', { 'is-default': isDefaultModel(st.type, c, m) }]"
-                      :title="isDefaultModel(st.type, c, m) ? t('settings.ai.currentDefault') : t('settings.ai.setDefault')"
-                      @click="setDefaultModel(st.type, c, m)"
                     >
-                      <Star v-if="isDefaultModel(st.type, c, m)" :size="9" class="cfg-model-star" />
+                      <template v-if="isDefaultModel(st.type, c, m)">
+                        <Star :size="9" class="cfg-model-star" />
+                        <span>{{ t('settings.ai.globalDefault') }}</span>
+                      </template>
                       {{ modelLabel(m) }}
-                    </button>
+                    </span>
                   </div>
                   <div class="config-sub truncate" :class="{ mono: !isServerVideoCli(c.provider) }">{{ c.provider === 'jimeng' ? t('settings.jimeng.billing') : c.provider === 'libtv' ? t('settings.libtv.description') : c.base_url || t('settings.ai.noBaseUrl') }}</div>
                 </div>
@@ -394,11 +402,6 @@
           <label class="field"><span class="field-label">{{ t('settings.cfg.provider') }}</span>
             <BaseSelect :model-value="cfgForm.provider" :options="providerSelectOptions" :placeholder="t('settings.cfg.providerPlaceholder')" :disabled="cfgOperationPending" searchable @update:model-value="selectCfgProvider" />
           </label>
-          <label class="field">
-            <span class="field-label">{{ t('settings.cfg.priority') }}</span>
-            <input v-model.number="cfgForm.priority" class="input" type="number" min="0" max="999" />
-            <span class="field-hint">{{ t('settings.cfg.priorityHint') }}</span>
-          </label>
           <section v-if="activeVideoCli" class="test-result video-cli-account" aria-labelledby="video-cli-account-label">
             <div class="test-result-head">
               <span id="video-cli-account-label" class="field-label">{{ cliLabel('account') }}</span>
@@ -526,11 +529,9 @@
             <div v-if="cfgForm.models.length" class="model-chips">
               <span
                 v-for="(m, i) in cfgForm.models" :key="`${m}-${i}`"
-                :class="['model-chip', { 'is-default': i === 0 }]"
-                :title="t('settings.cfg.modelChipHint')"
-                @click="pinModelTop(i)"
+                class="model-chip"
               >
-                {{ modelLabel(m) }}<em v-if="i === 0">{{ t('common.default') }}</em>
+                {{ modelLabel(m) }}
                 <button v-if="!isServerVideoCli(cfgForm.provider) || cfgForm.models.length > 1" type="button" class="model-chip-x" :title="t('common.delete')" @click.stop="removeModel(i)"><X :size="11" /></button>
               </span>
             </div>
@@ -815,7 +816,7 @@ const cfgSaving = ref(false)
 const cfgTestResult = ref(null)
 const cfgToDelete = ref(null)
 const deletingCfg = ref(false)
-const cfgForm = reactive({ name: '', provider: '', api_key: '', base_url: '', models: [], service_type: 'text', priority: 0, temperature: '', comfy_timeout: 120, comfy_resolution: 'auto', comfy_width: 1024, comfy_height: 1024, comfy_json: '' })
+const cfgForm = reactive({ name: '', provider: '', api_key: '', base_url: '', models: [], service_type: 'text', temperature: '', comfy_timeout: 120, comfy_resolution: 'auto', comfy_width: 1024, comfy_height: 1024, comfy_json: '' })
 const isServerVideoCli = provider => provider === 'jimeng' || provider === 'libtv'
 const activeVideoCli = computed(() => cfgDialog.value && isServerVideoCli(cfgForm.provider) ? cfgForm.provider : undefined)
 const cfgAccountBinding = ref(null)
@@ -941,7 +942,7 @@ async function importComfyWorkflow(event) {
   } catch (error) { comfyConfigError.value = error.message }
   event.target.value = ''
 }
-// 模型标签编辑器：首位即默认模型；输入框支持回车添加、逗号/换行批量粘贴
+// 输入框支持回车添加、逗号/换行批量粘贴
 const modelInput = ref('')
 function addModel() {
   const names = modelInput.value.split(/[,，\n]/).map(s => s.trim()).filter(Boolean)
@@ -957,11 +958,6 @@ function onModelPaste(e) {
   }
 }
 function removeModel(i) { cfgForm.models.splice(i, 1) }
-function pinModelTop(i) {
-  if (i <= 0) return
-  const [m] = cfgForm.models.splice(i, 1)
-  cfgForm.models.unshift(m)
-}
 // 服务类型 label/desc 渲染时求值，type 为逻辑值
 const serviceTypes = computed(() => [
   { type: 'text', label: t('common.serviceType.text') },
@@ -1044,31 +1040,36 @@ function applyProviderPreset(type, key) {
 async function loadCfgs() { try { cfgs.value = await aiConfigAPI.list() } catch (e) { toastError(e) } }
 
 // ===== 默认模型选择 =====
-// 默认解析规则与工作台/后端一致：启用配置中优先级最高者的模型列表首位
 function defaultModelOf(type) {
-  const active = cfgs.value.filter(c => c.service_type === type && c.is_active
-    && (!['aicost', '302ai'].includes(c.provider) || c.model?.length))
-  if (!active.length) return null
-  const top = [...active].sort((a, b) => (b.priority || 0) - (a.priority || 0))[0]
-  const first = Array.isArray(top.model) ? top.model[0] : null
-  return first ? { configId: top.id, model: first } : null
+  const config = cfgs.value.find(c => c.service_type === type && c.global_default_model)
+  return config ? { configId: config.id, model: config.global_default_model } : null
+}
+function globalDefaultOptions(type) {
+  const configs = cfgs.value.filter(c => c.service_type === type && c.is_active && c.global_default_eligible && Array.isArray(c.model))
+  return configs.flatMap(c => {
+    const name = c.name || c.provider
+    const suffix = configs.filter(other => (other.name || other.provider) === name).length > 1 ? ` #${c.id}` : ''
+    return [...new Set(c.model.filter(m => typeof m === 'string' && m.trim()))].map(model => ({
+      value: `${c.id}/${model}`, label: `${name}${suffix} · ${modelLabel(model)}`, configId: c.id, model,
+    }))
+  })
+}
+function defaultModelKey(type) {
+  const current = defaultModelOf(type)
+  return current ? `${current.configId}/${current.model}` : ''
 }
 function isDefaultModel(type, c, m) {
   const d = defaultModelOf(type)
   return !!d && d.configId === c.id && d.model === m
 }
 const defaultSaving = ref(false)
-async function setDefaultModel(type, c, m) {
-  if (defaultSaving.value || isDefaultModel(type, c, m)) return
+async function setDefaultModel(type, key) {
+  const selected = globalDefaultOptions(type).find(option => option.value === key)
+  if (defaultSaving.value || !selected || defaultModelKey(type) === key) return
   defaultSaving.value = true
   try {
-    const models = [m, ...(Array.isArray(c.model) ? c.model : []).filter(x => x !== m)]
-    const maxPriority = Math.max(0, ...cfgs.value.filter(x => x.service_type === type).map(x => x.priority || 0))
-    const payload = { model: models }
-    if ((c.priority || 0) < maxPriority) payload.priority = maxPriority + 1
-    if (!c.is_active) payload.is_active = true // 停用配置无法成为默认,选择即启用
-    await aiConfigAPI.update(c.id, payload)
-    toast.success(t('settings.ai.defaultModelSwitched', { type: serviceMeta.value[type].label, model: m }))
+    await aiConfigAPI.setDefault(type, { configId: selected.configId, model: selected.model })
+    toast.success(t('settings.ai.defaultModelSwitched', { type: serviceMeta.value[type].label, model: selected.model }))
     await loadCfgs()
   } catch (e) {
     toastError(e)
@@ -1103,7 +1104,7 @@ function startAddCfg(t) {
   cfgAccountBinding.value = null
   cfgSavedForAuthorization.value = false
   cfgTestResult.value = null
-  Object.assign(cfgForm, { name: '', provider: '', api_key: '', base_url: '', models: [], service_type: t, priority: 0, temperature: '', comfy_timeout: 120, comfy_resolution: 'auto', comfy_width: t === 'video' ? 608 : 1024, comfy_height: t === 'video' ? 320 : 1024, comfy_json: '' })
+  Object.assign(cfgForm, { name: '', provider: '', api_key: '', base_url: '', models: [], service_type: t, temperature: '', comfy_timeout: 120, comfy_resolution: 'auto', comfy_width: t === 'video' ? 608 : 1024, comfy_height: t === 'video' ? 320 : 1024, comfy_json: '' })
   comfyConfigError.value = ''
   const firstPreset = presetsByType(t)[0]
   if (firstPreset) applyProviderPreset(t, firstPreset.key)
@@ -1122,7 +1123,6 @@ function startEditCfg(c) {
     base_url: c.base_url || '',
     models: Array.isArray(c.model) ? [...c.model] : String(c.model || '').split(',').map(s => s.trim()).filter(Boolean),
     service_type: c.service_type,
-    priority: c.priority ?? 0,
     temperature: c.temperature ?? '',
     comfy_timeout: c.comfyui?.timeoutMinutes ?? 120,
     comfy_resolution: c.comfyui?.width && c.comfyui?.height ? 'custom' : 'auto',
@@ -1188,7 +1188,6 @@ async function saveCfg() {
       api_key: isCli ? '' : cfgForm.api_key,
       base_url: isCli ? '' : cfgForm.base_url,
       model: models,
-      priority: cfgForm.priority,
       temperature,
       comfyui,
     }
@@ -1631,20 +1630,7 @@ onBeforeUnmount(stopUsagePoll)
   font-size: 12px;
   color: var(--text-2);
   background: var(--bg-2);
-  cursor: pointer;
   user-select: none;
-  transition: border-color .15s, color .15s;
-}
-.model-chip:hover { border-color: var(--accent); color: var(--text-1); }
-.model-chip.is-default { color: var(--text-1); font-weight: 600; border-color: var(--accent); }
-.model-chip em {
-  font-style: normal;
-  padding: 0 5px;
-  border-radius: 5px;
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--accent-text);
-  background: var(--accent-bg);
 }
 .model-chip-x {
   display: inline-flex;
@@ -1718,6 +1704,8 @@ onBeforeUnmount(stopUsagePoll)
 .svc-group-heading { min-width: 0; }
 .svc-group-title { font-size: 14px; font-weight: 700; color: var(--text-0); }
 .svc-group-sub { font-size: 11.5px; color: var(--text-3); margin-top: 2px; }
+.global-default-picker { display: grid; gap: 6px; padding: 12px 20px; border-bottom: 1px solid var(--border); }
+.global-default-picker :deep(.base-select) { max-width: 540px; }
 .config-row { display: flex; align-items: center; gap: 12px; padding: 12px 20px; }
 .config-row + .config-row { border-top: 1px solid var(--border); }
 .provider-badge {
@@ -1748,16 +1736,12 @@ onBeforeUnmount(stopUsagePoll)
   background: transparent;
   color: var(--text-2);
   font-size: 10.5px;
-  cursor: pointer;
-  transition: border-color 0.12s, color 0.12s, background 0.12s;
 }
-.cfg-model-chip:hover { border-color: var(--accent); color: var(--accent); }
 .cfg-model-chip.is-default {
   border-color: var(--accent);
   background: var(--accent-bg);
   color: var(--accent);
   font-weight: 600;
-  cursor: default;
 }
 .cfg-model-star { fill: currentColor; }
 .config-empty { font-size: 12px; color: var(--text-3); padding: 14px 20px; }

@@ -2,6 +2,7 @@ import { registerScriptVideoQueueRoutes } from './script-video-queue.js'
 import { registerScriptVideoProjectExportRoutes } from './script-video-project-export.js'
 import { registerScriptVideoAssetExtractionRoutes } from './script-video-asset-extraction.js'
 import { createScriptVideoAssetImages } from './script-video-asset-images.js'
+import { registerScriptVideoVoiceGenerationRoutes } from './script-video-voice-generation.js'
 import { Hono } from 'hono'
 import { randomUUID, createHash } from 'node:crypto'
 import { eq } from 'drizzle-orm'
@@ -11,6 +12,7 @@ import { db, schema } from '../db/index.js'
 import { success, created } from '../utils/response.js'
 import {
   ScriptVideoStore,
+  getDefaultScriptVideoStore,
   ScriptVideoStoreError,
   OUTLINE_DURATION_POLICY,
   assertOutlineDurationPolicy,
@@ -364,13 +366,12 @@ const defaultDependencies: ScriptVideoDependencies = {
 type VideoCheck = { job: ScriptVideoJob; state: ScriptVideoGenerationStatus }
 
 function needsVideoReconciliation({ job, state }: VideoCheck) {
-  if (state.status === 'processing' || job.status === 'completed' || job.status === 'canceled') return false
+  if (job.status === 'completed' || job.status === 'canceled' || job.code?.endsWith('_ACKNOWLEDGED')) return false
   if (job.status === 'failed') {
-    if (state.status === 'completed' && job.canRecover === true) return true
-    return state.status === 'failed' && (Boolean(job.canRecover) !== Boolean(state.canRecover) ||
-      job.code === 'SUBMISSION_UNKNOWN' && state.code === 'VIDEO_FAILED')
+    return state.status !== 'failed' || Boolean(job.canRecover) !== Boolean(state.canRecover) ||
+      Boolean(state.code && job.code !== state.code) || Boolean(state.error && job.error !== state.error)
   }
-  return true
+  return state.status !== 'processing'
 }
 
 export function createScriptVideoRoutes(
@@ -382,6 +383,7 @@ export function createScriptVideoRoutes(
   registerScriptVideoQueueRoutes(app, store, queue)
   registerScriptVideoProjectExportRoutes(app, store, respondError)
   registerScriptVideoAssetExtractionRoutes(app, store, respondError)
+  registerScriptVideoVoiceGenerationRoutes(app, store, respondError)
   const assetImages = createScriptVideoAssetImages(store)
   app.route('/', assetImages.routes)
   const videoSubmissions = new Map<string, { controller: AbortController; taskId?: number }>()
@@ -448,10 +450,10 @@ export function createScriptVideoRoutes(
   }
 
   async function reconcileVideoResults(projectId: string, checks: VideoCheck[]) {
-    const terminal = checks.filter(needsVideoReconciliation)
-    if (!terminal.length) return
+    const updates = checks.filter(needsVideoReconciliation)
+    if (!updates.length) return
     const lightingReviews = new Map<string, number[]>()
-    for (const { job, state } of terminal) {
+    for (const { job, state } of updates) {
       if (state.status === 'completed' && state.videoUrl && job.lightingChecks?.length) {
         const shots = await reviewScriptVideoLighting(state.videoUrl, job.lightingChecks).catch(() => [])
         if (shots.length) lightingReviews.set(job.id, shots)
@@ -461,6 +463,8 @@ export function createScriptVideoRoutes(
       let recordChanged = false
       let documentChanged = false
       const currentJobs = new Map(record.jobs.map(job => [job.id, job]))
+      const latestVideoJobs = new Map(record.jobs.filter(job => job.action === 'video')
+        .map(job => [`${job.episodeId}/${job.cardId}`, job.id]))
       const completedCards: { card: any; version: ScriptVideoVersion }[] = []
       const acceptedRenders = new Map<string, { videoUrl: string; taskId?: number }>()
       const cardOrder = new Map<string, number>(record.project.episodes.flatMap(episode =>
@@ -468,42 +472,23 @@ export function createScriptVideoRoutes(
       ).map((key, index) => [key, index]))
       // A source and its successor may finish in the same poll. Validate the
       // successor against the source that this batch will actually promote.
-      const ordered = terminal.slice().sort((a, b) =>
+      const ordered = updates.slice().sort((a, b) =>
         (cardOrder.get(`${a.job.episodeId}/${a.job.cardId}`) ?? Infinity) -
         (cardOrder.get(`${b.job.episodeId}/${b.job.cardId}`) ?? Infinity))
       for (const { job, state } of ordered) {
         const current = currentJobs.get(job.id)
         if (!current || current.status !== job.status || current.updatedAt !== job.updatedAt || current.code !== job.code) continue
         const episode = record.project.episodes.find(item => item.id === job.episodeId)
-        if (current.status === 'failed' && state.status === 'failed') {
-          if (!episode) continue
-          documentChanged = reconcileRejectedVideoSubmission(episode, current, state) || documentChanged
-          current.canRecover = state.canRecover === true ? true : undefined
-          if (current.canRecover) {
-            current.code = state.code || 'SUBMISSION_UNKNOWN'
-            current.error = state.error || current.error
-          }
-          const task = episode.tasks?.find((item: any) => item.id === job.id)
-          if (task) {
-            task.canRecover = current.canRecover
-            task.code = current.code
-            task.error = current.error
-            documentChanged = true
-          }
-          recordChanged = true
-          continue
-        }
-        current.status = state.status === 'canceled' ? 'canceled' : state.status === 'completed' ? 'completed' : 'failed'
+        current.status = state.status === 'processing' ? 'running' : state.status
         current.updatedAt = new Date().toISOString()
         current.canRecover = undefined
         if (state.status === 'failed') {
           current.error = state.error || '视频生成失败，请检查模型配置后重试'
           current.code = state.code || 'VIDEO_FAILED'
           current.canRecover = state.canRecover === true ? true : undefined
-        } else if (state.status === 'canceled') {
-          current.code = 'CANCELED'
+        } else {
+          current.code = state.status === 'canceled' ? 'CANCELED' : undefined
           current.error = undefined
-          current.canRecover = undefined
         }
         const card = episode?.cards?.find((item: any) => item.id === job.cardId)
         const task = episode?.tasks?.find((item: any) => item.id === job.id)
@@ -524,7 +509,8 @@ export function createScriptVideoRoutes(
           const sameLightingSources = (task?.lightingRanges || []).every(({ imageUrl, source }: RenderLightingRange) =>
             !imageUrl || !source || (source.manualSeconds !== undefined
               ? hasManualSource(source.cardId, source.videoUrl, source.sourceEpisodeId) : selected?.get(source.cardId)?.videoUrl === source.videoUrl))
-          if (card && card.version === job.cardVersion && sameTailSource && sameLightingSources &&
+          if (latestVideoJobs.get(`${job.episodeId}/${job.cardId}`) === job.id &&
+              card && card.version === job.cardVersion && sameTailSource && sameLightingSources &&
               digest(record.project, job.episodeId, job.videoDigestVersion ? 'video' : 'revisions', job.cardId, job) === job.baseDigest) {
             completedCards.push({ card, version: {
               url: state.videoUrl,
@@ -560,18 +546,17 @@ export function createScriptVideoRoutes(
         documentChanged = true
       }
       return { result: null, recordChanged, documentChanged }
-    }, terminal.every(check => check.job.episodeId === terminal[0].job.episodeId) ? terminal[0].job.episodeId : undefined, true)
+    }, updates.every(check => check.job.episodeId === updates[0].job.episodeId) ? updates[0].job.episodeId : undefined, true)
   }
 
-  async function refreshPendingVideos(projectId: string, episodeId?: string) {
-    const jobs = await store.listPendingVideoJobs(projectId, episodeId)
-    const checks = await Promise.all(jobs.map(async (job): Promise<VideoCheck> => ({
-      job,
-      // Leave one temporarily unreadable job pending without hiding updates to other tasks.
-      state: await dependencies.getScriptVideoGeneration(job.taskId).catch(() => ({
-        taskId: job.taskId, status: 'processing', stage: 'submitting',
-      })),
-    })))
+  async function refreshPendingVideos(projectId: string, episodeId?: string, resumeOriginal = false) {
+    const jobs = await store.listPendingVideoJobs(projectId, episodeId, resumeOriginal)
+    const checks = (await Promise.all(jobs.map(async (job): Promise<VideoCheck | null> => {
+      // A read failure cannot tell us that a previously failed job has resumed.
+      const state = await dependencies.getScriptVideoGeneration(job.taskId, { resumeOriginal }).catch(() =>
+        job.status === 'failed' ? null : { taskId: job.taskId, status: 'processing' as const, stage: 'submitting' })
+      return state ? { job, state } : null
+    }))).filter((check): check is VideoCheck => check !== null)
     await reconcileVideoResults(projectId, checks)
     return checks.map(({ state }) => state)
   }
@@ -631,11 +616,8 @@ export function createScriptVideoRoutes(
       }
       const project = await store.get(id)
       const imagesChanged = await assetImages.refresh(id, project)
-      if (!project.episodes.some(episode => episode.tasks?.some((task: any) => task.status === 'processing' && task.taskId)))
-        return success(c, imagesChanged ? await store.get(id) : project)
-      // A worker can finish while all editing pages are closed.
-      await refreshPendingVideos(id)
-      return success(c, await store.get(id))
+      const tasks = await refreshPendingVideos(id, undefined, true)
+      return success(c, imagesChanged || tasks.length ? await store.get(id) : project)
     } catch (e) {
       return respondError(c, e)
     }
@@ -643,14 +625,16 @@ export function createScriptVideoRoutes(
   app.get('/projects/:id/episodes/:episodeId', async c => {
     try {
       c.header('Cache-Control', 'no-store')
-      return success(c, await store.episode(c.req.param('id'), c.req.param('episodeId')))
+      const id = c.req.param('id'), eid = c.req.param('episodeId')
+      await refreshPendingVideos(id, eid, true)
+      return success(c, await store.episode(id, eid))
     } catch (e) { return respondError(c, e) }
   })
   app.get('/projects/:id/episodes/:episodeId/activity', async c => {
     try {
       c.header('Cache-Control', 'no-store')
       const id = c.req.param('id'), eid = c.req.param('episodeId')
-      await refreshPendingVideos(id, eid)
+      await refreshPendingVideos(id, eid, true)
       const activity = await store.activity(id, eid)
       const queuedCardIds = queue.list(id, eid).map(item => item.cardId)
       return success(c, { ...activity, queuedCardIds, activeCardIds: [...new Set([...activity.activeCardIds, ...queuedCardIds])] })
@@ -1260,6 +1244,7 @@ export function createScriptVideoRoutes(
       })
       if (!started || signal.aborted) return
       const ep = episodeOf(project, job.episodeId)
+      const videoModel = ep.modelKey === '' ? (await getActiveConfig('video'))?.model ?? ep.modelName : ep.modelName
       const input: ScriptVideoInput = {
         projectTitle: project.title,
         episodeNumber: ep.number,
@@ -1270,7 +1255,7 @@ export function createScriptVideoRoutes(
         model: body.model ?? ep.textModel,
         production: ep.production,
         stylePreset: job.action === 'revisions' || job.action === 'review' ? ep.production?.stylePreset : project.settings?.stylePreset,
-        deliverySpecs: { aspectRatio: ep.aspectRatio, resolution: ep.resolution, videoModel: ep.modelName },
+        deliverySpecs: { aspectRatio: ep.aspectRatio, resolution: ep.resolution, videoModel },
         systemPrompt: body.systemPrompt ?? project.settings?.systemPrompt,
         storyboardMode: job.storyboardMode,
         combatEnabled: body.combatEnabled ?? project.settings?.combatEnabled,
@@ -1827,13 +1812,13 @@ export function createScriptVideoRoutes(
       // Resolve project ownership before reading the underlying task. A stale
       // display flag alone never authorizes an original-task query.
       const previous = await store.getVideoJob(id, taskId)
-      if (previous.status === 'failed' && previous.code !== 'DELIVERY_FAILED') {
+      if (previous.status === 'failed' && !previous.code?.endsWith('_ACKNOWLEDGED')) {
         const state = await dependencies.getScriptVideoGeneration(taskId)
-        if (state.status === 'completed' && previous.canRecover === true) {
+        if (state.status === 'completed') {
           await reconcileVideoResults(id, [{ job: previous, state }])
           return success(c, state)
         }
-        originalRecovery = state.status === 'failed' && state.canRecover === true
+        originalRecovery = previous.code !== 'DELIVERY_FAILED' && state.status === 'failed' && state.canRecover === true
       }
       const session = scriptVideoSession(c.req.header(SESSION_HEADER))
       job = await store.mutate(id, (record) => {
@@ -1997,7 +1982,7 @@ export function createScriptVideoRoutes(
   app.get('/projects/:id/episodes/:episodeId/video-status', async (c) => {
     try {
       c.header('Cache-Control', 'no-store')
-      const tasks = await refreshPendingVideos(c.req.param('id'), c.req.param('episodeId'))
+      const tasks = await refreshPendingVideos(c.req.param('id'), c.req.param('episodeId'), true)
       return success(c, { tasks })
     } catch (e) {
       return respondError(c, e)
@@ -2013,7 +1998,7 @@ export function createScriptVideoRoutes(
       c.header('Cache-Control', 'no-store')
       const job = await store.getVideoJob(id, taskId)
       if (job.status === 'canceled') return success(c, { taskId, status: 'canceled', stage: 'canceled' })
-      const state = await dependencies.getScriptVideoGeneration(taskId)
+      const state = await dependencies.getScriptVideoGeneration(taskId, { resumeOriginal: job.status === 'queued' || job.status === 'running' })
       await reconcileVideoResults(id, [{ job, state }])
       if (state.status !== 'processing' && (await store.getVideoJob(id, taskId)).status === 'canceled')
         return success(c, { taskId, status: 'canceled', stage: 'canceled' })
@@ -2025,5 +2010,5 @@ export function createScriptVideoRoutes(
   return app
 }
 
-export const scriptVideoStore = new ScriptVideoStore()
+export const scriptVideoStore = getDefaultScriptVideoStore()
 export default createScriptVideoRoutes(scriptVideoStore)

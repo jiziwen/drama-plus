@@ -133,8 +133,8 @@
                 </div>
               </fieldset>
               <label>生图模型
-                <select v-model="editor.modelKey" class="input" required :disabled="saving || loadingModels || !models.length">
-                  <option value="" disabled>{{ loadingModels ? '正在加载模型…' : '请选择生图模型' }}</option>
+                <select v-model="editor.modelKey" class="input" :disabled="saving || loadingModels || !models.length">
+                  <option value="">{{ loadingModels ? '正在加载模型…' : models[0] ? `默认生图模型 · ${models[0].model} · ${models[0].configName}` : '请选择生图模型' }}</option>
                   <option v-for="model in models" :key="modelKey(model)" :value="modelKey(model)">{{ model.model }} · {{ model.configName }}</option>
                 </select>
               </label>
@@ -190,7 +190,7 @@ type Editor = {
 }
 
 const { isCinematic } = useStudioInterface()
-const { open: openSettings } = useSettingsPanel()
+const { open: openSettings, revision: settingsRevision } = useSettingsPanel()
 const projects = ref<{ id: number; title: string }[]>([])
 const selectedProject = ref<number | null>(null)
 const assets = ref<GalleryAsset[]>([])
@@ -221,7 +221,10 @@ const visibleAssets = computed(() => assets.value.filter(asset =>
   && [asset.name, asset.description, asset.prompt].join(' ').toLowerCase().includes(search.value.toLowerCase()),
 ))
 const modelKey = (model: { configId: number; model: string }) => `${model.configId}/${model.model}`
-const chosenModel = computed(() => models.value.find(model => modelKey(model) === editor.value?.modelKey))
+const chosenModel = computed(() => {
+  if (!editor.value) return
+  return editor.value.modelKey ? models.value.find(model => modelKey(model) === editor.value?.modelKey) : models.value[0]
+})
 const canGenerate = computed(() => Boolean(editor.value?.prompt.trim() && chosenModel.value && !saving.value && !loadingModels.value))
 const isRecovering = (asset: GalleryAsset) => !!asset.task && recovering.value.has(asset.task.id)
 const isGenerating = (asset: GalleryAsset) => asset.task?.status === 'processing' || isRecovering(asset)
@@ -287,7 +290,7 @@ async function loadProjects() {
   }
 }
 
-async function loadModels(preferredConfigId?: number | null) {
+async function loadModels() {
   const request = ++modelRequestId
   loadingModels.value = true
   modelError.value = ''
@@ -296,16 +299,14 @@ async function loadModels(preferredConfigId?: number | null) {
     const result = await galleryAssetAPI.models()
     if (request !== modelRequestId || !editor.value) return
     models.value = result
-    if (!result.some(model => modelKey(model) === editor.value?.modelKey)) {
-      const fallback = result.find(model => model.configId === preferredConfigId) ?? result[0]
-      editor.value.modelKey = fallback ? modelKey(fallback) : ''
-    }
+    if (!result.some(model => modelKey(model) === editor.value?.modelKey)) editor.value.modelKey = ''
   } catch (cause) {
     if (request === modelRequestId) modelError.value = messageOf(cause, '无法加载生图模型')
   } finally {
     if (request === modelRequestId) loadingModels.value = false
   }
 }
+watch(settingsRevision, () => { if (editor.value) void loadModels() })
 
 async function openEditor(asset?: GalleryAsset) {
   if (!selectedProject.value || saving.value || editorDialog.value?.open) return
@@ -322,7 +323,7 @@ async function openEditor(asset?: GalleryAsset) {
   }
   editorError.value = ''
   notice.value = ''
-  const loadingOptions = loadModels(asset?.configId)
+  const loadingOptions = loadModels()
   await nextTick()
   editorDialog.value?.showModal()
   await loadingOptions

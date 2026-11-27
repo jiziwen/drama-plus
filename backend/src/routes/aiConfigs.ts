@@ -5,7 +5,7 @@ import { success, notFound, created, badRequest, now } from '../utils/response.j
 import { toSnakeCase } from '../utils/transform.js'
 import { joinProviderUrl } from '../services/adapters/url.js'
 import { isMidjourneyImageConfig, midjourneyBaseUrl } from '../services/adapters/midjourney-image.js'
-import { isOfficialProvider, parseConfigTemperature } from '../services/ai.js'
+import { getGlobalDefaultModel, isGlobalDefaultEligible, isOfficialProvider, parseConfigTemperature, setGlobalDefaultModel, type ServiceType } from '../services/ai.js'
 import { redactUrl, logTaskError, logTaskProgress, logTaskSuccess } from '../utils/task-logger.js'
 import { checkComfyWorkflow, parseComfySettings, validateComfySettings } from '../services/comfyui.js'
 import { recordedFetch as fetch, withApiCallContext } from '../services/api-call-log.js'
@@ -200,8 +200,31 @@ app.get('/', async (c) => {
   let rows = await db.select().from(schema.aiServiceConfigs)
   if (serviceType) rows = rows.filter(r => r.serviceType === serviceType)
 
-  const parsed = rows.map(withParsedFields)
+  const defaults = Object.fromEntries((['text', 'image', 'video'] as const).map(type => [type, getGlobalDefaultModel(type)]))
+  const parsed = rows.map(row => {
+    const type = row.serviceType as ServiceType
+    const selected = defaults[type]
+    return { ...withParsedFields(row),
+      global_default_eligible: ['text', 'image', 'video'].includes(type) && isGlobalDefaultEligible(row, type),
+      global_default_model: selected?.configId === row.id ? selected.model : null }
+  })
   return success(c, parsed)
+})
+
+// PUT /ai-configs/default/:serviceType — set the exact global model independently of service priority.
+app.put('/default/:serviceType', async c => {
+  const type = c.req.param('serviceType') as ServiceType
+  if (!['text', 'image', 'video'].includes(type)) return badRequest(c, '模型服务类型无效')
+  const body = await c.req.json().catch(() => null)
+  if (!body || !Number.isSafeInteger(body.configId) || body.configId <= 0 ||
+      typeof body.model !== 'string' || !body.model.trim() || body.model.length > 500) {
+    return badRequest(c, '需要有效的配置 ID 和模型名称')
+  }
+  try {
+    return success(c, setGlobalDefaultModel(type, { configId: body.configId, model: body.model }))
+  } catch (error) {
+    return badRequest(c, error instanceof Error ? error.message : '无法设置全局默认模型')
+  }
 })
 
 // POST /ai-configs

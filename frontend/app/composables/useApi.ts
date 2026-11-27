@@ -369,6 +369,7 @@ export const aiConfigAPI = {
   list: (t?: string) => api.get(`/ai-configs${t ? `?service_type=${t}` : ''}`),
   create: (d: any) => api.post('/ai-configs', d),
   update: (id: number, d: any) => api.put(`/ai-configs/${id}`, d),
+  setDefault: (serviceType: 'text' | 'image' | 'video', selection: { configId: number; model: string }) => api.put(`/ai-configs/default/${serviceType}`, selection),
   del: (id: number) => api.del(`/ai-configs/${id}`),
   test: (d: any) => api.post('/ai-configs/test', d),
 }

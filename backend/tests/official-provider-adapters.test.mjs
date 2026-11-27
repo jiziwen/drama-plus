@@ -64,7 +64,7 @@ test('backend rejects unsupported providers at DB and route boundaries', () => {
   assert.doesNotMatch(ai, /'vidu'/)
   assert.doesNotMatch(ai, /audio:\s*\[/)
   assert.match(ai, /isOfficialProvider/)
-  assert.match(ai, /isOfficialProvider\(serviceType,\s*r\.provider\)/)
+  assert.match(ai, /isOfficialProvider\(type,\s*row\.provider\)/)
   assert.match(ai, /isOfficialProvider\(row\.serviceType as ServiceType,\s*row\.provider\)/)
 
   assert.match(route, /isOfficialProvider/)

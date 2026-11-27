@@ -43,12 +43,56 @@ export function isOfficialProvider(serviceType?: string | null, provider?: strin
   return !!providers && providers.includes((provider || '').toLowerCase())
 }
 
-/** A saved video service without models cannot act as the default generator. */
-function hasVideoModel(model: string | null): boolean {
+type ConfigRow = typeof schema.aiServiceConfigs.$inferSelect
+export type GlobalModelSelection = { configId: number; model: string }
+
+export function configModels(model: string | null): string[] {
   try {
     const models: unknown = JSON.parse(model || '[]')
-    return Array.isArray(models) && typeof models[0] === 'string' && !!models[0].trim()
-  } catch { return false }
+    return Array.isArray(models) ? models.filter((item): item is string => typeof item === 'string' && !!item.trim()) : []
+  } catch { return [] }
+}
+
+/** CLI-only video providers require workflow-specific authorization and inputs. */
+export function isGlobalDefaultEligible(row: ConfigRow, type: ServiceType): boolean {
+  return row.serviceType === type && !!row.isActive && isOfficialProvider(type, row.provider) &&
+    !(type === 'video' && ['jimeng', 'libtv'].includes((row.provider || '').toLowerCase())) &&
+    configModels(row.model).length > 0
+}
+
+const defaultKey = (type: ServiceType) => `global_default_model:${type}`
+
+/** Resolve a stored choice against current configuration, or fall back deterministically. */
+export function getGlobalDefaultModel(type: ServiceType): GlobalModelSelection | null {
+  const rows = db.select().from(schema.aiServiceConfigs).where(eq(schema.aiServiceConfigs.serviceType, type)).all()
+    .filter(row => isGlobalDefaultEligible(row, type))
+    .sort((a, b) => (b.priority || 0) - (a.priority || 0) || a.id - b.id)
+  const stored = db.select({ value: schema.appSettings.value }).from(schema.appSettings)
+    .where(eq(schema.appSettings.key, defaultKey(type))).get()
+  try {
+    const value = JSON.parse(stored?.value || 'null') as Partial<GlobalModelSelection> | null
+    const row = rows.find(item => item.id === value?.configId)
+    if (row && typeof value?.model === 'string' && configModels(row.model).includes(value.model)) {
+      return { configId: row.id, model: value.model }
+    }
+  } catch { /* unreadable saved choice uses the legacy fallback */ }
+  const first = rows[0]
+  return first ? { configId: first.id, model: configModels(first.model)[0] } : null
+}
+
+/** Set one exact configuration/model pair without changing service priority or model order. */
+export function setGlobalDefaultModel(type: ServiceType, selection: GlobalModelSelection): GlobalModelSelection {
+  return db.transaction(tx => {
+    const row = tx.select().from(schema.aiServiceConfigs).where(eq(schema.aiServiceConfigs.id, selection.configId)).get()
+    if (!row || !isGlobalDefaultEligible(row, type) || !configModels(row.model).includes(selection.model)) {
+      throw new Error('所选模型配置不可用或不支持设为全局默认，请重新选择')
+    }
+    const value = JSON.stringify(selection)
+    const updatedAt = new Date().toISOString()
+    tx.insert(schema.appSettings).values({ key: defaultKey(type), value, updatedAt })
+      .onConflictDoUpdate({ target: schema.appSettings.key, set: { value, updatedAt } }).run()
+    return selection
+  }, { behavior: 'immediate' })
 }
 
 export function getTextProviderBaseUrl(config: AIConfig) {
@@ -74,28 +118,21 @@ const lastLoggedActiveConfigKey = new Map<string, string>()
 const lastLoggedConfigByIdKey = new Map<number, string>()
 
 export async function getActiveConfig(serviceType: ServiceType): Promise<AIConfig | null> {
-  const rows = (await db.select().from(schema.aiServiceConfigs)
-    .where(eq(schema.aiServiceConfigs.serviceType, serviceType))
-  )
-    .filter(r => r.isActive && isOfficialProvider(serviceType, r.provider))
-    .filter(r => serviceType !== 'video' || (!['jimeng', 'libtv'].includes(r.provider || '') && hasVideoModel(r.model)))
-    .sort((a, b) => (b.priority || 0) - (a.priority || 0)) // 高优先级优先
-
-  const active = rows[0]
-  if (!active) {
+  const selected = getGlobalDefaultModel(serviceType)
+  const active = selected && db.select().from(schema.aiServiceConfigs).where(eq(schema.aiServiceConfigs.id, selected.configId)).get()
+  if (!active || !selected) {
     logTaskWarn('AIConfig', 'active-config-missing', { serviceType })
     return null
   }
 
-  const models = active.model ? JSON.parse(active.model) : []
-  const logKey = `${active.id}:${models[0] || ''}`
+  const logKey = `${active.id}:${selected.model}`
   if (lastLoggedActiveConfigKey.get(serviceType) !== logKey) {
     lastLoggedActiveConfigKey.set(serviceType, logKey)
     logTaskProgress('AIConfig', 'active-config-selected', {
       serviceType,
       configId: active.id,
       provider: active.provider,
-      model: models[0] || '',
+      model: selected.model,
       priority: active.priority,
     })
   }
@@ -104,7 +141,7 @@ export async function getActiveConfig(serviceType: ServiceType): Promise<AIConfi
     provider: active.provider || '',
     baseUrl: active.baseUrl,
     apiKey: active.apiKey,
-    model: models[0] || '',
+    model: selected.model,
     temperature: parseConfigTemperature(active.settings),
     comfyui: parseComfySettings(active.settings),
   }
@@ -116,17 +153,9 @@ export async function getTextConfig(): Promise<AIConfig> {
   return config
 }
 
-/**
- * 取某服务类型当前启用且优先级最高的官方配置 ID（创建集时自动锁定用）
- */
+/** 获取指定类型的全局默认配置 ID。 */
 export async function getActiveConfigId(serviceType: ServiceType): Promise<number | null> {
-  const rows = (await db.select().from(schema.aiServiceConfigs)
-    .where(eq(schema.aiServiceConfigs.serviceType, serviceType))
-  )
-    .filter(r => r.isActive && isOfficialProvider(serviceType, r.provider))
-    .filter(r => serviceType !== 'video' || (!['jimeng', 'libtv'].includes(r.provider || '') && hasVideoModel(r.model)))
-    .sort((a, b) => (b.priority || 0) - (a.priority || 0))
-  return rows[0]?.id ?? null
+  return getGlobalDefaultModel(serviceType)?.configId ?? null
 }
 
 export async function getConfigById(id: number): Promise<AIConfig | null> {
@@ -144,14 +173,16 @@ export async function getConfigById(id: number): Promise<AIConfig | null> {
     })
     return null
   }
-  const models = row.model ? JSON.parse(row.model) : []
-  const logKey = `${row.provider}:${models[0] || ''}:${row.serviceType}`
+  const models = configModels(row.model)
+  const selected = getGlobalDefaultModel(row.serviceType as ServiceType)
+  const model = selected?.configId === id ? selected.model : models[0] || ''
+  const logKey = `${row.provider}:${model}:${row.serviceType}`
   if (lastLoggedConfigByIdKey.get(id) !== logKey) {
     lastLoggedConfigByIdKey.set(id, logKey)
     logTaskProgress('AIConfig', 'config-by-id-selected', {
       configId: id,
       provider: row.provider,
-      model: models[0] || '',
+      model,
       serviceType: row.serviceType,
     })
   }
@@ -160,7 +191,7 @@ export async function getConfigById(id: number): Promise<AIConfig | null> {
     provider: row.provider || '',
     baseUrl: row.baseUrl,
     apiKey: row.apiKey,
-    model: models[0] || '',
+    model,
     videoCliAccountId: row.videoCliAccountId ?? undefined,
     temperature: parseConfigTemperature(row.settings),
     comfyui: parseComfySettings(row.settings),

@@ -8,7 +8,7 @@ import { db, schema } from '../db/index.js'
 import { getAbsolutePath } from '../utils/storage.js'
 import { STORAGE_ROOT } from '../utils/paths.js'
 import { scheduleRetiredUploadCleanup } from './script-video-media-retention.js'
-import { generateVideo, VIDEO_REQUEST_NOT_SENT_MESSAGE, type VideoSubmissionControl } from './generation.js'
+import { canRecoverOriginalVideoTask, generateVideo, resumeRecoverableVideoTask, VIDEO_REQUEST_NOT_SENT_MESSAGE, type VideoSubmissionControl } from './generation.js'
 import { publicMediaBaseUrl } from './public-media.js'
 import { ffmpeg } from '../utils/ffmpeg.js'
 import { isPreTlsConnectionReset } from '../utils/network-error.js'
@@ -558,26 +558,19 @@ function reconcileAicostVideoRejection(task: typeof schema.sysTask.$inferSelect)
 
 /** Route must resolve taskId from the server-owned project/episode/card reservation. */
 export async function getScriptVideoGeneration(taskId: number, options: {
-  reconcileRejection?: boolean; finalShotNumber?: number | 'last'
+  reconcileRejection?: boolean; finalShotNumber?: number | 'last'; resumeOriginal?: boolean
 } = {}): Promise<ScriptVideoGenerationStatus> {
   if (!Number.isSafeInteger(taskId) || taskId <= 0) throw new Error('视频任务标识无效')
-  const [task] = await db.select().from(schema.sysTask).where(and(
+  let [task] = await db.select().from(schema.sysTask).where(and(
     eq(schema.sysTask.id, taskId), eq(schema.sysTask.type, 'video'), isNull(schema.sysTask.dramaId), isNull(schema.sysTask.storyboardId),
   )).limit(1)
   if (!task) throw new Error('视频任务不存在')
+  if (options.resumeOriginal) task = await resumeRecoverableVideoTask(task)
   if (task.status === 'canceled') return { taskId, status: 'canceled', stage: 'canceled' }
   if (task.status === 'failed') {
     const rejected = options.reconcileRejection !== false && reconcileAicostVideoRejection(task)
     if (rejected) return { taskId, status: 'failed', stage: task.stage || 'failed', code: 'VIDEO_FAILED', error: safeTaskError(rejected) }
-    let canRecover = false
-    if (task.provider === 'libtv' && task.taskId && !['generation_failed', 'submission_not_sent'].includes(task.errorCode || '')) {
-      try {
-        const node = JSON.parse(task.params || '{}').libtv
-        canRecover = node?.nodeKey === task.taskId && typeof node.projectId === 'string' &&
-          /^(?:[\da-f]{32}|[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12})$/iu.test(node.projectId) &&
-          /^[\w][\w.-]{0,127}$/u.test(node.nodeKey)
-      } catch { /* 历史未保存原节点的任务不可推断或重建。 */ }
-    }
+    const canRecover = canRecoverOriginalVideoTask(task)
     const code = task.errorCode === 'delivery_failed' ? 'DELIVERY_FAILED'
       : task.errorCode === 'submission_unknown' || canRecover ? 'SUBMISSION_UNKNOWN' : 'VIDEO_FAILED'
     return { taskId, status: 'failed', stage: task.stage || 'failed', code, error: safeTaskError(task.errorMsg || '视频生成失败'),

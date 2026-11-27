@@ -4,7 +4,13 @@ const seedance25 = {
   audioDuration: 30, promptLimit: 15000,
 }
 
+export const JIMENG_SEEDANCE_20_MINI_MODEL = 'jimeng-seedance-2.0-mini'
+
 export const jimengVideoModelSpecs = {
+  [JIMENG_SEEDANCE_20_MINI_MODEL]: {
+    canonicalModel: 'seedance_2.0_mini', resolutions: ['720p'], maxDuration: 15,
+    images: 9, videos: 3, audios: 3, maxReferences: 12, audioDuration: 15, promptLimit: 4000,
+  },
   'jimeng-seedance-2.5': {
     ...seedance25, canonicalModel: 'seedance_2.5', resolutions: ['480p', '720p', '1080p', '4k'],
   },

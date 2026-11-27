@@ -10,7 +10,7 @@ import { videoCliFailure } from './video-cli-errors.js'
 import { libtvWebAssistant } from './libtv-web-assistant.js'
 import { STORAGE_ROOT } from '../utils/paths.js'
 import type { GenerateVideoParams } from './generation.js'
-import { libtvVideoModel, LIBTV_VIDEO_RATIOS } from './libtv-video-models.js'
+import { libtvVideoModel, LIBTV_SEEDANCE_20_MINI_MODEL, LIBTV_VIDEO_RATIOS } from './libtv-video-models.js'
 import { activeLibTVCanvas, configuredLibTVCanvas, ensureLibTVCanvas, libtvAccountIdentifier, libtvProjectIdPattern as availableProject } from './libtv-project.js'
 import { whileVideoCliDisconnecting } from './video-cli-tasks.js'
 
@@ -93,6 +93,33 @@ export async function runLibTVCli(args: readonly string[], generation = false, t
 
 export async function checkLibTVConnection() {
   await runLibTVCli(['project', await libtvProjectId()])
+}
+
+/** Verify the current account's live official model schema before creating a voice video. */
+export async function libtvHasSeedance20Mini(seconds: number, size: string): Promise<boolean> {
+  const result = await runLibTVCli(['model', LIBTV_SEEDANCE_20_MINI_MODEL])
+  const schema = asObject(result.schema)
+  const properties = asObject(schema?.properties)
+  const resolution = asObject(properties?.resolution)
+  const duration = asObject(properties?.duration)
+  const sound = asObject(properties?.enableSound)
+  const config = asObject(schema?.config)
+  const types = asObject(config?.generateTypes)
+  const rules = Array.isArray(schema?.rules) ? schema.rules : []
+  const enumHas = (value: unknown, expected: string) => Array.isArray(value) && value.some(item =>
+    item === expected || asObject(item)?.value === expected)
+  return result.modelKey === LIBTV_SEEDANCE_20_MINI_MODEL && result.modality === 'video' &&
+    schema?.modelKey === LIBTV_SEEDANCE_20_MINI_MODEL &&
+    enumHas(resolution?.enum, size) && enumHas(sound?.enum, 'on') &&
+    typeof duration?.min === 'number' && duration.min <= seconds &&
+    typeof duration?.max === 'number' && duration.max >= seconds &&
+    typeof duration?.step === 'number' && duration.step > 0 &&
+    Number.isInteger((seconds - duration.min) / duration.step) &&
+    typeof types?.text === 'number' && rules.some(rule => {
+      const value = asObject(rule)
+      return Array.isArray(value?.forModeTypes) && value.forModeTypes.includes('text2video') &&
+        Array.isArray(value.require) && value.require.includes('prompt')
+    })
 }
 
 type LibTVAuthStatus = 'unauthenticated' | 'authenticated' | 'pending' | 'expired' | 'failed' | 'unavailable'
@@ -589,7 +616,7 @@ const allowedExtensions: Record<MediaKind, string[]> = {
 
 export function validateLibTVVideo(params: GenerateVideoParams) {
   const model = params.model && libtvVideoModel(params.model)
-  if (!model) throw new LibTVCliError('请选择 LibTV 支持的 Seedance 2.5 模型')
+  if (!model) throw new LibTVCliError('请选择 LibTV 支持的 Seedance 模型')
   const prompt = params.prompt?.trim()
   if (!prompt) throw new LibTVCliError('请填写视频提示词')
   if (params.referenceFileUrl || params.referenceLinkUrl) throw new LibTVCliError('LibTV Seedance 参考素材须为项目内图片、视频或音频')
@@ -604,6 +631,9 @@ export function validateLibTVVideo(params: GenerateVideoParams) {
   const images = params.referenceImageUrls?.length ? params.referenceImageUrls : params.imageUrl ? [params.imageUrl] : []
   const videos = params.referenceVideoUrls || []
   const audios = params.referenceAudioUrls || []
+  if (model.id === LIBTV_SEEDANCE_20_MINI_MODEL && audios.length && !images.length && !videos.length) {
+    throw new LibTVCliError('所选 LibTV 模型使用参考音频时须同时提供图片或视频')
+  }
   const refs: Media[] = [
     ...images.map(source => ({ kind: 'image' as const, source })),
     ...videos.map(source => ({ kind: 'video' as const, source })),

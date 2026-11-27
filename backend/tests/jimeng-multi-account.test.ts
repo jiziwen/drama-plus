@@ -52,7 +52,7 @@ test('Jimeng concurrent account calls and pending web authorizations use the sel
     else if (command === 'auth account') ok({ userId: profile, displayName: profile })
     else if (command === 'auth login') ok({ status: 'authorization_required', challenge: { deviceCode: profile, verificationUriComplete: 'https://jimeng.jianying.com/authorize?scope=' + profile } })
     else if (command === 'auth wait') waiting.set(profile, callback)
-    else if (command === 'model list') {
+    else if (command === 'model ls') {
       if (failure) queueMicrotask(() => callback(new Error('failed'), '', JSON.stringify({ ok: false, error: failure })))
       else ok({ items: [{ model: 'seedance_2.5', displayName: 'Seedance 2.5' }] })
     } else if (command === 'space current') ok({ userId: profile, kind: 'personal' })

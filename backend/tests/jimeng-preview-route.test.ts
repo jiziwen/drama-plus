@@ -7,6 +7,7 @@ import path from 'node:path'
 import { test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { serve } from '@hono/node-server'
+import { eq } from 'drizzle-orm'
 import type { ScriptVideoCard, ScriptVideoProduction } from '../src/services/script-video-types.js'
 
 const fakeCli = String.raw`#!/usr/bin/env node
@@ -26,7 +27,7 @@ switch (command) {
   case 'auth account': ok({ userId: '123', displayName: 'Fixture', availableCredits: '120' }); break;
   case 'space current': ok(subject); break;
   case 'canvas create': ok({ project: { projectId: flag('project-id') } }); break;
-  case 'model list': ok({ items: [{ model: 'seedance_2.5', displayName: 'Seedance 2.5' }] }); break;
+  case 'model ls': ok({ items: [{ model: 'seedance_2.5', displayName: 'Seedance 2.5' }] }); break;
   case 'node create': {
     const node = {
       nodeId: 'video-node', type: 'video', generation: {
@@ -68,7 +69,7 @@ const card: ScriptVideoCard = {
   prompt: '',
 }
 
-test('script-to-video submits directly with one internal Jimeng credit authorization and saves the generated clip', {
+test('script-to-video authorizes Jimeng once and restores an overnight task using the saved submission ID', {
   skip: process.platform === 'win32' ? 'The fixture uses an executable shebang.' : false,
   timeout: 12_000,
 }, async t => {
@@ -98,6 +99,7 @@ test('script-to-video submits directly with one internal Jimeng credit authoriza
   await fs.writeFile(log, '')
   const { db, schema } = await import('../src/db/index.js')
   closeDatabase = () => db.$client.close()
+  const { isGenerationTaskActive, resumeRecoverableVideoTask } = await import('../src/services/generation.js')
   const { default: routes } = await import('../src/routes/script-video.js')
   const { renderScriptVideoPrompt } = await import('../src/services/script-video-format.js')
   server = serve({ fetch: routes.fetch, hostname: '127.0.0.1', port: 0, overrideGlobalObjects: false })
@@ -171,7 +173,29 @@ test('script-to-video submits directly with one internal Jimeng credit authoriza
   assert.equal((await fs.readFile(path.join(root, localVideo.replace(/^\//, '')))).toString('hex'), '0000000c667479706d703432')
 
   assert.equal(db.select().from(schema.sysTask).all().length, 1)
+  const countBeforeRecovery = (await commands()).length
+  const taskId = started.payload.data.taskId
+  const overnight = new Date(Date.now() - 12 * 60 * 60_000).toISOString()
+  const staleTask = db.update(schema.sysTask).set({
+    status: 'failed', stage: 'polling', errorCode: 'poll_timeout', errorMsg: '即梦任务等待超时',
+    updatedAt: overnight, localPath: null, completedAt: null,
+  }).where(eq(schema.sysTask.id, taskId)).returning().get()!
+  const original = JSON.parse(staleTask.params!).jimeng
+  assert.equal(original.submitId, staleTask.taskId)
+  await fs.unlink(path.join(root, localVideo.replace(/^\//, '')))
+  assert.equal((await resumeRecoverableVideoTask(staleTask)).status, 'processing')
+  const recoveryDeadline = Date.now() + 4_000
+  while (isGenerationTaskActive(taskId) && Date.now() < recoveryDeadline) await delay(20)
+  assert.equal(isGenerationTaskActive(taskId), false)
+  const restored = db.select().from(schema.sysTask).where(eq(schema.sysTask.id, taskId)).get()!
+  assert.equal(restored.status, 'completed', restored.errorMsg || '')
+  assert.equal(restored.taskId, original.submitId)
+  assert.equal(restored.localPath, localVideo.replace(/^\//, ''))
+  assert.equal((await fs.readFile(path.join(root, restored.localPath!))).toString('hex'), '0000000c667479706d703432')
   const calls = await commands()
+  const recoveryCalls = calls.slice(countBeforeRecovery)
+  assert.deepEqual(recoveryCalls.map(entry => entry.command), ['operation status', 'resource get', 'resource download'])
+  assert.deepEqual(recoveryCalls[0].args, ['operation', 'status', `--project-id=${original.projectId}`, '--', original.submitId])
   assert.equal(calls.filter(entry => entry.command === 'node quote').length, 1)
   assert.ok(!calls.some(entry => entry.command === 'auth account'))
   const paid = calls.filter(isMoneyCommand)

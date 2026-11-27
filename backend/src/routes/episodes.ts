@@ -6,6 +6,7 @@ import { toSnakeCaseArray, toSnakeCase } from '../utils/transform.js'
 import { getActiveConfigId } from '../services/ai.js'
 import { EXTRACT_TARGETS, getExtractionStatus, startExtraction, type ExtractTarget } from '../services/extraction.js'
 import { getVideoPromptBatchStatus, startVideoPromptBatch } from '../services/video-prompts.js'
+import { resumeLatestStoryboardVideoTasks } from './latest-storyboard-video-tasks.js'
 
 const app = new Hono()
 
@@ -14,11 +15,12 @@ app.post('/', async (c) => {
   const body = await c.req.json()
   if (!body.drama_id) return badRequest(c, 'drama_id 必填')
 
-  // 图片/视频配置：显式传入优先，缺省时自动锁定当前启用的最高优先级官方配置
-  const imageConfigId = body.image_config_id ?? await getActiveConfigId('image')
-  const videoConfigId = body.video_config_id ?? await getActiveConfigId('video')
-  if (!imageConfigId) return badRequest(c, '未找到启用的图片生成配置，请先在设置中心添加')
-  if (!videoConfigId) return badRequest(c, '未找到启用的视频生成配置，请先在设置中心添加')
+  // An omitted selection follows the global default at generation time.
+  // Persist a config only when the caller actually supplied one.
+  const imageConfigId = body.image_config_id ?? null
+  const videoConfigId = body.video_config_id ?? null
+  if (!imageConfigId && !await getActiveConfigId('image')) return badRequest(c, '未找到启用的图片生成配置，请先在设置中心添加')
+  if (!videoConfigId && !await getActiveConfigId('video')) return badRequest(c, '未找到启用的视频生成配置，请先在设置中心添加')
   const ts = now()
 
   // Get next episode number（忽略已软删的集，删除中间集后新集号可复用空位之后的最大值）
@@ -251,7 +253,7 @@ app.get('/:id/generation-tasks', async (c) => {
     .slice(0, 20)
 
   return success(c, {
-    tasks: toSnakeCaseArray(tasks),
+    tasks: toSnakeCaseArray(await resumeLatestStoryboardVideoTasks(tasks)),
     merges: toSnakeCaseArray(merges),
   })
 })

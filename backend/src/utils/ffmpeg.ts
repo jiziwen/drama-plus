@@ -25,18 +25,20 @@ function resolveStatic(moduleName: string): string | null {
   }
 }
 
-const ffmpegPath = process.env.FFMPEG_BIN || resolveStatic('ffmpeg-static')
-const ffprobePath = process.env.FFPROBE_BIN || resolveStatic('ffprobe-static')
+function resolveBinary(configured: string | undefined, bundled: string | null, command: string): string {
+  return configured || (bundled && fs.existsSync(bundled) ? bundled : command)
+}
 
-// 系统未安装 ffmpeg 时使用项目内置二进制
-if (ffmpegPath) ffmpeg.setFfmpegPath(ffmpegPath)
-if (ffprobePath) ffmpeg.setFfprobePath(ffprobePath)
+const ffmpegPath = resolveBinary(process.env.FFMPEG_BIN, resolveStatic('ffmpeg-static'), 'ffmpeg')
+const ffprobePath = resolveBinary(process.env.FFPROBE_BIN, resolveStatic('ffprobe-static'), 'ffprobe')
 
-export { ffmpeg }
+ffmpeg.setFfmpegPath(ffmpegPath)
+ffmpeg.setFfprobePath(ffprobePath)
+
+export { ffmpeg, ffmpegPath, ffprobePath }
 
 /** spawn 一次 -version 验证二进制真实可执行（含同步 EFTYPE 兜底） */
-function probeBinary(binPath: string | null): Promise<boolean> {
-  if (!binPath || !fs.existsSync(binPath)) return Promise.resolve(false)
+function probeBinary(binPath: string): Promise<boolean> {
   return new Promise((resolve) => {
     let settled = false
     const finish = (ok: boolean) => {

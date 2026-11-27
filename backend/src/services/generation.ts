@@ -36,6 +36,8 @@ import { assertVideoCliNotDisconnecting, holdVideoCliSubmission } from './video-
 import { resolveVideoCliAccountId } from './video-cli-accounts.js'
 import { cancelUpstreamVideo } from './video-upstream-cancel.js'
 import { scheduleRetiredUploadCleanup } from './script-video-media-retention.js'
+import { isScriptVideoVoiceModel, saveGeneratedCharacterVoice, scriptVideoVoiceTaskScope, scriptVideoVoiceRequest, type ScriptVideoVoiceRequest } from './script-video-voice-generation.js'
+import { ScriptVideoStoreError } from './script-video-store.js'
 import { GALLERY_IMAGE_SIZES, isGalleryImageAspect, type GalleryImageAspect } from './gallery-asset-types.js'
 
 type TaskType = 'image' | 'video'
@@ -45,6 +47,8 @@ export const VIDEO_REQUEST_NOT_SENT_MESSAGE = '连接视频服务时 TLS 握手�
 const activeTasks = new Set<number>()
 export function isGenerationTaskActive(id: number): boolean { return activeTasks.has(id) }
 const videoSubmissions = new Set<number>()
+const voiceSubmissions = new Set<string>()
+const voiceGenerationActive = () => new ScriptVideoStoreError('该角色已有声音生成任务，请等待完成', 409, 'VOICE_GENERATION_ACTIVE')
 function runBackground(id: number, job: () => Promise<void>) {
   if (activeTasks.has(id)) return
   activeTasks.add(id)
@@ -58,6 +62,7 @@ const POLL_PROFILES: Record<TaskType, { attempts: number; intervalMs: number; ma
   image: { attempts: 120, intervalMs: 5000, maxDurationMs: 600_000 },
   video: { attempts: 300, intervalMs: 10_000, maxDurationMs: null },
 }
+const VIDEO_RECOVERY_RETRY_MS = 60_000
 
 interface GenerateImageParams {
   storyboardId?: number
@@ -105,6 +110,7 @@ export interface GenerateVideoParams {
   allowLibTV?: boolean
   /** 提交时固定的本地账号，切换默认账号不改变已有任务。 */
   videoCliAccountId?: string
+  scriptVideoVoice?: ScriptVideoVoiceRequest
 }
 
 export async function generateImage(params: GenerateImageParams): Promise<number> {
@@ -169,16 +175,23 @@ export type VideoSubmissionControl = {
 export async function generateVideo(params: GenerateVideoParams, control?: VideoSubmissionControl): Promise<number> {
   let releaseCliSubmission: (() => void) | undefined
   const storyboardId = params.storyboardId
+  const voice = params.scriptVideoVoice
+  const voiceKey = voice && `${voice.projectId}/${voice.assetId}`
   if (storyboardId && videoSubmissions.has(storyboardId)) throw new Error('该分镜正在提交任务，请勿重复点击')
+  if (voiceKey && voiceSubmissions.has(voiceKey)) throw voiceGenerationActive()
+  if (voiceKey) voiceSubmissions.add(voiceKey)
   if (storyboardId) videoSubmissions.add(storyboardId)
   try {
+    if (voice && activeVoiceTask(db, voice)) throw voiceGenerationActive()
     if (storyboardId) {
       const [latest] = await db.select().from(schema.sysTask).where(and(eq(schema.sysTask.type, 'video'), eq(schema.sysTask.storyboardId, storyboardId)))
         .orderBy(desc(schema.sysTask.id)).limit(1)
       if (latest?.status === 'processing') throw new Error('该分镜已有运行中的任务，请等待结果')
       if (latest?.status === 'failed' && params.forceNew !== true) throw new Error('请先恢复原任务；重新生成需确认可能再次计费')
     }
-    const config = await resolveMediaConfig('video', params)
+    const config = await resolveMediaConfig('video', params, voice ? isScriptVideoVoiceModel : undefined)
+    if (voice && !isScriptVideoVoiceModel(config.provider, config.model))
+      throw new ScriptVideoStoreError('请选择即梦积分或 LibTV 的 Seedance 2.0 Mini 视频服务')
     if (config.provider === 'jimeng' || config.provider === 'libtv') {
       const accountId = resolveVideoCliAccountId(config.provider, params.videoCliAccountId ?? config.videoCliAccountId)
       params = { ...params, videoCliAccountId: accountId }
@@ -227,7 +240,13 @@ export async function generateVideo(params: GenerateVideoParams, control?: Video
   } finally {
     releaseCliSubmission?.()
     if (storyboardId) videoSubmissions.delete(storyboardId)
+    if (voiceKey) voiceSubmissions.delete(voiceKey)
   }
+}
+
+function activeVoiceTask(database: Pick<typeof db, 'select'>, voice: ScriptVideoVoiceRequest) {
+  const task = schema.sysTask
+  return database.select({ id: task.id }).from(task).where(and(eq(task.status, 'processing'), scriptVideoVoiceTaskScope(voice))).get()
 }
 
 function videoTaskInputs(params: GenerateVideoParams, provider: string) {
@@ -240,6 +259,7 @@ function videoTaskInputs(params: GenerateVideoParams, provider: string) {
     referenceLinkUrl, generateAudio: generateAudio === false ? 0 : 1, duration, aspectRatio,
     resolution: normalizeStoredVideoResolution(resolution, provider), seed, promptExtend, watermark,
     ...(params.videoCliAccountId && { videoCliAccountId: params.videoCliAccountId }),
+    ...(params.scriptVideoVoice && { scriptVideoVoice: params.scriptVideoVoice }),
   }
 }
 
@@ -316,6 +336,8 @@ async function createTask(
   control?.signal.throwIfAborted()
   const ts = now()
   const res = db.transaction(tx => {
+    const voice = params.scriptVideoVoice as ScriptVideoVoiceRequest | undefined
+    if (voice && activeVoiceTask(tx, voice)) throw voiceGenerationActive()
     if (fields.storyboardId) {
       const shot = tx.select({ id: schema.storyboards.id, deletedAt: schema.storyboards.deletedAt })
         .from(schema.storyboards).where(eq(schema.storyboards.id, fields.storyboardId)).get()
@@ -568,7 +590,7 @@ async function processTask(id: number, config: AIConfig) {
     await pollTask(record, config, taskId!)
   } catch (err: any) {
     const [current] = await db.select().from(schema.sysTask).where(eq(schema.sysTask.id, id))
-    const uncertain = submittedVideoRequest && current?.type === 'video' && !current.taskId && !current.resultUrl
+    const uncertain = submittedVideoRequest && current?.type === 'video' && !current.resultUrl
       && (err instanceof TypeError || err instanceof SyntaxError || /timeout|abort|No task_id|API error 5/i.test(err.message))
     await failTask(id, safeTaskError(err), uncertain ? 'submission_unknown'
       : current?.provider === 'libtv' && !current.taskId && err instanceof LibTVCliError ? 'submission_not_sent' : undefined)
@@ -576,10 +598,11 @@ async function processTask(id: number, config: AIConfig) {
 }
 
 async function markPolling(id: number, taskId: string | undefined) {
-  await db.update(schema.sysTask)
+  const updated = db.update(schema.sysTask)
     .set({ taskId, stage: 'polling', status: 'processing', updatedAt: now() })
-    .where(and(eq(schema.sysTask.id, id), ne(schema.sysTask.status, 'canceled')))
-  logTaskProgress('SysTask', 'poll-start', { id, taskId })
+    .where(and(eq(schema.sysTask.id, id), ne(schema.sysTask.status, 'canceled'), ne(schema.sysTask.status, 'completed'))).run().changes > 0
+  if (updated) logTaskProgress('SysTask', 'poll-start', { id, taskId })
+  return updated
 }
 
 async function failTask(id: number, message: string, code?: string) {
@@ -587,7 +610,7 @@ async function failTask(id: number, message: string, code?: string) {
   logTaskError('SysTask', 'failed', { id, error: message })
   await db.update(schema.sysTask)
     .set({ status: 'failed', errorMsg: safeTaskError(message), ...(code ? { errorCode: code } : {}), updatedAt: now() })
-    .where(and(eq(schema.sysTask.id, id), ne(schema.sysTask.status, 'canceled')))
+    .where(and(eq(schema.sysTask.id, id), ne(schema.sysTask.status, 'canceled'), ne(schema.sysTask.status, 'completed')))
   scheduleRetiredUploadCleanup()
 }
 
@@ -613,11 +636,11 @@ export async function cancelDispatchedVideoTask(id: number) {
   return canceled
 }
 
-async function pollTask(record: SysTaskRecord, config: AIConfig, taskId: string) {
-  return withApiCallContext({ taskId: record.id, dramaId: record.dramaId || undefined, provider: config.provider, model: record.model || config.model, category: record.type }, () => pollTaskResponse(record, config, taskId))
+async function pollTask(record: SysTaskRecord, config: AIConfig, taskId: string, recover = false) {
+  return withApiCallContext({ taskId: record.id, dramaId: record.dramaId || undefined, provider: config.provider, model: record.model || config.model, category: record.type }, () => pollTaskResponse(record, config, taskId, recover))
 }
 
-async function pollTaskResponse(record: SysTaskRecord, config: AIConfig, taskId: string) {
+async function pollTaskResponse(record: SysTaskRecord, config: AIConfig, taskId: string, recover: boolean) {
   if (config.provider === 'jimeng') {
     const input = parseTaskParams(record.params).jimeng as JimengVideoRunInput | undefined
     if (!input || input.submitId !== taskId) throw new Error('未找到原即梦提交信息')
@@ -642,7 +665,7 @@ async function pollTaskResponse(record: SysTaskRecord, config: AIConfig, taskId:
       await failTask(record.id, 'Timeout: Polling exceeded 10 minutes')
       return
     }
-    await new Promise(r => setTimeout(r, profile.intervalMs))
+    if (!recover || i > 0) await new Promise(r => setTimeout(r, profile.intervalMs))
     if (type === 'video' && db.select({ status: schema.sysTask.status }).from(schema.sysTask)
       .where(eq(schema.sysTask.id, record.id)).get()?.status === 'canceled') return
     try {
@@ -700,13 +723,13 @@ async function pollTaskResponse(record: SysTaskRecord, config: AIConfig, taskId:
       const exhausted = i === profile.attempts - 1
         || (profile.maxDurationMs != null && Date.now() - startedAt >= profile.maxDurationMs)
       if (exhausted) {
-        await failTask(record.id, `Timeout: ${err.message}`)
+        await failTask(record.id, `Timeout: ${err.message}`, type === 'video' ? 'poll_timeout' : undefined)
         return
       }
       logTaskWarn(label, 'poll-retry', { id: record.id, taskId, attempt: i + 1, error: err.message })
     }
   }
-  await failTask(record.id, 'Timeout: polling attempts exhausted')
+  await failTask(record.id, 'Timeout: polling attempts exhausted', type === 'video' ? 'poll_timeout' : undefined)
 }
 
 async function recoverLibTVNode(record: SysTaskRecord, node: LibTVNode, submissionFailure?: string) {
@@ -944,7 +967,15 @@ async function handleVideoComplete(record: SysTaskRecord, videoUrl: string, dura
 
 async function saveCompletedVideo(record: SysTaskRecord, localPath: string, duration: number | null | undefined) {
   await db.update(schema.sysTask).set({ localPath, stage: 'saving', updatedAt: now() }).where(eq(schema.sysTask.id, record.id))
-  await extractVideoPoster(localPath)
+  const voice = scriptVideoVoiceRequest(record.params)
+  if (voice) {
+    try {
+      await saveGeneratedCharacterVoice(voice, localPath)
+    } catch (error) {
+      await failTask(record.id, safeTaskError(error), 'voice_delivery_failed')
+      return
+    }
+  } else await extractVideoPoster(localPath)
   // 恢复旧任务不能覆盖用户后来生成的视频。
   db.transaction(tx => {
     const newer = record.storyboardId ? tx.select({ id: schema.sysTask.id }).from(schema.sysTask)
@@ -1004,13 +1035,62 @@ export async function recoverImageTask(id: number): Promise<void> {
   }, () => saveImageResult(record, { imageUrl: record.resultUrl, headers })))
 }
 
+export function canRecoverOriginalVideoTask(record: SysTaskRecord): boolean {
+  if (record.type !== 'video' || !['processing', 'failed'].includes(record.status || '') ||
+      ['generation_failed', 'submission_not_sent', 'submission_rejected'].includes(record.errorCode || '') ||
+      !record.resultUrl && (!record.taskId?.trim() || record.stage === 'preparing')) return false
+  if (!record.resultUrl && (record.provider === 'libtv' || record.provider === 'jimeng')) {
+    const params = parseTaskParams(record.params)
+    const projectId = /^(?:[\da-f]{32}|[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12})$/iu
+    if (record.provider === 'libtv') {
+      const node = params.libtv
+      if (node?.nodeKey !== record.taskId || !/^[\w][\w.-]{0,127}$/u.test(node.nodeKey) ||
+          typeof node.projectId !== 'string' || !projectId.test(node.projectId)) return false
+    } else {
+      const operation = params.jimeng
+      if (operation?.submitId !== record.taskId || !projectId.test(operation.submitId) ||
+          typeof operation.projectId !== 'string' || !projectId.test(operation.projectId)) return false
+    }
+  }
+  return record.status === 'processing' ||
+    ['poll_timeout', 'polling_timeout', 'recovery_failed', 'delivery_failed', 'submission_unknown'].includes(record.errorCode || '') ||
+    !record.errorCode && (record.stage === 'polling' && /^Timeout:/u.test(record.errorMsg || '') ||
+      !!record.resultUrl && ['downloading', 'saving', 'transferring'].includes(record.stage || ''))
+}
+
+export async function resumeRecoverableVideoTask(record: SysTaskRecord): Promise<SysTaskRecord> {
+  if (!canRecoverOriginalVideoTask(record)) return record
+  const readTask = () => db.select().from(schema.sysTask).where(eq(schema.sysTask.id, record.id)).get()
+  const current = readTask()
+  if (!current || !canRecoverOriginalVideoTask(current) || activeTasks.has(current.id)) return current ?? record
+  if (current.status === 'failed' && Date.now() - Date.parse(current.updatedAt) < VIDEO_RECOVERY_RETRY_MS) return current
+  try {
+    await recoverStoredVideoTask(current)
+  } catch (error) {
+    await failTask(current.id, safeTaskError(error), 'recovery_failed')
+  }
+  return readTask() ?? current
+}
+
 export async function recoverVideoTask(id: number): Promise<void> {
-  const [record] = await db.select().from(schema.sysTask).where(eq(schema.sysTask.id, id))
+  const record = db.select().from(schema.sysTask).where(eq(schema.sysTask.id, id)).get()
   if (!record || record.type !== 'video') throw new Error('视频任务不存在')
+  return recoverStoredVideoTask(record)
+}
+
+async function recoverStoredVideoTask(record: SysTaskRecord): Promise<void> {
+  const id = record.id
   if (record.status === 'canceled') throw new Error('视频任务已取消')
   if (activeTasks.has(id) || record.status === 'completed') return
+  const voice = scriptVideoVoiceRequest(record.params)
+  if (voice) {
+    const task = schema.sysTask
+    const newer = db.select({ id: task.id }).from(task).where(and(gt(task.id, id), scriptVideoVoiceTaskScope(voice))).get()
+    if (newer) throw new Error('已有更新的角色声音生成任务，无法恢复这次生成')
+  }
   if (!record.resultUrl && !record.taskId) throw new Error('未保存上游任务编号，请先核对上游记录，勿重复生成')
   if (record.errorCode === 'generation_failed') throw new Error('上游已确认生成失败，无法恢复原任务')
+  if (['submission_not_sent', 'submission_rejected'].includes(record.errorCode || '')) throw new Error('视频请求未成功提交，无需查询原任务')
   // 在任何异步配置读取前获取锁，重复点击不会启动多个下载。
   activeTasks.add(id)
   try {
@@ -1021,8 +1101,13 @@ export async function recoverVideoTask(id: number): Promise<void> {
     const config = record.taskId && !record.resultUrl ? await recoveryConfig(record) : null
     const originalParams = parseTaskParams(record.params)
     assertVideoCliNotDisconnecting(record.provider, originalParams.videoCliAccountId ?? originalParams[record.provider || '']?.profileId ?? 'default')
-    db.update(schema.sysTask).set({ status: 'processing', errorMsg: null, errorCode: null,
-      stage: record.resultUrl ? 'downloading' : record.stage === 'transferring' || record.errorCode === 'delivery_failed' ? 'transferring' : 'polling', updatedAt: now() }).where(eq(schema.sysTask.id, id)).run()
+    const started = db.update(schema.sysTask).set({ status: 'processing', errorMsg: null, errorCode: null,
+      stage: record.resultUrl ? 'downloading' : record.stage === 'transferring' || record.errorCode === 'delivery_failed' ? 'transferring' : 'polling', updatedAt: now() })
+      .where(and(eq(schema.sysTask.id, id), ne(schema.sysTask.status, 'canceled'), ne(schema.sysTask.status, 'completed'))).run()
+    if (!started.changes) {
+      activeTasks.delete(id)
+      return
+    }
     void (async () => {
       if (record.resultUrl) {
         let headers: Record<string, string> | undefined
@@ -1050,8 +1135,8 @@ export async function recoverVideoTask(id: number): Promise<void> {
         const resp = await fetch(`${req.url}/recover`, { method: 'POST', headers: req.headers, signal: AbortSignal.timeout(30_000) })
         if (!resp.ok) throw new Error(`Video delivery recovery HTTP ${resp.status}`)
       }
-      await markPolling(id, record.taskId!)
-      await pollTask(record, originalConfig, record.taskId!)
+      if (!await markPolling(id, record.taskId!)) return
+      await pollTask(record, originalConfig, record.taskId!, true)
     })().catch(error => failTask(id, safeTaskError(error), 'recovery_failed')).finally(() => activeTasks.delete(id))
   } catch (error) {
     activeTasks.delete(id)
@@ -1072,8 +1157,8 @@ export async function resumeInterruptedTasks() {
         if (!config || config.provider !== 'comfyui' || config.baseUrl !== task.configBaseUrl) throw new Error('原 ComfyUI 配置不可用，请恢复原配置')
         await pollTask(task, config, task.taskId!)
       })
-    } else if (task.type === 'video' && (task.taskId || task.resultUrl)) {
-      try { await recoverVideoTask(task.id) } catch (error) { await failTask(task.id, safeTaskError(error), 'recovery_failed') }
+    } else if (task.type === 'video' && canRecoverOriginalVideoTask(task)) {
+      await resumeRecoverableVideoTask(task)
     } else {
       await failTask(task.id, task.type === 'video' ? '服务中断，提交结果待确认，请先核对上游记录' : '服务重启，生成任务中断，请重试',
         task.type === 'video' ? 'submission_unknown' : 'interrupted')

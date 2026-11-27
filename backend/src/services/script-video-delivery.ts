@@ -10,7 +10,7 @@ import { scriptVideoCapabilities } from './script-video-capabilities.js'
 import { scriptVideoPromptStylePrefix, type ScriptVideoStylePreset } from './script-video-style.js'
 import { isSeedance25Model, seedanceModelLimits } from './seedance-models.js'
 import { jimengVideoModel } from './jimeng-video-models.js'
-import { libtvVideoModel } from './libtv-video-models.js'
+import { libtvVideoModel, LIBTV_SEEDANCE_20_MINI_MODEL } from './libtv-video-models.js'
 import { aicostVideoModelCapabilities, isAicostMiniMaxH3Model, isAicostSeedance25Model } from './aicost-video-models.js'
 import type { ScriptVideoVoiceMode } from './script-video-types.js'
 import type { ScriptVideoPromptMode } from './video-prompt-mode.js'
@@ -410,12 +410,12 @@ export function scriptVideoDeliveryTags(options: Pick<ScriptVideoDeliveryOptions
   const usesAicost = options.provider?.toLowerCase() === 'aicost'
   const jimeng = options.provider === 'jimeng' ? jimengVideoModel(model) : undefined
   const aicost = usesAicost ? aicostVideoModelCapabilities(model) : null
-  const seedance25 = options.provider === 'libtv' && Boolean(libtvVideoModel(model)) ||
+  const seedance25 = options.provider === 'libtv' && model !== LIBTV_SEEDANCE_20_MINI_MODEL && Boolean(libtvVideoModel(model)) ||
     aicost?.version === '2.5' || isSeedance25Model(model) || (!model && !options.provider)
   const minimax = options.provider === 'minimax' || model === 'wf-minimax-h3' || (usesAicost && isAicostMiniMaxH3Model(model)) || (!options.provider && /^minimax-h3/iu.test(model))
   const wan = options.provider === 'aliyun' || (usesAicost && /^wan3\.0-/iu.test(model)) || (!options.provider && /^wan3\.0-video/iu.test(model))
   const imageTag = (index: number) => minimax ? `<Picture ${index}>` : wan ? `图${index}` : `@图片${index}`
-  const audioTag = (index: number) => minimax ? `<Audio ${index}>` : jimeng || seedance25 ? `@音频${index}` : `音频${index}`
+  const audioTag = (index: number) => minimax ? `<Audio ${index}>` : jimeng || options.provider === 'libtv' || seedance25 ? `@音频${index}` : `音频${index}`
   return { aicostSeedance20: aicost?.version === '2.0', seedance25, minimax, imageTag, audioTag }
 }
 

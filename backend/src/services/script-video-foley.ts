@@ -8,9 +8,12 @@ export function scriptVideoNamedAudioCue(names: readonly string[]) {
 const legacyVoice = new RegExp('（音色参考' + numberedVoice.source + '）', 'u')
 const voiceCue = new RegExp(legacyVoice.source + '|' + scriptVideoInlineVoiceCue.source, 'gu')
 export const scriptVideoPerformanceBracket = /（[^）\n]*）|\([^)\n]*\)|【[^】\n]*】|\[[^\]\n]*\]/u
-const speakerWithCues = new RegExp(/@?[\p{L}\p{N}·・_. /／-]+/u.source + '(?:' + scriptVideoInlineVoiceCue.source + ')?' +
+export const scriptVideoSpeakerLabel = /(?:[\p{L}\p{N}·・_. /／-]{0,120}@)?[\p{L}\p{N}·・_. /／-]{1,120}?/u
+export const scriptVideoSpeakerSeparator = /[ \t]*(?:、|[和与及跟](?=[ \t]*@))[ \t]*/u
+const speakerWithCues = new RegExp(scriptVideoSpeakerLabel.source + '(?:' + scriptVideoInlineVoiceCue.source + ')?' +
   '(?:\\s*(?:' + scriptVideoPerformanceBracket.source + '))*', 'u')
-export const unquotedSpeaker = new RegExp('^\\s*' + speakerWithCues.source + '(?:\\s*、\\s*' + speakerWithCues.source + ')*\\s*[:：]\\s*', 'u')
+export const unquotedSpeaker = new RegExp('^\\s*' + speakerWithCues.source + '(?:' + scriptVideoSpeakerSeparator.source +
+  speakerWithCues.source + ')*\\s*[:：]\\s*', 'u')
 export const speechClosers: Record<string, string> = { '“': '”', '「': '」', '『': '』', '"': '"', '{': '}' }
 export const scriptVideoSpeechQuote = /“[^”\n]*”?|「[^」\n]*」?|『[^』\n]*』?|"[^"\n]*"?|\{[^}\n]*\}?/u
 const performanceTokens = new RegExp(scriptVideoSpeechQuote.source + '|(?<direction>' + scriptVideoPerformanceBracket.source + ')', 'gu')

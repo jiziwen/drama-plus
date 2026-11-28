@@ -405,7 +405,7 @@ test('音频实际内容、时长、公网和路径不合规时拒绝提交且�
 test('项目内 Seedance 2.5 直出 30 秒：保留 4K、上传件不变、声音可本地内联，Flash 超规格在付费前拦截', async () => {
   const role = { id: 'role', name: '青衣', kind: 'character', image: '/static/uploads/seedance-role.jpg',
     voiceAudio: { url: '/static/uploads/seedance-role.wav', name: '角色声音.wav' } }
-  const image = await sharp({ create: { width: 512, height: 720, channels: 3, background: '#abcdef' } }).jpeg().toBuffer()
+  const image = await sharp({ create: { width: 720, height: 1280, channels: 3, background: '#abcdef' } }).jpeg().toBuffer()
   const voice = wav(17)
   await fs.writeFile(path.join(root, role.image), image)
   await fs.writeFile(path.join(root, role.voiceAudio.url), voice)
@@ -425,6 +425,13 @@ test('项目内 Seedance 2.5 直出 30 秒：保留 4K、上传件不变、声�
   assert.equal(sent.content[0].text, buildScriptVideoDelivery(episode.card, episode.assets, options).prompt)
   const prepared = await prepareScriptVideoArchiveImages([episode.card], [...episode.assets, { ...role, id:'unused', name:'未用', image:'/static/missing.png' }], options, episode.resolution)
   assert.deepEqual(Object.keys(prepared), [role.image])
+  const smaller = await prepareScriptVideoArchiveImages([episode.card], episode.assets, options, '480P')
+  assert.notEqual(smaller[role.image], prepared[role.image])
+  const mixed = await prepareScriptVideoArchiveImages([
+    { ...episode.card, size: '4K' },
+    { ...episode.card, size: '480P' },
+  ], episode.assets, options, card => card.size)
+  assert.deepEqual(mixed, prepared)
   const archiveImage = await fs.readFile(path.join(root, prepared[role.image]))
   assert.equal(sent.content.find(item => item.image_url)?.image_url?.url, 'data:image/jpeg;base64,' + archiveImage.toString('base64'))
   assert.deepEqual([sent.ratio, sent.duration, sent.resolution], ['21:9', 30, '4k'])

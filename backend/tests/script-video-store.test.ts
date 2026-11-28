@@ -11,6 +11,7 @@ import { getCurrentScriptVideoStylePreset } from '../src/services/script-video-s
 import { diffScriptVideoChanges } from '../src/services/script-video-sync'
 import { buildScriptVideoDelivery } from '../src/services/script-video-delivery'
 import type { ScriptVideoGenerationStatus } from '../src/services/script-video-generation'
+import { resolveScriptVideoResolution, scriptVideoModelResolutions } from '../src/services/script-video-resolution'
 
 const STYLE = { id: 'custom' as const, name: '夜色写实', prefix: '  冷色原文\r\n\r\n声音规则  \r\n' }
 const STYLE_TWO = { id: 'custom' as const, name: '暖色质感', prefix: '暖色原文\n\n灯光规则\n' }
@@ -33,6 +34,101 @@ test('new episodes default to 480P and preserve the resolution explicitly saved 
     ],
   })
   assert.deepEqual((await store.get(project.id)).episodes.map(episode => episode.resolution), ['720P', '480P', '1080P'])
+}))
+
+test('项目默认分辨率与片段覆盖分别保存并可恢复旧分集默认', async () => fixture(async store => {
+  const project = await store.create('分辨率设置')
+  const episode = project.episodes[0]
+  const card = { duration: 5, title: '分镜', summary: '', assetIds: [], shots: [], prompt: '', status: 'draft' }
+  episode.cards = [{ ...card, id: 'first' }, { ...card, id: 'second' }]
+  episode.resolution = '720P'
+  await store.update(project.id, project, project.revision)
+  await store.applyChanges(project.id, {
+    clientId: randomUUID(), sequence: 1,
+    changes: [
+      { target: 'project', fields: { 'settings.defaultVideoResolution': '1080p' } },
+      { target: 'episode', id: 'new', value: { id: 'new' } },
+    ],
+  })
+  const base = await store.get(project.id)
+  assert.equal(base.settings?.defaultVideoResolution, '1080P')
+  assert.deepEqual(base.episodes.map(item => item.resolution), ['720P', '480P'])
+  assert.equal((await store.summary(project.id)).settings?.defaultVideoResolution, '1080P')
+
+  for (const [id, resolution] of [['first', '480p'], ['second', '720p']]) {
+    const local = structuredClone(base)
+    local.episodes[0].videoResolutions = { [id]: resolution }
+    const changes = diffScriptVideoChanges(base, local)
+    assert.deepEqual(changes[0].fields, { [`videoResolutions.${id}`]: resolution })
+    await store.applyChanges(project.id, { clientId: randomUUID(), sequence: 1, changes })
+  }
+  const saved = await store.get(project.id)
+  assert.deepEqual(saved.episodes[0].videoResolutions, { first: '480P', second: '720P' })
+  assert.equal(saved.episodes[1].videoResolutions, undefined)
+  const restored = structuredClone(saved)
+  delete restored.settings!.defaultVideoResolution
+  delete restored.episodes[0].videoResolutions.first
+  await store.applyChanges(project.id, { clientId: randomUUID(), sequence: 1, changes: diffScriptVideoChanges(saved, restored) })
+  const result = await store.get(project.id)
+  assert.equal(result.settings?.defaultVideoResolution, undefined)
+  assert.deepEqual(result.episodes[0].videoResolutions, { second: '720P' })
+  assert.equal(result.episodes[0].resolution, '720P')
+}))
+
+test('有效分辨率优先使用支持的片段覆盖、项目默认、旧分集值或模型可用档位', () => {
+  const supported = scriptVideoModelResolutions('volcengine', 'doubao-seedance-2-5-260628')
+  assert.equal(resolveScriptVideoResolution({ override: ' 720p ', projectDefault: '4K', legacy: '480P', supported }), '720P')
+  assert.equal(resolveScriptVideoResolution({ override: '1440P', projectDefault: '4k', legacy: '720P', supported }), '4K')
+  assert.equal(resolveScriptVideoResolution({ projectDefault: '1440P', legacy: '720p', supported }), '480P')
+  assert.equal(resolveScriptVideoResolution({ legacy: '720p', supported }), '720P')
+  const mini = scriptVideoModelResolutions(undefined, 'jimeng-seedance-2.0-mini')
+  assert.deepEqual(mini, ['720P'])
+  assert.equal(resolveScriptVideoResolution({ projectDefault: '4K', supported: mini }), '720P')
+  assert.deepEqual(scriptVideoModelResolutions(null, null), ['480P', '720P', '1080P'])
+  assert.deepEqual(scriptVideoModelResolutions(null, 'doubao-seedance-2-5-flash-261115'), ['480P', '720P'])
+  assert.deepEqual(scriptVideoModelResolutions(undefined, 'star-video2.5-draft'), ['480P'])
+})
+
+test('视频生成缺省分辨率读取项目与片段设置并兼容显式请求', async () => fixture(async store => {
+  const { createScriptVideoRoutes } = await import('../src/routes/script-video')
+  const project = await store.create('生成分辨率')
+  const { episodeId } = project
+  const card = { title: '分镜', duration: 5, version: 1, assetIds: [], shots: [], prompt: '人物站在窗前。', manuallyAdded: true }
+  await store.mutate(project.id, ({ project: current }) => {
+    const episode = current.episodes[0]
+    episode.script = episode.confirmedScript = '人物站在窗前。'
+    episode.confirmed = true
+    episode.resolution = '480P'
+    episode.videoResolutions = { custom: '720P' }
+    episode.cards = ['shared', 'custom', 'explicit', 'legacy'].map(id => ({ ...card, id }))
+    current.settings = { ...current.settings, defaultVideoResolution: '1080P' }
+    return { result: null, documentChanged: true }
+  })
+  const submitted: string[] = []
+  const app = createScriptVideoRoutes(store, {
+    startScriptVideoGeneration: async ({ resolution }) => {
+      submitted.push(resolution)
+      return { taskId: 13100 + submitted.length, status: 'processing' }
+    },
+  })
+  const root = `http://localhost/projects/${project.id}/episodes/${episodeId}`
+  const headers = { 'content-type': 'application/json', 'X-Script-Video-Session': randomUUID() }
+  assert.equal((await app.request(`${root}/lock`, { method: 'POST', headers })).status, 200)
+  const submit = async (id: string, resolution?: string) => {
+    const response = await app.request(`${root}/cards/${id}/video`, { method: 'POST', headers, body: JSON.stringify({
+      expectedCardVersion: 1, configId: 13100, model: 'fixture-video', aspectRatio: '16:9', resolution,
+    }) })
+    assert.equal(response.status, 201, await response.text())
+  }
+  await submit('shared')
+  await submit('custom')
+  await submit('explicit', '720p')
+  await store.applyChanges(project.id, {
+    clientId: randomUUID(), sequence: 1,
+    changes: [{ target: 'project', unset: ['settings.defaultVideoResolution'] }],
+  })
+  await submit('legacy')
+  assert.deepEqual(submitted, ['1080P', '720P', '720p', '480P'])
 }))
 
 test('逐集保存手动状态，未出片仍可标记完成并恢复自动判断', async () => fixture(async (store, directory) => {

@@ -6,6 +6,7 @@ import { computed, reactive, ref } from 'vue'
 import ts from 'typescript'
 import { officialScriptVideoUrl } from '../../backend/src/services/script-video-versions.ts'
 import { buildScriptVideoDelivery, scriptVideoDeliveryTags } from '../../backend/src/services/script-video-delivery.ts'
+import { resolveScriptVideoResolution, scriptVideoModelResolutions } from '../../backend/src/services/script-video-resolution.ts'
 import { hasScriptVideoPromptBody, splitScriptVideoPromptStyle } from '../../backend/src/services/script-video-style.ts'
 import { previousScriptVideoCard } from '../../backend/src/services/script-video-predecessor.ts'
 import { DEFAULT_VIDEO_PROMPT_MODE } from '../../backend/src/services/video-prompt-mode.ts'
@@ -13,9 +14,13 @@ import { DEFAULT_VIDEO_PROMPT_MODE } from '../../backend/src/services/video-prom
 const source = readFileSync(new URL('../app/pages/preview/script-to-video.vue', import.meta.url), 'utf8')
 const promptModeStart = source.indexOf('const videoPromptModes =')
 const promptModeEnd = source.indexOf('const currentReview =', promptModeStart)
+const resolutionStart = source.indexOf('function effectiveVideoResolution(')
+const resolutionEnd = source.indexOf('\n}', resolutionStart) + 2
 const start = source.indexOf('const taskActions =')
 const end = source.indexOf('function sourceChapterCount(', start)
-const controllerSource = ts.transpileModule(source.slice(promptModeStart, promptModeEnd) + source.slice(start, end), {
+const controllerSource = ts.transpileModule([
+  source.slice(promptModeStart, promptModeEnd), source.slice(resolutionStart, resolutionEnd), source.slice(start, end),
+].join('\n'), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
 }).outputText
 
@@ -71,6 +76,9 @@ function controller(initialTasks = [], {
   const value = runInNewContext(controllerSource + '\n;({ requestVideoGeneration, cancelVideoGeneration, confirmVideoRetry, pendingVideoRetry, videoTaskError, showFinalPrompt, copyPromptPreview, promptPreview, batchVideoVoiceWarning, videoVoiceWarningForCard, activeVideoRun, activeVideoRequests, videoTailWaiting, deliveryContinuations, exportCards, videoPromptMode })', {
     ref, computed, reactive, dialog, activeCardIds: ref(remoteActiveIds), requestActivityRefresh: () => {}, setInterval: queueTimer, clearInterval, ScriptVideoRequestError, alive: true, AbortController, AbortSignal, requestController: new AbortController(),
     officialScriptVideoUrl, previousScriptVideoCard,
+    resolveScriptVideoResolution, scriptVideoModelResolutions,
+    watch: () => {}, // The batch asset watcher has its own test harness.
+    videoModelLoading: ref(false), videoSelectionPending: ref(false),
     promptReturnFocus: null,
     episodeKey, previewId: () => 'video-request-fixture',
     setTimeout: done => queueMicrotask(done), clearTimeout,
@@ -221,6 +229,19 @@ test('切换到时长上限更低的模型时，超出范围的生成设置会�
   assert.equal(app.submissions[0].body.duration, 15)
 })
 
+test('批量和单段生成采用项目分辨率，优先使用片段独立设置', async () => {
+  const app = controller()
+  app.project.settings = { defaultVideoResolution: '1080P' }
+  app.episode.videoResolutions = { b: '480P' }
+  await app.requestVideoGeneration(['a', 'b'])
+  assert.deepEqual(app.submissions.map(call => call.body.resolution), ['1080P', '480P'])
+
+  app.project.settings.defaultVideoResolution = '720P'
+  await app.requestVideoGeneration(['a'])
+  await app.requestVideoGeneration(['b'])
+  assert.deepEqual(app.submissions.slice(2).map(call => call.body.resolution), ['720P', '480P'])
+})
+
 test('已发起的单段生成在保存期间离开分集后仍提交原片段', async () => {
   let saves = 0
   const app = controller([], { onSave: async () => {
@@ -255,7 +276,7 @@ for (const otherProject of [false, true]) test(otherProject ? '批量提交中�
   await generation
   assert.equal(app.submissions.length, 2)
   assert.ok(app.submissions.every(call => call.path.startsWith('/projects/project/episodes/episode/cards/')))
-  assert.ok(app.submissions.every(call => call.body.model === 'custom-model' && call.body.resolution === '720p'))
+  assert.ok(app.submissions.every(call => call.body.model === 'custom-model' && call.body.resolution === '720P'))
   assert.ok(app.submissions.every(call => call.body.promptMode === 'inline'))
   assert.ok(app.refreshes.every(call => call.projectId === 'project' && call.episodeId === 'episode'))
   assert.equal(other.episode.tasks.length, 0)
@@ -571,12 +592,15 @@ test('当前预览和任务记录都在弹框内按显示文字原样复制', as
   const app = controller([task], { onFinalPrompt: body => body.jobId
     ? finalDelivery({ prompt: '以@图片7作为本段首帧。\n\n原提示词', images, source: 'submitted' })
     : finalDelivery() })
+  app.project.settings = { defaultVideoResolution: '1080P' }
+  app.episode.videoResolutions = { b: '480P' }
   app.videoPromptMode.value = 'inline'
   await app.showFinalPrompt({ cardId: 'b', title: '当前分镜' })
   assert.equal(app.dialog.value, 'prompt-preview')
   assert.equal(app.calls[0].body.cardId, 'b')
   assert.equal(app.calls[0].body.cardVersion, 1)
   assert.equal(app.calls[0].body.model, 'custom-model')
+  assert.equal(app.calls[0].body.resolution, '480P')
   assert.equal(app.calls[0].body.promptMode, 'inline')
   assert.equal(app.promptPreview.value.delivery.prompt, '原提示词')
   assert.equal(app.copied.length, 0)
@@ -584,6 +608,7 @@ test('当前预览和任务记录都在弹框内按显示文字原样复制', as
   assert.equal(app.copied[0], '原提示词')
   await app.showFinalPrompt({ cardId: task.cardId, title: '任务记录', task })
   assert.equal(app.calls[1].body.jobId, task.id)
+  assert.equal('resolution' in app.calls[1].body, false)
   assert.equal('promptMode' in app.calls[1].body, false)
   assert.equal(app.copied.length, 1)
   assert.match(app.promptPreview.value.delivery.prompt, /^以@图片7作为本段首帧。/u)

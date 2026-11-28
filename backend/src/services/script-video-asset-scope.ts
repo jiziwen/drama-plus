@@ -14,7 +14,7 @@ const nextSegmentSentence = /(?:^|(?<=[。！？；;]))[ \t]*(?:下一(?:个)?�
 const summaryHeading = /^[ \t]*(?:独立生成|本段事件)[ \t]*[：:]/u
 const recapHeading = /^[ \t]*前镜回顾[ \t]*[：:]/u
 const numberedShot = /^镜头[ \t]*(\d+)(?:[ \t]*(?:[（(：:][^\r\n]*)?)\r?$/gmu
-const dialogueHeading = /^[ \t]*(?:对白[ \t]*[/／][ \t]*音效|对白|台词|画外音|心声)[ \t]*[：:][ \t]*/u
+const dialogueHeading = /^[ \t]*(?:对白[ \t]*[/／][ \t]*音效|对白|台词|画外音|旁白|心声)[ \t]*[：:][ \t]*/u
 const foleyHeading = /^[ \t]*(?:物理音效|音效|环境音|环境声|背景音效|背景音|拟音|动作音|音乐|配乐|BGM|SFX)(?:[（(][^）)\n]*[）)])?[ \t]*[：:]/iu
 const foleySuffix = /[（(](?:物理音效|音效|环境音|环境声|背景音效|背景音|拟音|动作音|BGM|SFX)[）)][。.!！?？ \t]*$/iu
 const speakerHeading = /^[ \t]*(?:@(?=[\p{L}\p{N}])|(?=[^：:\r\n]+[：:][ \t]*[“「『"{]))[\p{L}\p{N}·・、_ /-]+(?:[ \t]*(?:（[^）]*）|\([^)]*\)|【[^】]*】|\[[^\]]*\]))*[ \t]*[：:]/u

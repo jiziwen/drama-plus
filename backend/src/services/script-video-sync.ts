@@ -40,6 +40,11 @@ function editable(target: ScriptVideoChange['target'], key: string) {
 }
 function safePath(target: ScriptVideoChange['target'], key: string) {
   const parts = key.split('.')
+  if (target === 'episode' && parts[0] === 'videoResolutions' && parts.length > 1) {
+    if (parts.length !== 2 || !idPattern.test(parts[1]!) || forbidden.has(parts[1]!))
+      throw new Error('片段分辨率保存字段无效')
+    return parts
+  }
   if (!parts.length || parts.some(part => !part || forbidden.has(part) || part.startsWith('_')) || !editable(target, parts[0]!))
     throw new Error('不可修改的保存字段')
   if (target === 'project' && parts[0] === 'settings' && parts[1] === 'customStylePresets' && parts.length > 2 &&
@@ -172,6 +177,13 @@ function fieldsChanged(target: ScriptVideoChange['target'], before: Document, af
         const prev = a[key], next = b[key]
         for (const id of new Set([...Object.keys(prev || {}), ...Object.keys(next || {})]))
           setChoice(`${name}.${id}`, prev?.[id], next?.[id])
+        continue
+      }
+      if (target === 'episode' && name === 'videoResolutions' &&
+        (a[key] === undefined || object(a[key])) && (b[key] === undefined || object(b[key]))) {
+        const prev = a[key] || {}, next = b[key] || {}
+        for (const id of new Set([...Object.keys(prev), ...Object.keys(next)]))
+          setChoice(`${name}.${id}`, prev[id], next[id])
         continue
       }
       // A frame choice is one value, but different reference rows can be

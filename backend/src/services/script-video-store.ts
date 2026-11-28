@@ -26,6 +26,7 @@ import type { LightingCheck } from './script-video-lighting.js'
 import type { ScriptVideoReferenceNames } from './script-video-generation.js'
 import type { ScriptVideoPromptMode } from './video-prompt-mode.js'
 import { isScriptVideoGenerationDuration } from './script-video-capabilities.js'
+import { normalizeScriptVideoResolution } from './script-video-resolution.js'
 import { listScriptVideoVersions } from './script-video-versions.js'
 import { scriptVideoReferenceSettings, type ScriptVideoReferenceSettings } from './script-video-reference-settings.js'
 import type { ScriptVideoStoryboardMode } from './script-video-storyboard-mode.js'
@@ -80,6 +81,7 @@ export type ScriptVideoProject = {
   assets: any[]
   episodes: any[]
   episodeId: string
+  settings?: { defaultVideoResolution?: string; [key: string]: any }
   [key: string]: any
 }
 type RecordFile = ScriptVideoRecord
@@ -448,6 +450,11 @@ function sanitizeProject(
   if (input.settings !== undefined && (!input.settings || typeof input.settings !== 'object' || Array.isArray(input.settings))) throw new ScriptVideoStoreError('项目设置无效')
   let settings = partialWrite ? input.settings || {} : { ...(previous?.settings || {}), ...(input.settings || {}) }
   validateProjectStyles(settings)
+  if (settings.defaultVideoResolution !== undefined) {
+    const resolution = normalizeScriptVideoResolution(settings.defaultVideoResolution)
+    if (!resolution) throw new ScriptVideoStoreError('项目默认视频分辨率无效')
+    settings = { ...settings, defaultVideoResolution: resolution }
+  }
   input = syncBuiltinStyleSnapshots({ ...input, settings })
   settings = input.settings
   const assetIds = new Set<string>()
@@ -582,13 +589,20 @@ function sanitizeProject(
     })
     const { production: _incomingProduction, outlineDurationPolicy: _incomingPolicy, characterAppearanceNotes: _incomingNotes,
       progressOverride: _incomingProgressOverride,
-      videoDurations: incomingDurations, ...episodeFields } = episode
+      videoDurations: incomingDurations, videoResolutions: incomingResolutions, ...episodeFields } = episode
     if (incomingDurations !== undefined && (!incomingDurations || typeof incomingDurations !== 'object' || Array.isArray(incomingDurations)))
       throw new ScriptVideoStoreError('视频生成时长设置无效')
     const videoDurations = Object.entries(incomingDurations ?? (partialWrite ? {} : old?.videoDurations) ?? {}).filter(([cardId, duration]) => ids.has(cardId) && isScriptVideoGenerationDuration(duration))
+    if (incomingResolutions !== undefined && (!incomingResolutions || typeof incomingResolutions !== 'object' || Array.isArray(incomingResolutions)))
+      throw new ScriptVideoStoreError('片段视频分辨率设置无效')
+    const videoResolutions = Object.entries(incomingResolutions ?? (partialWrite ? {} : old?.videoResolutions) ?? {}).flatMap(([cardId, value]) => {
+      const resolution = normalizeScriptVideoResolution(value)
+      return ids.has(cardId) && resolution ? [[cardId, resolution]] : []
+    })
     return { ...episodeFields, ...(production === undefined ? {} : { production }), ...(outlineDurationPolicy === undefined ? {} : { outlineDurationPolicy }), ...(characterAppearanceNotes ? { characterAppearanceNotes } : {}),
       ...(progressOverride !== undefined && { progressOverride }),
       ...(videoDurations.length ? { videoDurations: Object.fromEntries(videoDurations) } : {}),
+      ...(videoResolutions.length ? { videoResolutions: Object.fromEntries(videoResolutions) } : {}),
       cards, tasks: remainingTasks, generationsHistory: old?.generationsHistory || [], busy: false }
   })
   if (input.episodeId && !episodes.has(input.episodeId))

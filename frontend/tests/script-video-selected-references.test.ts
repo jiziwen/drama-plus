@@ -759,6 +759,22 @@ test('视频提示词在同一行紧接的两段对白各引用一次音频', ()
   assert.equal(editor.props.card.prompt, original)
 })
 
+test('编辑器给带门派前缀的对白补音频，保留画面与台词原文', () => {
+  const elder = { ...makeAsset('elder', '大长老'), voiceAudio: { url: '/static/uploads/elder.wav', name: '大长老.wav' } }
+  const editor = setup([elder.id], { assetList: [elder] })
+  for (const speaker of ['听雪楼@大长老', '听雪楼大长老']) {
+    const original = `镜头 01（0–3秒）\n画面与动作：听雪楼@大长老按住桌沿。\n对白／音效：${speaker}【男｜沉着脸责问】：「你这个师傅怎么当的，连徒弟都看不好！」`
+    editor.props.card.prompt = original
+    const textarea = editor.nodes().find(node => node.type === menu)
+    const displayed = textarea.props['model-value'] as string
+    assert.equal(displayed, original.replace(`${speaker}【`, '听雪楼@大长老 @音频1【'))
+    const ranges = textarea.props['resolve-preview-ranges'](displayed) as { id: string; start: number; end: number }[]
+    assert.deepEqual(Array.from(ranges).filter(hit => hit.id.startsWith('voice-'))
+      .map(hit => displayed.slice(hit.start, hit.end)), ['@音频1'])
+    assert.equal(editor.props.card.prompt, original)
+  }
+})
+
 test('自动保存整理的提示词只在结束编辑后回填，编辑中的引用和换行保持原位', async () => {
   const editor = setup(['guard'])
   editor.props.card.prompt = '第一行\r\n画面与动作：@侍卫 守在门边。'

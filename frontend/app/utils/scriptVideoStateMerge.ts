@@ -127,12 +127,13 @@ export function mergeScriptVideoProject<T>(
       return clone(localValue === missing ? remoteValue : localValue)
     if (context === 'project' && path === 'settings.stylePreset')
       return mergeChoice(baseValue, localValue, remoteValue, path)
-    if (context === 'project' && path === 'settings.customStylePresets') {
+    if ((context === 'project' && path === 'settings.customStylePresets') ||
+        (context === 'episode' && key === 'videoResolutions')) {
       const [saved, local, remote] = [baseValue, localValue, remoteValue].map(value => object(value) ? value : {})
       const result: ObjectValue = {}
       for (const id of new Set([...Object.keys(saved!), ...Object.keys(local!), ...Object.keys(remote!)])) {
-        const preset = mergeChoice(own(saved!, id), own(local!, id), own(remote!, id), join(path, id))
-        if (preset !== missing) result[id] = preset
+        const value = mergeChoice(own(saved!, id), own(local!, id), own(remote!, id), join(path, id))
+        if (value !== missing) result[id] = value
       }
       return Object.keys(result).length ? result : missing
     }

@@ -44,6 +44,33 @@ test('只把对白字段内实际发出的哭、喊、叹息和咳声归到主�
   assert.deepEqual(scan('吴良发笑。家丁：“住口。”').mentions.filter(hit => hit.usage === 'speaker').map(hit => hit.id), ['wu', 'crowd'])
 })
 
+test('带门派前缀的明确人物引用只给实际人声补音色，保留前缀、动作和表演说明', () => {
+  const elder = { id: 'elder', kind: 'character', name: '大长老', image: 'elder.png', voiceAudio: { name: '大长老', url: '/elder.wav' } }
+  const people = [elder, ...assets]
+  const ids = ['elder', ...bound]
+  const locate = (text: string) => annotateScriptVideoAssets(text, people, ids, options).mentions.filter(hit => hit.vocalization)
+  for (const prefix of ['听雪楼', '听雪楼的 ', '门外']) {
+    const dialogue = `〈${prefix}@大长老咳嗽一声。〉`
+    const mentions = locate(dialogue).map(hit => [hit.id, dialogue.slice(hit.start, hit.end)])
+    assert.deepEqual(mentions, [['elder', '@大长老']], dialogue)
+    const delivery = buildScriptVideoDelivery({ duration: 3, assetIds: ids, shots: [{ duration: 3, dialogue }],
+      prompt: '镜头 01（0–3秒）\n对白／音效：' + dialogue }, people,
+    { provider: 'jimeng', model: 'jimeng-seedance-2.5', promptMode: 'reference-guide' })
+    assert.deepEqual(delivery.voices.map(voice => voice.asset.id), ['elder'])
+    assert.ok(delivery.prompt.includes(`${prefix}@大长老 @音频1咳嗽一声。`), delivery.prompt)
+  }
+  for (const direction of [
+    '〈听雪楼@大长老手边衣料摩擦。〉',
+    '〈听雪楼@大长老忍住咳嗽。〉',
+    '〈听雪楼掌门让@大长老咳嗽。〉',
+    '〈并未听见听雪楼@大长老咳嗽。〉',
+    '〈假设听雪楼@大长老咳嗽。〉',
+    '〈录音里有人提到“听雪楼@大长老咳嗽”。〉',
+    '@吴良【表演示例；听雪楼@大长老咳嗽一声。】：「别回头。」',
+    '画面与动作：听雪楼@大长老咳嗽一声。',
+  ]) assert.deepEqual(locate(direction), [], direction)
+})
+
 test('对白中的语气说明不会生成另一个发声角色', () => {
   for (const direction of [
     '【现场，凄厉哭喊；一气求饶，最后一字的拖音延至切点】',

@@ -17,12 +17,22 @@ const narrated = new RegExp('^(' + subject.source + ')' + manner.source + '(?:' 
   [laughOrCry, otherVocals, audibleSound].map(verb => verb.source).join('|') + ')', 'u')
 const notAnUnknownActor = /[的让令使拟如像想听见看闻随由未没无不忍手声]|制止|阻止|学着|模仿|仿佛|试图|以为|几乎|险些|有人|无人|没有|大家|众人|他们|我们|一片|似乎|传来|停住|收住|录音|播放|对白|台词|描述/u
 const hypothetical = /^(?:如果|倘若|假如|假设|若是|若|一旦|万一|要是|只要|除非)/u
+const nonActorPrefix = /让|使|命令|要求|示意|未见|没见|没有|并非|并未|不是|不曾|听见|听到|看见|看到|好像|仿佛|模仿|假装|录音|播放|提到|描述/u
 
 function plausibleSubject(name: string, names: ReadonlyMap<string, unknown>) {
   if (names.has(name)) return true
   if (!/^[\p{Script=Han}·]{2,6}$/u.test(name) || notAnUnknownActor.test(name) || onlyManner.test(name)) return false
   for (let i = 1; i < name.length; i++) if (names.has(name.slice(0, i))) return false
   return true
+}
+
+function vocalReference(raw: string, names: ReadonlyMap<string, unknown>) {
+  const name = raw.replace(/^@/u, '')
+  const marker = raw.indexOf('@')
+  if (marker <= 0 || names.has(name)) return { name, offset: 0 }
+  const selected = raw.slice(marker + 1)
+  const prefix = raw.slice(0, marker).trim()
+  return names.has(selected) && !nonActorPrefix.test(prefix) ? { name: selected, offset: marker } : { name, offset: 0 }
 }
 
 /** A sound direction can describe a character's voice without quoting words.
@@ -51,18 +61,19 @@ export function scriptVideoVocalSubjects(
     if (!match || /^(?:便会|就会|的话|的(?:模样|样子|照片|画面)|(?:却|但)?(?:未|没|没有|不)出声|(?:已经|渐渐|突然)?(?:消失|停住|止住|收住))/u.test(text.slice(match[0].length))) continue
     const label = match[1].trimEnd()
     const start = clause.index! + clause[0].length - text.length
-    const members = names.has(label.replace(/^@/u, '')) ? [label] : label.split(/[、和与]/u)
-    if (!members.every(member => plausibleSubject(member.trim().replace(/^@/u, ''), names))) continue
+    const members = names.has(vocalReference(label, names).name) ? [label] : label.split(/[、和与]/u)
+    const references = members.map(member => vocalReference(member.trim(), names))
+    if (!references.every(({ name }) => plausibleSubject(name, names))) continue
     const next = scriptVideoNextTurnStart(line, clause.index! + clause[0].length)
     const rest = line.slice(next)
     const nextLabel = unquotedSpeaker.exec(rest)
     const nextTurn = nextLabel && /^[“「『"{]/u.test(rest.slice(nextLabel[0].length)) ? next : undefined
     let offset = 0
-    for (const member of members) {
+    for (const [index, member] of members.entries()) {
       const raw = member.trim()
-      const name = raw.replace(/^@/u, '')
+      const reference = references[index]
       const from = start + offset + member.indexOf(raw)
-      subjects.push({ name, start: from, end: from + raw.length, nextTurn })
+      subjects.push({ name: reference.name, start: from + reference.offset, end: from + raw.length, nextTurn })
       offset += member.length + 1
     }
   }

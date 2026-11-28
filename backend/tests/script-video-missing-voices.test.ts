@@ -109,6 +109,46 @@ test('多造型的未消歧名字由素材校验处理，避免误报缺失声�
   assert.throws(() => buildScriptVideoDelivery(card, assets, options), /阿宁.*多个匹配/u)
 })
 
+test('修仙分镜的说话人带门派前缀时按明确引用的角色附上音色', () => {
+  const elder = { id: 'elder', name: '大长老', kind: 'character', image: '/static/uploads/elder.png', voiceAudio: audio }
+  const other = { id: 'other', name: '钟不慎', kind: 'character', image: '/static/uploads/other.png' }
+  const dialogue = '听雪楼@大长老【男｜长者年龄感｜低沉厚实、略带砂质的男声｜沉着脸责问，后半句压重｜中等偏高音量｜自然语速｜对白（1/1）｜中文普通话】：「你这个师傅怎么当的，连徒弟都看不好！」'
+  const action = '听雪楼@大长老按住桌沿，@钟不慎抬眼。\n情绪提示：压着火问。'
+  const sound = '音效：掌根按上木桌沿的一记闷响。'
+  const camera = '侧向中景，定机。'
+  const card = { assetIds: [elder.id, other.id], duration: 5,
+    shots: [{ duration: 5, camera, action, dialogue: `${dialogue}\n${sound}` }],
+    prompt: `总时长：5秒\n\n镜头 01（0–5秒）\n景别／机位／运动：${camera}\n画面与动作：${action}\n对白／音效：${dialogue}\n${sound}`,
+  }
+  for (const promptMode of ['reference-guide', 'inline'] as const) {
+    const delivery = buildScriptVideoDelivery(card, [elder, other], { provider: 'jimeng', model: 'jimeng-seedance-2.5', promptMode })
+    assert.deepEqual(delivery.voices.map(voice => voice.asset.id), [elder.id])
+    assert.match(delivery.prompt, /【配音指令】：听雪楼@(?:图片\d+)?大长老｜[^\n]*音色参考@音频1[^\n]*「你这个师傅怎么当的，连徒弟都看不好！」/u)
+    assert.doesNotMatch(delivery.prompt, /^动作：.*@音频/mu)
+  }
+  assert.deepEqual(getScriptVideoMissingVoices(card, [{ ...elder, voiceAudio: undefined }, other]), ['大长老'])
+})
+
+test('独立音效、署名旁白和显式齐声都使用实际发声者各自的音频', () => {
+  const roles = ['大长老', '二长老'].map((name, index) => ({ id: `elder-${index}`, name, kind: 'character',
+    image: `/static/uploads/elder-${index}.png`, voiceAudio: { ...audio, url: `/static/uploads/elder-${index}.wav` } }))
+  const card = { duration: 5, assetIds: roles.map(role => role.id), shots: [{ duration: 5, dialogue: '' }] }
+  const header = '镜头 01（0–5秒）\n画面与动作：@大长老跟@二长老站在门边。\n'
+  for (const [line, expected] of [
+    ['音效：@大长老咳嗽一声。', ['大长老']],
+    ['旁白：@大长老【低声】：「灯熄了。」', ['大长老']],
+    ['对白／音效：@大长老和@二长老【齐声】：「遵命。」', ['大长老', '二长老']],
+  ] as const) {
+    const source = { ...card, prompt: header + line }
+    const delivery = buildScriptVideoDelivery(source, roles, { promptMode: 'reference-guide' })
+    assert.deepEqual(delivery.voices.map(voice => voice.asset.name), [...expected], line)
+    const sound = delivery.prompt.split('\n').at(-1)!
+    for (const [index, name] of expected.entries()) assert.match(sound, new RegExp(`${name} @音频${index + 1}`, 'u'))
+    assert.deepEqual(getScriptVideoMissingVoices(source, roles.map(role => ({ ...role, voiceAudio: undefined }))), [...expected])
+  }
+  assert.deepEqual(buildScriptVideoDelivery({ ...card, prompt: header + '音效：门轴轻响。' }, roles).voices, [])
+})
+
 test('闭合引号后紧接同一行的发声角色要校验声音并在成片提示词各自引用', () => {
   const roles = [
     { id: 'wei', name: '魏忠国', kind: 'character', image: '/static/uploads/wei.png', voiceAudio: { ...audio, url: '/static/uploads/wei.wav' } },

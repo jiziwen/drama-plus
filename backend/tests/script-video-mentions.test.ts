@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { isScriptVideoChibiAppearance, scriptVideoCharacterBase, scriptVideoCharacterName } from '../src/services/script-video-asset-identity'
+import { buildScriptVideoDelivery, getScriptVideoMissingVoices } from '../src/services/script-video-delivery'
 import { annotateScriptVideoAssets as scan, type MentionAsset } from '../src/services/script-video-mentions'
 
 const character = (name: string, id = name): MentionAsset => ({ name, id, kind: 'character' })
@@ -132,6 +133,53 @@ test('an exact display name shared by multiple assets resolves from the shot’s
   } })
   assert.deepEqual(resolved.problems, [])
   assert.deepEqual(resolved.mentions.map(hit => [hit.id, hit.usage]), [['guard', 'visual'], ['plain', 'speaker']])
+})
+
+test('裸称带门派时使用本镜唯一吻合的发声资产，保留前缀、台词和缺音校验', () => {
+  const elder = { ...character('大长老', 'elder'), image: '/elder.png', voiceAudio: { url: '/elder.wav', name: '大长老.wav' } }
+  const master = { ...character('掌门', 'master'), image: '/master.png', voiceMode: 'model' as const }
+  const dialogue = '听雪楼大长老【男｜长者年龄感｜低沉厚实的男声｜沉着脸责问｜中等音量｜自然语速｜对白（1/1）｜中文普通话】：「你这个师傅怎么当的，连徒弟都看不好！」'
+  const prompt = `镜头 01（0–5秒）\n画面与动作：听雪楼大长老按住桌沿。\n对白／音效：${dialogue}；@掌门：「听雪楼大长老的声音不低。」`
+  const card = { prompt, duration: 5, assetIds: [elder.id, master.id],
+    shots: [{ duration: 5, dialogue, speakerAssetIds: [elder.id, master.id] }],
+  }
+  const assets = [elder, master]
+  const result = scan(prompt, assets, card.assetIds, { card, autoBind: true, detectUnboundSpeakers: true })
+  const speaker = result.mentions.find(hit => hit.id === elder.id && hit.usage === 'speaker')
+  assert.ok(speaker)
+  assert.equal(prompt.slice(speaker.start, speaker.end), '大长老')
+  assert.match(result.text, /对白／音效：听雪楼@大长老【/u)
+  assert.match(result.text, /「听雪楼大长老的声音不低。」/u)
+
+  const delivery = buildScriptVideoDelivery(card, assets, { provider: 'jimeng', model: 'jimeng-seedance-2.5', promptMode: 'reference-guide' })
+  assert.deepEqual(delivery.voices.map(voice => voice.asset.id), [elder.id])
+  assert.match(delivery.prompt, /听雪楼@大长老 @音频1【/u)
+  assert.deepEqual(getScriptVideoMissingVoices(card, assets), [])
+  assert.deepEqual(getScriptVideoMissingVoices(card, [{ ...elder, voiceAudio: undefined }, master]), ['大长老'])
+})
+
+test('裸称只能依赖本正式镜头的发声 ID，其他镜头、画面或重名变体不能无依据补齐', () => {
+  const old = { ...character('大长老_年长', 'old'), assetIdentity: '大长老｜年长' }
+  const young = { ...character('大长老_年轻', 'young'), assetIdentity: '大长老｜年轻' }
+  const assets = [old, young]
+  const dialogue = '听雪楼大长老：“先退下。”'
+  const numbered = '镜头 01（0–5秒）\n对白／音效：' + dialogue
+  const bound = assets.map(asset => asset.id)
+  for (const [prompt, shots] of [
+    [numbered, [{ visualAssetIds: [old.id], speakerAssetIds: [] }, { speakerAssetIds: [old.id] }]],
+    [numbered, [{ speakerAssetIds: [old.id, young.id] }]],
+    ['对白／音效：' + dialogue, [{ speakerAssetIds: [old.id] }]],
+    ['镜头 01（0–5秒）\n前镜回顾：\n' + dialogue, [{ speakerAssetIds: [old.id] }]],
+  ] as const) {
+    const result = scan(prompt, assets, bound, { card: { shots }, autoBind: true, detectUnboundSpeakers: true })
+    assert.ok(!result.mentions.some(hit => hit.usage === 'speaker'), prompt)
+  }
+  const resolved = scan(numbered, assets, bound, { card: { shots: [{ speakerAssetIds: [young.id] }] }, autoBind: true })
+  assert.deepEqual(resolved.mentions.filter(hit => hit.usage === 'speaker').map(hit => hit.id), [young.id])
+  const explicit = scan(numbered.replace('听雪楼大长老', '听雪楼@大长老_年轻'), assets, bound, {
+    card: { shots: [{ speakerAssetIds: [old.id] }] }, autoBind: true,
+  })
+  assert.deepEqual(explicit.mentions.filter(hit => hit.usage === 'speaker').map(hit => hit.id), [young.id])
 })
 
 test('delivery directions do not infer assets from prose and preserve deliberate references and dialogue', () => {

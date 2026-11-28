@@ -45,6 +45,7 @@ import {
 } from '../services/script-video-generation.js'
 import { getScriptVideoMissingVoices, getScriptVideoVoiceInputs } from '../services/script-video-delivery.js'
 import { isScriptVideoGenerationDuration } from '../services/script-video-capabilities.js'
+import { resolveScriptVideoResolution, scriptVideoModelResolutions } from '../services/script-video-resolution.js'
 import { isSeedance25Model } from '../services/seedance-models.js'
 import { assertScriptVideoFormal, getScriptVideoContentWarnings, ScriptVideoAIError, type ScriptVideoCard, type ScriptVideoInput } from '../services/script-video-types.js'
 import { scriptVideoAssetBindingIssues } from '../services/script-video-asset-bindings.js'
@@ -99,6 +100,16 @@ function episodeOf(project: ScriptVideoProject, episodeId: string) {
   const episode = project.episodes.find((item) => item.id === episodeId)
   if (!episode) throw new ScriptVideoStoreError('分集不存在', 404, 'NOT_FOUND')
   return episode
+}
+function episodeVideoResolution(project: ScriptVideoProject, episode: {
+  modelProvider?: string | null; modelName?: string | null; resolution?: string; videoResolutions?: Record<string, string>
+}, options: { cardId?: string; model?: string; provider?: string } = {}) {
+  return resolveScriptVideoResolution({
+    override: options.cardId ? episode.videoResolutions?.[options.cardId] : undefined,
+    projectDefault: project.settings?.defaultVideoResolution,
+    legacy: episode.resolution,
+    supported: scriptVideoModelResolutions(options.provider ?? episode.modelProvider, options.model ?? episode.modelName),
+  })
 }
 function readVideoPromptMode(value: unknown) {
   if (value === undefined || isVideoPromptMode(value)) return value
@@ -935,7 +946,7 @@ export function createScriptVideoRoutes(
       const hasSelection = body.configId != null || body.model != null
       if (!Number.isSafeInteger(body.cardVersion) || hasSelection &&
           (!Number.isSafeInteger(body.configId) || body.configId <= 0 || typeof body.model !== 'string' || !body.model.trim() ||
-          typeof body.aspectRatio !== 'string' || typeof body.resolution !== 'string')) {
+          typeof body.aspectRatio !== 'string' || (body.resolution !== undefined && typeof body.resolution !== 'string'))) {
         throw new ScriptVideoStoreError('视频模型配置或分镜版本无效')
       }
       if (body.duration !== undefined && !isScriptVideoGenerationDuration(body.duration)) {
@@ -983,7 +994,10 @@ export function createScriptVideoRoutes(
         const lighting = await prepareScriptVideoLighting(lightingPlan)
         for (const warning of lighting.warnings) warnings.add(warning)
         const result = await previewScriptVideoPrompt({ ...input, projectId: id, episodeId,
-          selection: hasSelection ? { configId: body.configId, model: body.model, aspectRatio: body.aspectRatio, resolution: body.resolution } : undefined,
+          selection: hasSelection ? {
+            configId: body.configId, model: body.model, aspectRatio: body.aspectRatio,
+            resolution: body.resolution ?? episodeVideoResolution(project, episode, { cardId: card.id, model: body.model }),
+          } : undefined,
           duration: body.duration,
           promptMode,
           continuationSource: continuationSourceForPreview,
@@ -1092,12 +1106,13 @@ export function createScriptVideoRoutes(
       })
       if (body.prepareReferenceImages && (!episode.modelName || isSeedance25Model(episode.modelName))) {
         const selected = body.cardIds && new Set<string>(body.cardIds)
-        const cards = selected ? episode.cards.filter((card: { id: string }) => selected.has(card.id)) : episode.cards
+        const cards: ScriptVideoCard[] = selected ? episode.cards.filter((card: ScriptVideoCard) => selected.has(card.id)) : episode.cards
+        const model = episode.modelName || 'doubao-seedance-2-5-260628'
         try {
           const referenceImages = await prepareScriptVideoArchiveImages(cards, project.assets, {
             model: episode.modelName, provider: episode.modelProvider, promptMode, cast: episode.production?.characters,
             stylePreset: episode.production?.stylePreset || project.settings?.stylePreset,
-          }, episode.resolution || '480p')
+          }, card => episodeVideoResolution(project, episode, { cardId: card.id, model, provider: 'volcengine' }))
           return success(c, { ok: true, warnings, referenceImages })
         } catch (error) {
           throw new ScriptVideoStoreError(error instanceof Error ? error.message : '交付参考图准备失败', 422, 'REFERENCE_IMAGE')
@@ -1248,7 +1263,8 @@ export function createScriptVideoRoutes(
       })
       if (!started || signal.aborted) return
       const ep = episodeOf(project, job.episodeId)
-      const videoModel = ep.modelKey === '' ? (await getActiveConfig('video'))?.model ?? ep.modelName : ep.modelName
+      const defaultVideo = ep.modelKey === '' ? await getActiveConfig('video') : undefined
+      const videoModel = defaultVideo?.model ?? ep.modelName
       const input: ScriptVideoInput = {
         projectTitle: project.title,
         episodeNumber: ep.number,
@@ -1259,7 +1275,10 @@ export function createScriptVideoRoutes(
         model: body.model ?? ep.textModel,
         production: ep.production,
         stylePreset: job.action === 'revisions' || job.action === 'review' ? ep.production?.stylePreset : project.settings?.stylePreset,
-        deliverySpecs: { aspectRatio: ep.aspectRatio, resolution: ep.resolution, videoModel },
+        deliverySpecs: {
+          aspectRatio: ep.aspectRatio, videoModel,
+          resolution: episodeVideoResolution(project, ep, { cardId: job.cardId, model: videoModel, provider: defaultVideo?.provider }),
+        },
         systemPrompt: body.systemPrompt ?? project.settings?.systemPrompt,
         storyboardMode: job.storyboardMode,
         combatEnabled: body.combatEnabled ?? project.settings?.combatEnabled,
@@ -1381,6 +1400,11 @@ export function createScriptVideoRoutes(
               version: previous ? (Number(previous.version) || 0) + 1 : 1,
             }
           })
+          if (target.videoResolutions) {
+            const cardIds = new Set(cards.map(card => card.id))
+            for (const id of Object.keys(target.videoResolutions)) if (!cardIds.has(id)) delete target.videoResolutions[id]
+            if (!Object.keys(target.videoResolutions).length) delete target.videoResolutions
+          }
           target.selectedCardId = target.cards[0]?.id || ''
           if (job.action === 'outline') {
             target.outlineDurationPolicy = OUTLINE_DURATION_POLICY
@@ -1445,7 +1469,7 @@ export function createScriptVideoRoutes(
           typeof body.model !== 'string' ||
           !body.model.trim() ||
           typeof body.aspectRatio !== 'string' ||
-          typeof body.resolution !== 'string'
+          (body.resolution !== undefined && typeof body.resolution !== 'string')
         )
           throw new ScriptVideoStoreError('视频模型配置或分镜版本无效')
         if (body.duration !== undefined && !isScriptVideoGenerationDuration(body.duration)) {
@@ -1482,7 +1506,7 @@ export function createScriptVideoRoutes(
               job, state: await dependencies.getScriptVideoGeneration(job.taskId!).catch(() => null),
             }))),
         ])
-        const prepared = await store.mutateEpisode<Pick<ScriptVideoGenerationInput, 'card' | 'assets' | 'cast' | 'stylePreset' | 'continuationSource'> & {
+        const prepared = await store.mutateEpisode<Pick<ScriptVideoGenerationInput, 'card' | 'assets' | 'cast' | 'stylePreset' | 'continuationSource' | 'resolution'> & {
           job: ScriptVideoJob
           lightingPlan: ReturnType<typeof planScriptVideoLighting>[string]
         }>(id, episodeId, (record) => {
@@ -1574,6 +1598,9 @@ export function createScriptVideoRoutes(
           const generation = {
             card: structuredClone(card), assets: structuredClone(record.project.assets), cast: structuredClone(cast),
             stylePreset: structuredClone(stylePreset), continuationSource: source, lightingPlan,
+            resolution: body.resolution ?? episodeVideoResolution(record.project, episode, {
+              cardId, model: body.model.trim(), provider: config?.provider ?? undefined,
+            }),
           }
           if (body.confirmRetryAfterUnknown === true)
             for (const item of previous)
@@ -1644,7 +1671,7 @@ export function createScriptVideoRoutes(
           configId: body.configId,
           model: body.model,
           aspectRatio: body.aspectRatio,
-          resolution: body.resolution,
+          resolution: prepared.resolution,
           duration: body.duration,
           promptMode,
           allowJimeng: config?.provider === 'jimeng',

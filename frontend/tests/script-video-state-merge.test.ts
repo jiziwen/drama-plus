@@ -107,6 +107,22 @@ test('deletion concurrent with a content change is surfaced without discarding l
   assert.deepEqual(result.project.episodes[0]!.cards,[])
 })
 
+test('两个页面分别设置或清除不同片段的分辨率时保留双方修改', () => {
+  const withResolutions = (videoResolutions?: Record<string, string>) => {
+    const project = base()
+    return { ...project, episodes: project.episodes.map(episode => ({
+      ...episode, ...(episode.id === 'e1' && videoResolutions && { videoResolutions }),
+    })) }
+  }
+  const both = mergeScriptVideoProject(withResolutions(), withResolutions({ a: '480P' }), withResolutions({ b: '1080P' }))
+  assert.deepEqual(both.conflicts, [])
+  assert.deepEqual(both.project.episodes[0]!.videoResolutions, { a: '480P', b: '1080P' })
+
+  const cleared = mergeScriptVideoProject(withResolutions({ a: '480P' }), withResolutions(), withResolutions({ a: '480P', b: '720P' }))
+  assert.deepEqual(cleared.conflicts, [])
+  assert.deepEqual(cleared.project.episodes[0]!.videoResolutions, { b: '720P' })
+})
+
 test('independent new assets and episodes are retained without mutating inputs', () => {
   const b=base(), l=structuredClone(b), r=structuredClone(b)
   l.assets.push({id:'a1',name:'本地'} as never)

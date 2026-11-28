@@ -1,7 +1,7 @@
 import { omitScriptVideoRecapQuotes, replaceScriptVideoPromptStyle } from './script-video-format.js'
 import type { ScriptVideoReferenceSettings } from './script-video-reference-settings.js'
 import { annotateScriptVideoInnerOs, hasExplicitScriptVideoInnerOs, hasScriptVideoInnerOs, SCRIPT_VIDEO_INNER_OS_DIRECTION } from './script-video-inner-os.js'
-import { mapScriptVideoSoundLine, speechClosers, unquotedSpeaker, withoutScriptVideoVoiceCues } from './script-video-foley.js'
+import { mapScriptVideoSoundLine, scriptVideoSpeakerSeparator, speechClosers, unquotedSpeaker, withoutScriptVideoVoiceCues } from './script-video-foley.js'
 import { annotateScriptVideoAssets, describeScriptVideoReferenceProblem, scriptVideoAudioReferences, scriptVideoMaterialEvidenceText, scriptVideoMaterialIds, type AssetMention } from './script-video-mentions.js'
 import type { ScriptVideoAssetBindingRequirement } from './script-video-asset-scenes.js'
 import { scriptVideoShotHeadings, splitScriptVideoHandoff } from './script-video-asset-scope.js'
@@ -239,7 +239,7 @@ function renderSpeech(line: string, context: SeedanceSoundContext, sound: ShotSo
         return `${sep}${label} ：“${speech}”`
       }
       const offscreen = /(?:V\.?O\.?|O\.?V\.?)[）)】\]]|画外|旁白|只闻其声/iu.test(speaker)
-      const labels = withoutScriptVideoVoiceCues(speaker).split(/[【（(\[]/u, 1)[0].split('、')
+      const labels = withoutScriptVideoVoiceCues(speaker).split(/[【（(\[]/u, 1)[0].split(scriptVideoSpeakerSeparator)
       for (const label of labels) {
         if (offscreen || isAudioOnlySpeaker(label.trimEnd(), context.audioOnlySpeakers)) continue
         sound.hasOnScreenSpeech = true

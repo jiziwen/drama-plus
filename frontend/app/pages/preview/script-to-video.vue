@@ -86,7 +86,18 @@
         </button>
       </nav>
       <div class="vp-output-switch" aria-label="项目操作">
-        <div class="vp-episode-status">
+        <div v-if="stage === 'production'" class="vp-workflow-setting">
+          <label for="vp-project-resolution">项目分辨率</label>
+          <BaseSelect
+            v-model="projectResolution"
+            input-id="vp-project-resolution"
+            :options="projectResolutionOptions"
+            :searchable="false"
+            variant="inspector"
+            aria-label="项目分辨率"
+          />
+        </div>
+        <div class="vp-workflow-setting">
           <span>修改状态</span>
           <BaseSelect
             v-model="episodeProgressSelection"
@@ -497,8 +508,17 @@
               <BaseSelect v-model="aspectRatio" :options="aspectRatioOptions" :searchable="false" variant="inspector" aria-label="画幅" />
             </div>
             <div class="vp-field">
-              <span>分辨率</span>
-              <BaseSelect v-model="resolution" :options="modelResolutions" :searchable="false" variant="inspector" aria-label="分辨率" />
+              <label for="vp-generation-resolution">分辨率</label>
+              <BaseSelect
+                v-model="videoResolution"
+                input-id="vp-generation-resolution"
+                aria-label="分辨率"
+                variant="inspector"
+                :options="videoResolutionOptions"
+                :searchable="false"
+                :disabled="!selectedCard || videoModelLoading || videoSelectionPending || videoRequestPending"
+              />
+              <p v-if="videoResolutionHint" class="vp-field-hint">{{ videoResolutionHint }}</p>
             </div>
           </div>
           <div v-if="selectedCard" class="vp-field">
@@ -1529,7 +1549,6 @@ import ScriptVideoEpisodePreview from '~/components/ScriptVideoEpisodePreview.vu
 import { useScriptVideoEpisodeLock } from '~/composables/useScriptVideoEpisodeLock'
 import { useScriptVideoReferenceFrames } from '~/composables/useScriptVideoReferenceFrames'
 import { usesJimengVideo } from '~/utils/jimengVideo'
-import { jimengVideoModel } from '../../../../backend/src/services/jimeng-video-models'
 import { formatJimengScriptPrompt } from '../../../../backend/src/services/jimeng-reference-labels'
 import { LIBTV_VIDEO_RATIOS, libtvVideoModel } from '../../../../backend/src/services/libtv-video-models'
 import {
@@ -1546,7 +1565,7 @@ import { previousScriptVideoCard } from '../../../../backend/src/services/script
 import { DEFAULT_VIDEO_PROMPT_MODE, type ScriptVideoPromptMode } from '../../../../backend/src/services/video-prompt-mode'
 import { DEFAULT_SCRIPT_VIDEO_STORYBOARD_MODE, SCRIPT_VIDEO_STORYBOARD_MODES, type ScriptVideoStoryboardMode } from '../../../../backend/src/services/script-video-storyboard-mode'
 import { latestScriptVideoTaskUrls, officialScriptVideoUrl } from '../../../../backend/src/services/script-video-versions'
-import { AICOST_VIDEO_RATIOS, AICOST_VIDEO_RESOLUTIONS, aicostVideoModelCapabilities } from '../../../../backend/src/services/aicost-video-models'
+import { AICOST_VIDEO_RATIOS, aicostVideoModelCapabilities } from '../../../../backend/src/services/aicost-video-models'
 import { seedanceModelLimits } from '../../../../backend/src/services/seedance-models'
 import { isScriptVideoChibiAppearance, scriptVideoCharacterBase, scriptVideoCharacterName } from '../../../../backend/src/services/script-video-asset-identity'
 import { scriptVideoAssetBindingIssues } from '../../../../backend/src/services/script-video-asset-bindings'
@@ -1596,6 +1615,7 @@ import {
   type ScriptVideoRevisionCandidate,
 } from '~/utils/scriptVideoClient'
 import { applyScriptVideoChanges, diffScriptVideoChanges } from '../../../../backend/src/services/script-video-sync'
+import { normalizeScriptVideoResolution, resolveScriptVideoResolution, SCRIPT_VIDEO_DEFAULT_RESOLUTIONS, scriptVideoModelResolutions } from '../../../../backend/src/services/script-video-resolution'
 import { readScriptVideoDrafts, writeScriptVideoDraft, type ScriptVideoDraft } from '~/utils/scriptVideoDrafts'
 import { readSiteAccount } from '~/utils/siteSession'
 import { mergeScriptVideoProject } from '~/utils/scriptVideoStateMerge'
@@ -1675,6 +1695,7 @@ type PreviewEpisode = {
   aspectRatio: string
   resolution: string
   videoDurations?: Record<string, number>
+  videoResolutions?: Record<string, string>
 }
 type PreviewProject = {
   id: string
@@ -1683,6 +1704,7 @@ type PreviewProject = {
     systemPrompt?: string
     combatEnabled?: boolean
     textSelection?: string
+    defaultVideoResolution?: string
     stylePreset?: ScriptVideoStylePreset
     customStylePresets?: Record<string, ScriptVideoStylePreset>
   }
@@ -1785,6 +1807,22 @@ const episodeProgressOptions = [
   { value: 'auto', label: '自动判断' },
   ...SCRIPT_VIDEO_EPISODE_PROGRESS_OPTIONS.map(progress => ({ value: progress, label: progress })),
 ]
+const projectResolutionOptions = [
+  { value: '', label: '模型默认' },
+  ...SCRIPT_VIDEO_DEFAULT_RESOLUTIONS.map(value => ({ value, label: value })),
+]
+const projectResolution = computed({
+  get: () => normalizeScriptVideoResolution(currentProject.value.settings?.defaultVideoResolution) ?? '',
+  set: (value: string) => {
+    if (!canEditSharedProject.value) return
+    const defaultVideoResolution = normalizeScriptVideoResolution(value)
+    if (value && !defaultVideoResolution) return
+    const project = currentProject.value
+    if (project.settings?.defaultVideoResolution !== defaultVideoResolution) {
+      project.settings = { ...project.settings, defaultVideoResolution }
+    }
+  },
+})
 const episodeProgressSelection = computed({
   get: () => currentEpisode.value.progressOverride ?? 'auto',
   set: (value: string | number) => {
@@ -2317,12 +2355,15 @@ const usesJimeng = computed(() => usesJimengVideo(currentEpisode.value.modelProv
 const selectedLibTV = computed(() => currentEpisode.value.modelProvider === 'libtv'
   ? libtvVideoModel(currentEpisode.value.modelName || '') : undefined)
 const selectedAicost = computed(() => usesAicost.value ? aicostVideoModelCapabilities(currentEpisode.value.modelName || '') : null)
-const modelResolutions = computed(() =>
-  (usesAicost.value ? selectedAicost.value?.resolutions ?? AICOST_VIDEO_RESOLUTIONS
-    : usesJimeng.value ? jimengVideoModel(currentEpisode.value.modelName || '')?.resolutions
-    : selectedLibTV.value?.resolutions ?? selectedSeedance.value?.resolutions)
-    ?.map(size => size.toUpperCase()) ?? ['480P', '720P', '1080P'],
-)
+const modelResolutions = computed(() => scriptVideoModelResolutions(currentEpisode.value.modelProvider, currentEpisode.value.modelName))
+function effectiveVideoResolution(episode: PreviewEpisode, project: PreviewProject, cardId: string | undefined) {
+  return resolveScriptVideoResolution({
+    override: cardId ? episode.videoResolutions?.[cardId] : undefined,
+    projectDefault: project.settings?.defaultVideoResolution,
+    legacy: episode.resolution,
+    supported: scriptVideoModelResolutions(episode.modelProvider, episode.modelName),
+  })
+}
 const modelAspectRatios = computed<readonly string[]>(() =>
   usesAicost.value ? selectedAicost.value?.ratios ?? AICOST_VIDEO_RATIOS
     : selectedLibTV.value ? LIBTV_VIDEO_RATIOS
@@ -2339,11 +2380,38 @@ const aspectRatio = computed({
     currentEpisode.value.aspectRatio = value
   },
 })
-const resolution = computed({
-  get: () => currentEpisode.value.resolution?.toUpperCase() || '',
+const inheritedVideoResolution = computed(() => effectiveVideoResolution(currentEpisode.value, currentProject.value, undefined))
+const savedVideoResolution = computed(() => {
+  const card = selectedCard.value
+  return card ? normalizeScriptVideoResolution(currentEpisode.value.videoResolutions?.[card.id]) : undefined
+})
+const videoResolution = computed({
+  get: () => savedVideoResolution.value && modelResolutions.value.includes(savedVideoResolution.value)
+    ? savedVideoResolution.value : '',
   set: (value: string) => {
-    currentEpisode.value.resolution = value
+    const card = selectedCard.value
+    if (!card || !episodeOpen.value || videoSelectionPending.value || videoRequestPending.value) return
+    const selected = normalizeScriptVideoResolution(value)
+    if (value !== '' && (!selected || !modelResolutions.value.includes(selected))) return
+    const episode = currentEpisode.value
+    if (episode.videoResolutions?.[card.id] === selected) return
+    const resolutions = { ...episode.videoResolutions }
+    if (selected) resolutions[card.id] = selected
+    else delete resolutions[card.id]
+    episode.videoResolutions = resolutions
   },
+})
+const videoResolutionOptions = computed(() => [
+  { value: '', label: `跟随项目（${inheritedVideoResolution.value}）` },
+  ...modelResolutions.value.map(value => ({ value, label: value })),
+])
+const videoResolutionHint = computed(() => {
+  if (!selectedCard.value || videoResolution.value) return ''
+  const requested = savedVideoResolution.value || normalizeScriptVideoResolution(currentProject.value.settings?.defaultVideoResolution)
+  if (requested && !modelResolutions.value.includes(requested)) {
+    return `当前模型不支持 ${requested}，出片使用 ${inheritedVideoResolution.value}。`
+  }
+  return `出片使用 ${inheritedVideoResolution.value}。`
 })
 const videoDuration = computed<number | string>({
   get: () => selectedCard.value ? (currentEpisode.value.videoDurations?.[selectedCard.value.id] ?? '') : '',
@@ -3513,8 +3581,10 @@ function setVideoModel(selection: {
   currentEpisode.value.modelWholeSeconds = selection.wholeSeconds
   currentEpisode.value.modelMaxAudioReferences = selection.maxAudioReferences
   currentEpisode.value.modelMaxAudioDuration = selection.maxAudioDuration
-  if (selection.model && (changedModel || !modelResolutions.value.includes(resolution.value))) {
-    resolution.value = modelResolutions.value.includes('480P') ? '480P' : modelResolutions.value[0] || '480P'
+  const legacyResolution = normalizeScriptVideoResolution(currentEpisode.value.resolution)
+  if (selection.model && !normalizeScriptVideoResolution(currentProject.value.settings?.defaultVideoResolution) &&
+      (changedModel || !legacyResolution || !modelResolutions.value.includes(legacyResolution))) {
+    currentEpisode.value.resolution = resolveScriptVideoResolution({ supported: modelResolutions.value })
   }
   if (selection.model && !modelAspectRatios.value.includes(aspectRatio.value)) {
     aspectRatio.value = modelAspectRatios.value.includes('16:9') ? '16:9' : modelAspectRatios.value[0] || '16:9'
@@ -4538,7 +4608,7 @@ async function generateCard(
       configId: current.modelConfigId,
       model: current.modelName,
       aspectRatio: current.aspectRatio,
-      resolution: current.resolution,
+      resolution: effectiveVideoResolution(current, saved, latest.id),
       requestId: run.id,
       promptMode,
       ...(duration === undefined ? {} : { duration }),
@@ -4675,7 +4745,7 @@ async function showFinalPrompt({ cardId, title, task, event }: {
     const body = task ? { cardId, jobId: task.id } : {
       cardId, cardVersion: card!.version,
       ...(hasModel && { configId: episode.modelConfigId, model: episode.modelName,
-        aspectRatio: episode.aspectRatio, resolution: episode.resolution }),
+        aspectRatio: episode.aspectRatio, resolution: effectiveVideoResolution(episode, currentProject.value, cardId) }),
       ...(duration !== undefined && { duration }),
       promptMode,
     }
@@ -5737,7 +5807,7 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
   gap: 3px;
 }
-.vp-episode-status {
+.vp-workflow-setting {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -5746,7 +5816,7 @@ onBeforeUnmount(() => {
   font-size: 11px;
   white-space: nowrap;
 }
-.vp-episode-status :deep(.base-select-trigger) {
+.vp-workflow-setting :deep(.base-select-trigger) {
   min-width: 106px;
   min-height: 33px;
   padding: 0 8px;
@@ -7398,13 +7468,13 @@ button.vp-asset-preview-trigger {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
   .vp-output-switch:has(> button:nth-of-type(4)) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .vp-episode-status {
+  .vp-workflow-setting {
     grid-column: 1 / -1;
     display: grid;
-    grid-template-columns: var(--vp-field-label-width) minmax(0, 1fr);
+    grid-template-columns: 56px minmax(0, 1fr);
     margin: 0;
   }
-  .vp-episode-status :deep(.base-select) {
+  .vp-workflow-setting :deep(.base-select) {
     flex: 1;
     min-width: 0;
   }

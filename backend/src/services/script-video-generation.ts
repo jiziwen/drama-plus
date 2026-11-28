@@ -1,5 +1,5 @@
 import { isSeedance25Model, seedanceModelLimits } from './seedance-models.js'
-import { AICOST_VIDEO_RATIOS, AICOST_VIDEO_RESOLUTIONS, aicostVideoModelCapabilities, isAicostMiniMaxH3Model } from './aicost-video-models.js'
+import { AICOST_VIDEO_RATIOS, aicostVideoModelCapabilities, isAicostMiniMaxH3Model } from './aicost-video-models.js'
 import { prepareSeedanceReferenceImage } from './seedance-reference-media.js'
 import fs from 'node:fs/promises'
 import path from 'node:path'
@@ -29,9 +29,9 @@ import { manualScriptVideoLightingRanges, sceneGradedStyle } from './script-vide
 import { JimengCliError } from './jimeng-cli.js'
 import { LibTVCliError } from './libtv-cli.js'
 import { formatJimengScriptPrompt } from './jimeng-reference-labels.js'
-import { jimengVideoModel } from './jimeng-video-models.js'
 import { LIBTV_VIDEO_RATIOS, libtvVideoModel } from './libtv-video-models.js'
 import { scriptVideoAssetBindingIssues } from './script-video-asset-bindings.js'
+import { scriptVideoModelResolutions } from './script-video-resolution.js'
 
 type Asset = ScriptVideoDeliveryAsset
 export type ScriptVideoContinuationSource = {
@@ -108,19 +108,26 @@ async function checkedReference(asset: Pick<Asset, 'name' | 'image'>, provider: 
 
 /** ZIP packaging uses the same source image, decoder and target size as a local
  * Seedance submission. Only decode distinct files in the selected segments. */
-export async function prepareScriptVideoArchiveImages(
-  cards: ScriptVideoDeliveryCard[], assets: Asset[], options: ScriptVideoDeliveryOptions, resolution: string,
+export async function prepareScriptVideoArchiveImages<Card extends ScriptVideoDeliveryCard>(
+  cards: Card[], assets: Asset[], options: ScriptVideoDeliveryOptions, resolution: string | ((card: Card) => string),
 ): Promise<Record<string, string>> {
-  const selected = new Map<string, Asset>()
+  const model = options.model || 'doubao-seedance-2-5-260628'
+  const sizes = scriptVideoModelResolutions('volcengine', model).map(size => size.toLowerCase())
+  const selected = new Map<string, { asset: Asset; size: string }>()
   const deliveryOptions = { ...options, promptMode: options.promptMode ?? getVideoPromptMode() }
   for (const card of cards) {
+    const size = (typeof resolution === 'function' ? resolution(card) : resolution).toLowerCase()
     const { images } = buildScriptVideoDelivery(card, assets, deliveryOptions)
-    for (const asset of images) selected.set(asset.image, asset)
+    for (const asset of images) {
+      const previous = selected.get(asset.image)
+      // The archive stores one file per image, so retain enough detail for the largest render using it.
+      if (!previous || sizes.indexOf(size) > sizes.indexOf(previous.size)) selected.set(asset.image, { asset, size })
+    }
   }
   const urls = Object.create(null) as Record<string, string>
   // Decode serially so a large episode doesn't expand all of its full-size images at once.
-  for (const asset of selected.values()) {
-    urls[asset.image] = await checkedReference(asset, 'volcengine', options.model || 'doubao-seedance-2-5-260628', resolution.toLowerCase())
+  for (const { asset, size } of selected.values()) {
+    urls[asset.image] = await checkedReference(asset, 'volcengine', model, size)
   }
   return urls
 }
@@ -431,7 +438,6 @@ async function prepareSubmission(input: ScriptVideoGenerationInput) {
   const seedance = config.provider === 'volcengine' ? seedanceModelLimits(config.model) : null
   const usesAicost = config.provider.toLowerCase() === 'aicost'
   const usesJimeng = config.provider === 'jimeng'
-  const jimeng = usesJimeng ? jimengVideoModel(config.model) : undefined
   const libtv = config.provider === 'libtv' ? libtvVideoModel(config.model) : undefined
   const aicost = usesAicost ? aicostVideoModelCapabilities(config.model) : null
   const is25 = seedance?.version === '2.5'
@@ -440,7 +446,7 @@ async function prepareSubmission(input: ScriptVideoGenerationInput) {
     : is25 ? [...standardRatios, '21:9', 'adaptive'] : usesJimeng ? [...standardRatios, '21:9'] : standardRatios
   if (!ratios.includes(aspectRatio)) throw new Error('所选画幅无效')
   const size = resolution?.toLowerCase()
-  const resolutions = usesAicost ? aicost?.resolutions ?? AICOST_VIDEO_RESOLUTIONS : jimeng?.resolutions ?? libtv?.resolutions ?? seedance?.resolutions ?? ['480p', '720p', '1080p']
+  const resolutions = scriptVideoModelResolutions(config.provider, config.model).map(resolution => resolution.toLowerCase())
   if (!resolutions.includes(size)) throw new Error(`所选模型支持 ${resolutions.join('、')}，请调整分辨率`)
   if (!Array.isArray(card.assetIds) || new Set(card.assetIds).size !== card.assetIds.length) throw new Error('分镜资产绑定无效')
   const options = { model: config.model, provider: config.provider, stylePreset: input.stylePreset, cast: input.cast,

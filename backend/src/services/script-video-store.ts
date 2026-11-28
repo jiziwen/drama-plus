@@ -19,6 +19,7 @@ import { getScriptVideoOutlineDurationIssues, scriptVideoAssetImageStatuses, scr
 import { confirmScriptVideoVoiceAge, scriptVideoVoiceProfileSchema, setScriptVideoProfileAudio } from './script-video-project-voices.js'
 import { scriptVideoVoiceAgeStageSchema, type ScriptVideoVoiceAgeStage } from './script-video-voice-profile.js'
 import { scriptVideoAssetBindingRequirementSchema, scriptVideoAssetOccurrenceSchema } from './script-video-asset-scenes.js'
+import { completeScriptVideoSceneReferences } from './script-video-asset-bindings.js'
 import { getScriptVideoVoiceInputs, scriptVideoVoiceSource, type ScriptVideoDeliveryAsset, type ScriptVideoDeliveryCard } from './script-video-delivery.js'
 import type { ScriptVideoStoryboardCheckpoint, ScriptVideoStoryboardProgress } from './script-video-ai.js'
 import type { LightingCheck } from './script-video-lighting.js'
@@ -359,6 +360,10 @@ function restoreSavedPromptReferences(project: ScriptVideoProject, episodes = pr
       }
       if (references.length) card.prompt = output + prompt.slice(cursor)
       if (missing.length || references.length) card.assetIds = [...new Set([...assetIds, ...missing, ...references.map(hit => hit.id)])]
+      if (!card.manuallyAdded && !card.promptNeedsSync && !card.videoUrl && card.status !== 'ready' && Array.isArray(card.shots)) {
+        const completed = completeScriptVideoSceneReferences(card, { script: episode.confirmedScript, assets: project.assets })
+        if (completed !== card) Object.assign(card, completed)
+      }
     }
   }
 }

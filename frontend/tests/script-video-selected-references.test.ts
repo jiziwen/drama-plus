@@ -8,9 +8,11 @@ import ts from 'typescript'
 import * as preview from '../app/utils/scriptVideoPreview'
 import * as promptVoiceView from '../app/utils/scriptVideoPromptVoiceView'
 import * as validation from '../app/utils/scriptVideoPreviewValidation'
+import * as assetBindings from '../../backend/src/services/script-video-asset-bindings'
 import { buildScriptVideoDelivery, getScriptVideoPromptVoices } from '../../backend/src/services/script-video-delivery'
 import { scriptVideoAudioReferences } from '../../backend/src/services/script-video-mentions'
 import { getScriptVideoStylePreset, scriptVideoPromptStylePrefix, splitScriptVideoPromptStyle } from '../../backend/src/services/script-video-style'
+import { officialScriptVideoUrl } from '../../backend/src/services/script-video-versions'
 
 const filename = 'ScriptVideoPreviewEditor.vue'
 const source = readFileSync(new URL('../app/components/' + filename, import.meta.url), 'utf8')
@@ -20,17 +22,20 @@ const component: any = {}
 const menu = { name: 'MentionTextarea' }
 let nextId = 0
 const modules: Record<string, unknown> = {
-  vue: { ...vue, useId: () => `editor-${++nextId}`, resolveComponent: (name: string) => name, withDirectives: (node: unknown) => node },
+  vue: { ...vue, useId: () => `editor-${++nextId}`, resolveComponent: (name: string) => name, withDirectives: (node: unknown) => node,
+    onMounted() {}, onBeforeUnmount() {} },
   'lucide-vue-next': { Eye: 'Eye', Headphones: 'Headphones', Maximize2: 'Maximize2', Minimize2: 'Minimize2', Sparkles: 'Sparkles', Upload: 'Upload', X: 'X' },
   './MentionTextarea.vue': { default: menu },
   '~/utils/scriptVideoPreview': preview,
   '~/utils/scriptVideoPromptVoiceView': promptVoiceView,
   '~/utils/scriptVideoPreviewValidation': validation,
   '../../../backend/src/services/script-video-delivery': { getScriptVideoPromptVoices },
+  '../../../backend/src/services/script-video-asset-bindings': assetBindings,
   '../../../backend/src/services/script-video-mentions': { scriptVideoAudioReferences },
   '../../../backend/src/services/script-video-style': { splitScriptVideoPromptStyle },
+  '../../../backend/src/services/script-video-versions': { officialScriptVideoUrl },
 }
-runInNewContext(outputText, {exports: component, require: (id: string) => modules[id]})
+runInNewContext(outputText, {exports: component, require: (id: string) => modules[id], window: { innerWidth: 400, innerHeight: 300 }})
 
 function flatten(node: any): any[] {
   if (!node || typeof node !== 'object') return []
@@ -61,6 +66,113 @@ function setup(ids: string[], { tab, openPrompt = true, completedTaskVideoUrl, a
 function editPrompt(textarea: any, text: string) {
   return textarea.props['onUpdate:modelValue'](text, { value: text, selectionStart: text.length, selectionEnd: text.length })
 }
+
+test('待确认素材按钮悬停和键盘聚焦显示原图，只有点击提交选择', async () => {
+  const wooden: preview.PreviewAsset = { id: 'wooden', kind: 'prop', name: '县衙待客木椅', image: '/static/wooden.png', originalName: '木椅' }
+  const rocking: preview.PreviewAsset = { id: 'rocking', kind: 'prop', name: '客房木摇椅', image: '/static/rocking.png', originalName: '木椅' }
+  const editor = setup([], { assetList: [wooden, rocking] })
+  editor.props.card = {
+    ...editor.props.card,
+    prompt: '镜头1（0–3秒）\n画面与动作：木椅挡住视线。',
+    shots: [{ id: 'shot', duration: 3, camera: '', action: '木椅挡住视线。', dialogue: '', visualAssetIds: [] }],
+    assetBindingRequirements: [{ key: 'chair', kind: 'prop', label: '木椅', candidateIds: [wooden.id, rocking.id] }],
+  }
+  await vue.nextTick()
+  const buttons = editor.nodes().filter(node => node.type === 'button' && node.props?.onPointerenter)
+  const figure = () => editor.nodes().find(node => node.type === 'figure' && node.props?.class === 'sv-binding-candidate-preview')
+  const image = () => flatten(figure()).find(node => node.type === 'img')
+  const event = { currentTarget: { getBoundingClientRect: () => ({ left: 330, top: 225, bottom: 255 }) } }
+  buttons[0].props.onPointerenter({ ...event, pointerType: 'mouse' })
+  assert.equal(image()?.props.src, wooden.image)
+  assert.equal(figure()?.props.style.left, '92px')
+  assert.ok(parseInt(figure()?.props.style.top) < 225)
+  assert.deepEqual(editor.props.card.assetIds, [])
+  image()?.props.onError()
+  assert.equal(image(), undefined)
+  buttons[1].props.onPointerenter({ ...event, pointerType: 'mouse' })
+  assert.equal(image()?.props.src, rocking.image)
+  buttons[1].props.onPointerleave()
+  assert.equal(figure(), undefined)
+  buttons[1].props.onFocus(event)
+  assert.equal(image()?.props.src, rocking.image)
+  buttons[1].props.onClick()
+  assert.equal(figure(), undefined)
+  assert.equal(editor.props.card.assetBindingRequirements?.[0].assetId, rocking.id)
+})
+
+test('待确认的夏叶在提示词中定位，选择完整造型会保存并进入配图', async () => {
+  const first = { ...makeAsset('human', '夏叶（渡劫后人形）'), aliases: ['夏叶'] }
+  const second = { ...makeAsset('black', '夏叶（黑裙造型）'), aliases: ['夏叶'] }
+  const editor = setup([], { assetList: [first, second] })
+  const prompt = '前镜回顾：夏叶站在门口。\n画面与动作：夏叶进门。\n对白／音效：夏叶：“夏叶点头。”'
+  editor.props.card = { ...editor.props.card, prompt }
+  await vue.nextTick()
+  const field = editor.nodes().find(node => node.type === menu)
+  const display = field.props['model-value']
+  const unresolved = field.props['resolve-preview-ranges'](display).filter((hit: { resolve?: boolean }) => hit.resolve)
+  assert.equal(unresolved.length, 3)
+  assert.equal(display.slice(unresolved[1].start, unresolved[1].end), '夏叶')
+  assert.deepEqual(Array.from(unresolved[1].candidateIds), ['human', 'black'])
+  const selected = display.slice(0, unresolved[1].start) + `@${second.name}` + display.slice(unresolved[1].end)
+  editPrompt(field, selected)
+  assert.ok(editor.props.card.assetIds.includes(second.id))
+  assert.ok(editor.props.card.prompt.includes(`画面与动作：@${second.name}进门。`))
+  assert.ok(editor.props.card.prompt.includes('“夏叶点头。”'))
+  assert.deepEqual(buildScriptVideoDelivery(editor.props.card, [first, second]).images.map(image => image.id), [second.id])
+})
+
+test('没有候选的场景和未知显式引用只显示状态，仍可手工引用背景', async () => {
+  const background: preview.PreviewAsset = { id: 'hall', kind: 'scene', name: '临安·红尘客栈大堂', image: '/static/hall.png' }
+  const roles = ['歪捕头', '壮汉'].map((name, index) => ({ ...makeAsset(`role-${index}`, name), aliases: ['头'] }))
+  const editor = setup([], { assetList: [background, ...roles] })
+  const prompt = '场景：场景一：客栈堂内｜4-1｜白昼｜镜头1–1\n镜头1（0–3秒）\n画面与动作：门帘轻晃。有人点头，手持@未知道具。'
+  editor.props.card = { ...editor.props.card, prompt, shots: [
+    { id: 's', duration: 3, camera: '固定机位。', action: '门帘轻晃。', dialogue: '' },
+  ] }
+  await vue.nextTick()
+  const field = editor.nodes().find(node => node.type === menu)
+  const display = field.props['model-value']
+  assert.equal(field.props['resolve-preview-ranges'](display).filter((hit: { resolve?: boolean }) => hit.resolve).length, 0)
+  assert.ok(editor.nodes().some(node => node.type === 'p' && typeof node.children === 'string' && /缺少「客栈堂内」的场景参考图/u.test(node.children)))
+  assert.ok(editor.nodes().some(node => node.type === 'p' && typeof node.children === 'string' && /找不到素材 @未知道具/u.test(node.children)))
+  assert.ok(!editor.nodes().some(node => node.type === 'button' && node.children === '定位待确认素材'))
+  editPrompt(field, display.replace('客栈堂内', `@${background.name}`).replace('，手持@未知道具', ''))
+  assert.ok(editor.props.card.assetIds.includes(background.id))
+  assert.deepEqual(buildScriptVideoDelivery(editor.props.card, [background]).images.map(image => image.id), [background.id])
+})
+
+test('结构化场景有两个实际存在的候选才显示自动选择标记', async () => {
+  const first: preview.PreviewAsset = { id: 'first', kind: 'scene', name: '临安·红尘客栈大堂', image: '/static/first.png' }
+  const second: preview.PreviewAsset = { id: 'second', kind: 'scene', name: '建安·红尘客栈大堂', image: '/static/second.png' }
+  const editor = setup([], { assetList: [first, second] })
+  editor.props.card = { ...editor.props.card, prompt: '场景：场景一：红尘客栈大堂｜4-1｜白昼｜镜头1–1\n镜头1（0–3秒）\n画面与动作：门帘轻晃。',
+    shots: [{ id: 'shot', duration: 3, camera: '', action: '门帘轻晃。', dialogue: '' }],
+  }
+  await vue.nextTick()
+  const field = editor.nodes().find(node => node.type === menu)
+  const display = field.props['model-value']
+  const [range] = field.props['resolve-preview-ranges'](display).filter((hit: { resolve?: boolean }) => hit.resolve)
+  assert.equal(display.slice(range.start, range.end), '红尘客栈大堂')
+  assert.equal(range.kind, 'scene')
+  assert.deepEqual(Array.from(range.candidateIds), ['first', 'second'])
+})
+
+test('候选只剩一个真实资产时，保留补齐入口而不打开冲突按钮和预览', async () => {
+  const editor = setup(['guard'], { assetList: [assets[0]!] })
+  editor.props.card = { ...editor.props.card, prompt: '画面与动作：侍卫入场。', assetBindingRequirements: [
+    { key: 'guard', kind: 'character', label: '侍卫', assetId: 'deleted', confirmed: true, candidateIds: ['guard', 'guard', 'deleted'] },
+  ] }
+  await vue.nextTick()
+  assert.ok(editor.nodes().some(node => node.type === 'h3' && node.children === '补齐本片段素材'))
+  assert.ok(editor.nodes().some(node => node.type === 'button' && node.children === '补齐素材'))
+  assert.ok(!editor.nodes().some(node => node.type === 'button' && node.props?.onPointerenter))
+  const details = editor.nodes().find(node => node.type === 'details' && node.props?.class === 'sv-asset-binding-other')
+  assert.equal(details?.props.open, false)
+  const chooser = flatten(details).find(node => node.type === 'BaseSelect')
+  assert.deepEqual(Array.from(chooser.props.options, (option: { value: string }) => option.value), ['guard'])
+  chooser.props['onUpdate:modelValue']('guard')
+  assert.equal(editor.props.card.assetBindingRequirements?.[0].assetId, 'guard')
+})
 
 test('参考素材列表保留已绑定素材的选择顺序', () => {
   const editor = setup(['night','guard'])

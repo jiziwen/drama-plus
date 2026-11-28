@@ -1485,6 +1485,36 @@ test('读取 SQLite 旧稿补齐人物正式引用和参考绑定，保留版本
   }
 }))
 
+test('当前集旧稿读取与生成快照使用同一场景补齐，保留手动解绑和历史成片', async () => fixture(async (store, directory) => {
+  const project = await store.create('旧分镜场景参考')
+  const image = '/static/uploads/lobby.png'
+  project.assets = [{ id: 'lobby', name: '临安·红尘客栈大堂', kind: 'scene', image }]
+  const [episode] = project.episodes
+  episode.confirmedScript = '场次：3-01\n场景：红尘客栈·大堂\n众人留在桌边。'
+  const prompt = '场景：场景一：红尘客栈·大堂（唯一空间）｜3-1｜清晨，内景；窗边光线微弱｜镜头1\n\n镜头 01（0–5秒）\n画面与动作：众人留在桌边。'
+  const card = { id: 'draft', assetIds: [], prompt, duration: 5, version: 4, status: 'draft',
+    shots: [{ id: 'shot', duration: 5, camera: '中景', action: '众人留在桌边。', dialogue: '', visualAssetIds: [] }] }
+  episode.cards = [card, { ...card, id: 'excluded', excludedAssetIds: ['lobby'] }, { ...card, id: 'ready' }]
+  await store.update(project.id, project, project.revision)
+  const db = new Database(join(directory, 'workspace.sqlite3'))
+  try {
+    db.prepare(`UPDATE episodes SET document=json_set(document,'$.cards[2].status','ready','$.cards[2].videoUrl','/static/videos/kept.mp4') WHERE project_id=?`).run(project.id)
+    const disk = db.prepare('SELECT document FROM episodes WHERE project_id=?').pluck().get(project.id)
+    const read = (await store.episode(project.id, episode.id)).episode.cards
+    const snapshot = (await store.episodeSnapshot(project.id, episode.id)).project.episodes[0].cards
+    assert.deepEqual(read, snapshot)
+    assert.equal(read[0].prompt, prompt)
+    assert.deepEqual(read[0].assetIds, ['lobby'])
+    assert.deepEqual(buildScriptVideoDelivery(snapshot[0], project.assets, { promptMode: 'inline' }).images.map(asset => asset.image), [image])
+    assert.deepEqual(read[1].assetIds, [])
+    assert.deepEqual(read[1].excludedAssetIds, ['lobby'])
+    assert.deepEqual([read[2].status, read[2].videoUrl, read[2].assetIds], ['ready', '/static/videos/kept.mp4', []])
+    assert.equal(db.prepare('SELECT document FROM episodes WHERE project_id=?').pluck().get(project.id), disk)
+  } finally {
+    db.close()
+  }
+}))
+
 test('保存旧长 OS 时只保留短 OS，原有音频与表演提示及对白不变', async () => fixture(async store => {
   const project = await store.create('短心声标注')
   const longOs = '（内心 OS，角色闭口，嘴唇不动，不对口型）'

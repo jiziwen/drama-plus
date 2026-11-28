@@ -23,7 +23,7 @@ function controller(overrides = {}) {
     addEventListener: (type, callback) => listeners.set(type, callback),
     removeEventListener: (type, callback) => { if (listeners.get(type) === callback) listeners.delete(type) },
   }
-  const value = runInNewContext(script + '\n;({ text, mention, taEl, backdropEl, dropdownEl, searchEl, searchQuery, groupedFiltered, flatList, preview, previewStyle, previewImageFailed, highlightedHtml, onPreviewMove, enterPreview, leavePreview, onTouchPreview, closePreview, onScroll, onBeforeInput, onInput, onBlur, onDropdownFocusOut, onCompositionStart, onCompositionEnd, onKeydown, onMentionKeydown, syncDisplay })', {
+  const value = runInNewContext(script + '\n;({ text, mention, taEl, backdropEl, dropdownEl, searchEl, searchQuery, groupedFiltered, flatList, preview, previewStyle, previewImageFailed, highlightedHtml, onPreviewMove, enterPreview, leavePreview, onTouchPreview, closePreview, onScroll, onBeforeInput, onInput, onBlur, onDropdownFocusOut, onCompositionStart, onCompositionEnd, onKeydown, onMentionKeydown, syncDisplay, chooseReference, resolutionOptions, resolutionQuery })', {
     ref, computed, watch, nextTick, window, document,
     setTimeout: callback => { const id = ++nextTimer; timers.set(id, callback); return id },
     clearTimeout: id => timers.delete(id),
@@ -148,6 +148,56 @@ test('同名资产按已解析的 ID 绑定悬浮缩略图', () => {
   app.setTokens([token(0, rect(100, 110, 130, 130))])
   app.onPreviewMove({ clientX: 110, clientY: 120, buttons: 0 })
   assert.equal(app.preview.value.option.image, '/correct.png')
+  app.dispose()
+})
+
+test('悬停待确认的夏叶显示对应造型，选择后只替换这一次出现的位置', () => {
+  const modelValue = '夏叶进门，夏叶回头。'
+  const ranges = [0, 5].map(start => ({ start, end: start + 2, name: '夏叶', candidateIds: ['human', 'black'], resolve: true }))
+  const options = [
+    { ...role('夏叶（渡劫后人形）'), id: 'human' },
+    { ...role('夏叶（黑裙造型）'), id: 'black' },
+    { ...role('方闲'), id: 'actor' },
+  ]
+  const app = controller({ modelValue, options, resolvePreviewRanges: () => ranges })
+  Object.assign(app.taEl.value, { value: modelValue, focus() {}, setSelectionRange() {} })
+  app.setTokens([{ ...token(0, rect(120, 110, 150, 130)), dataset: { referenceIndex: '1' } }])
+  assert.match(app.highlightedHtml.value, /data-reference-index="1">夏叶/u)
+  app.onPreviewMove({ clientX: 130, clientY: 120, buttons: 0 })
+  assert.deepEqual(Array.from(app.resolutionOptions.value, option => option.id), ['human', 'black'])
+  app.leavePreview()
+  app.enterPreview()
+  app.flushTimers()
+  assert.equal(app.preview.value.reference.start, 5)
+  app.chooseReference(options[1])
+  assert.equal(app.text.value, '夏叶进门，@夏叶（黑裙造型）回头。')
+  assert.equal(app.events.filter(([event]) => event === 'commit').length, 1)
+  assert.equal(app.preview.value.reference, null)
+  app.dispose()
+})
+
+test('没有候选的引用可以在悬停菜单搜索项目素材', () => {
+  const modelValue = '@新角色进门。'
+  const options = [role('夏叶（黑裙造型）'), role('方闲')]
+  const app = controller({ modelValue, options, resolvePreviewRanges: () => [
+    { start: 0, end: 4, name: '@新角色', candidateIds: [], resolve: true },
+  ] })
+  app.setTokens([{ ...token(0, rect(120, 110, 150, 130)), dataset: { referenceIndex: '0' } }])
+  app.onPreviewMove({ clientX: 130, clientY: 120, buttons: 0 })
+  app.resolutionQuery.value = '黑裙'
+  assert.deepEqual(Array.from(app.resolutionOptions.value, option => option.value), ['夏叶（黑裙造型）'])
+  app.dispose()
+})
+
+test('待确认的场景只在背景素材里搜索', () => {
+  const options = [role('客栈掌柜'), { ...role('客栈大堂'), id: 'hall', kind: 'scene' }]
+  const app = controller({ modelValue: '客栈', options, resolvePreviewRanges: () => [
+    { start: 0, end: 2, name: '客栈', candidateIds: [], kind: 'scene', resolve: true },
+  ] })
+  app.setTokens([{ ...token(0, rect(120, 110, 150, 130)), dataset: { referenceIndex: '0' } }])
+  app.onPreviewMove({ clientX: 130, clientY: 120, buttons: 0 })
+  app.resolutionQuery.value = '客栈'
+  assert.deepEqual(Array.from(app.resolutionOptions.value, option => option.id), ['hall'])
   app.dispose()
 })
 

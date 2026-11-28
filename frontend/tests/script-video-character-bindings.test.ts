@@ -127,7 +127,7 @@ test('通用大纲选图每次默认只修改当前段，显式应用时仅补�
 test('制作页按来源场次列出候选，只接受可用的具体素材并保存本片段的明确选择', () => {
   const editor = readFileSync(new URL('../app/components/ScriptVideoPreviewEditor.vue', import.meta.url), 'utf8')
   const program = ts.createSourceFile('editor.ts', parse(editor).descriptor.scriptSetup!.content, ts.ScriptTarget.Latest)
-  const names = new Set(['projectAssetsById', 'assetBindingRows', 'confirmAssetBinding', 'actionWarnings'])
+  const names = new Set(['projectAssetsById', 'assetBindingRows', 'hasBindingConflicts', 'confirmAssetBinding', 'actionWarnings'])
   const handlers = program.statements.filter(node =>
     ts.isFunctionDeclaration(node) && names.has(node.name?.text || '') ||
     ts.isVariableStatement(node) && node.declarationList.declarations.some(declaration => names.has(declaration.name.getText(program))))
@@ -137,8 +137,8 @@ test('制作页按来源场次列出候选，只接受可用的具体素材并�
   const props: {card: PreviewCard; assets: { id: string; name: string; kind: string; image: string }[]} = {
     card: {
       id: 'courtyard', title: '庭院', duration: 5, summary: '', assetIds: ['plain'], status: 'draft', version: 1, combat: false,
-      prompt: '镜头 01（0–5秒）\n画面与动作：@林青_常服进入庭院。',
-      shots: [{id: 'shot', duration: 5, camera: '', action: '@林青_常服进入庭院。', dialogue: '无台词', visualAssetIds: ['plain']}],
+      prompt: '镜头 01（0–5秒）\n画面与动作：林青进入庭院。',
+      shots: [{id: 'shot', duration: 5, camera: '', action: '林青进入庭院。', dialogue: '无台词', visualAssetIds: []}],
       assetBindingRequirements: [{key: 'courtyard/hero', kind: 'character', label: '林青', episodeNumber: 3, sceneId: '3-02', sceneTitle: '庭院',
         candidateIds: ['plain', 'red', 'no-image', 'deleted']}],
     },
@@ -154,12 +154,14 @@ test('制作页按来源场次列出候选，只接受可用的具体素材并�
   const controls = runInNewContext(outputText + '\n;({ assetBindingRows, confirmAssetBinding, actionWarnings })', {
     ...assetBindings, props, computed: (getter: () => unknown) => ({get value() { return getter() }}),
     isGenerating: {value: false}, overLimit: {value: false}, totalDuration: {value: 5},
+    closeBindingCandidatePreview() {},
     emit: (event: string, next: PreviewCard) => { assert.equal(event, 'update'); updates++; props.card = next },
   })
   const row = controls.assetBindingRows.value[0]
   assert.equal(row.source, '第 3 集 · 庭院')
   assert.deepEqual(Array.from(row.candidates, (candidate: {id:string}) => candidate.id), ['plain', 'red', 'no-image'])
   assert.deepEqual(Array.from(row.otherOptions, (option: {value:string}) => option.value), ['other'])
+  assert.equal(row.conflict, true)
   assert.equal(controls.actionWarnings.value.length, 1)
 
   for (const id of ['deleted', 'no-image', 'other-kind']) controls.confirmAssetBinding('courtyard/hero', id)
@@ -168,13 +170,15 @@ test('制作页按来源场次列出候选，只接受可用的具体素材并�
   assert.equal(updates, 1)
   assert.equal(props.card.assetBindingRequirements?.[0].assetId, 'red')
   assert.equal(props.card.assetBindingRequirements?.[0].confirmed, true)
-  assert.deepEqual(props.card.shots[0].visualAssetIds, ['red'])
-  assert.match(props.card.prompt, /@林青_红衣进入庭院/u)
+  assert.deepEqual(props.card.assetIds, ['red'])
+  assert.match(props.card.prompt, /林青_红衣进入庭院/u)
   assert.equal(controls.assetBindingRows.value.length, 0)
   assert.equal(controls.actionWarnings.value.length, 0)
 
   props.card = {...props.card, assetBindingRequirements: [{...props.card.assetBindingRequirements![0], assetId: undefined, candidateIds: ['deleted']}]}
   assert.equal(controls.assetBindingRows.value[0].hasUsableCandidates, false)
+  assert.equal(controls.assetBindingRows.value[0].conflict, false)
+  assert.match(controls.actionWarnings.value[0], /补齐/u)
   controls.confirmAssetBinding('courtyard/hero', 'red')
   assert.equal(updates, 2)
   assert.deepEqual(props.card.assetBindingRequirements![0].candidateIds, ['deleted', 'red'])

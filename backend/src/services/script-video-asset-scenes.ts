@@ -25,9 +25,14 @@ export const scriptVideoAssetBindingRequirementSchema = z.object({
 export type ScriptVideoAssetBindingRequirement = z.infer<typeof scriptVideoAssetBindingRequirementSchema>
 
 type SourceScene = { id: string; title: string; start: number; end: number }
-const numbered = /^(?:(?:场次|场号)\s*:\s*)?([1-9]\d*)\s*[-‐–—]\s*(\d{1,3})(?=$|[^\d])\s*(.*)$/u
+const numbered = /^(?:(?:场次|场号)\s*:?\s*)?([1-9]\d*)\s*[-‐‑‒–—―]\s*(\d{1,3})(?=$|[^\d])\s*(.*)$/u
 const written = /^(?:场次[：:]\s*)?第\s*([零〇一二三四五六七八九十百两\d]+)\s*场(?:\s*[:：.、-])?\s*(.*)$/u
 const unnumbered = /^(?:场景|地点)\s*:\s*(.+)$/u
+
+export function normalizeScriptVideoSceneNumbers(text: string): string {
+  return text.normalize('NFKC').replace(/(?<![\d/])([1-9]\d*)\s*[-‐‑‒–—―]\s*(\d{1,3})(?:\s*\/\s*(\d+))?(?![\d/])/gu,
+    (_, episode, scene, repeat) => `${episode}-${String(Number(scene)).padStart(2, '0')}${repeat ? `/${Number(repeat)}` : ''}`)
+}
 
 /** Slice the original script using its own scene headings and character offsets. */
 export function scriptVideoAssetSourceScenes(script: string): SourceScene[] {

@@ -36,6 +36,129 @@ test('persisted aliases automatically bind characters and visual assets and supp
   assert.deepEqual(scan('@小陆。', assets, []).assetIds, ['guard'])
 })
 
+test('single Chinese characters do not match inside ordinary prose and remain available by explicit name', () => {
+  const assets = [
+    { ...character('歪捕头', 'officer'), aliases: ['头'] },
+    { ...character('高大男子', 'man'), aliases: ['头'] },
+    { id: 'small', kind: 'prop', name: '客栈小桌', aliases: ['桌'] },
+    { id: 'large', kind: 'prop', name: '客栈大桌', aliases: ['桌'] },
+    { id: 'desk', kind: 'prop', name: '桌' },
+  ]
+  const text = '镜头 01（0–5秒）\n画面与动作：右侧桌边的人点头，镜头回到门口。'
+  const result = scan(text, assets, [], { autoBind: true, detectUnboundSpeakers: true })
+  assert.equal(result.text, text)
+  assert.deepEqual(result.problems, [])
+  assert.deepEqual(result.assetIds, [])
+  assert.deepEqual(scan('画面与动作：物件放在@桌旁边。', assets, [], { autoBind: true }).assetIds, ['desk'])
+})
+
+test('未出现在本段的无关资产共享描述性别名时不产生冲突', () => {
+  const body = character('白画扇（泥湿尸身）', 'body')
+  const other = [
+    { ...character('朝歌倒地男子', 'fallen'), aliases: ['地上的人'] },
+    { ...character('南疆村受害村民', 'villager'), aliases: ['地上的人'] },
+  ]
+  const cast = [body, ...other]
+  const card = { shots: [{ visualAssetIds: ['body'] }] }
+  const result = scan('画面与动作：邢捕头看着地上的人，随后检查@白画扇（泥湿尸身）。', cast, ['body'], { card, autoBind: true })
+  assert.deepEqual(result.problems, [])
+  assert.deepEqual(result.assetIds, ['body'])
+  assert.equal(scan('画面与动作：检查@地上的人。', cast, ['body'], { card, autoBind: true }).problems[0].type, 'ambiguous')
+})
+
+test('a generic title needs a specific role in the shot or an established cast or scene declaration', () => {
+  const fang = { ...character('方闲', 'fang'), aliases: ['掌柜'] }
+  const owner = { ...character('陆掌柜', 'owner'), aliases: ['掌柜'] }
+  const assets = [fang, owner]
+  const text = '镜头 01（0–5秒）\n画面与动作：掌柜站在门口。\n对白／音效：掌柜：“方闲来了。”'
+  const scanOptions = { autoBind: true, detectUnboundSpeakers: true }
+  const missing = scan(text, assets, [fang.id], { ...scanOptions, card: {
+    shots: [{ visualAssetIds: [fang.id], speakerAssetIds: [fang.id] }],
+  } })
+  assert.equal(missing.text, text)
+  assert.deepEqual(missing.assetIds, [])
+  assert.deepEqual(missing.unboundSpeakers, ['掌柜'])
+  const resolved = scan(text, assets, [fang.id, owner.id], { ...scanOptions, card: {
+    shots: [{ visualAssetIds: [fang.id, owner.id], speakerAssetIds: [owner.id] }],
+  } })
+  assert.deepEqual(resolved.mentions.filter(hit => !hit.literal).map(hit => [hit.id, hit.usage]),
+    [[owner.id, 'visual'], [owner.id, 'speaker']])
+  assert.match(resolved.text, /@陆掌柜：“方闲来了。”/u)
+  const unconfirmed = { key: 'inn-owner', label: '掌柜', kind: 'character' as const, assetId: fang.id,
+    candidateIds: [fang.id], sceneId: '1-01' }
+  const scene = { shots: [], sourceSceneIds: ['1-01'] }
+  assert.deepEqual(scan(text, [fang], [fang.id], { ...scanOptions, card: {
+    ...scene, assetBindingRequirements: [unconfirmed],
+  } }).assetIds, [])
+  assert.deepEqual(scan(text, [fang], [fang.id], { ...scanOptions, card: {
+    ...scene, assetBindingRequirements: [{ ...unconfirmed, confirmed: true }],
+  } }).assetIds, [fang.id])
+  assert.deepEqual(scan(text, [fang], [fang.id], { ...scanOptions,
+    characters: '@方闲（掌柜）：临时照看客栈。',
+  }).assetIds, [fang.id])
+})
+
+test('reference problems identify candidate IDs and preserve exact source ranges outside quoted dialogue', () => {
+  const assets = [
+    { id: 'palace', name: '皇宫-御书房', kind: 'scene' },
+    { id: 'annex', name: '别院-御书房', kind: 'scene' },
+    character('阿宁'),
+  ]
+  const text = [
+    '画面与动作：门外通向御书房，回身再次望向御书房。',
+    '对白／音效：阿宁：“请问御书房和@未知素材在哪里？”',
+    '画面与动作：走进@御书房，手持@未知素材。',
+  ].join('\n')
+  const { problems } = scan(text, assets, [], { autoBind: true })
+  assert.deepEqual(problems.map(problem => ({
+    matched: text.slice(problem.start, problem.end), candidateIds: problem.candidateIds,
+  })), [
+    { matched: '御书房', candidateIds: ['palace', 'annex'] },
+    { matched: '@御书房', candidateIds: ['palace', 'annex'] },
+    { matched: '@未知素材', candidateIds: undefined },
+  ])
+  assert.deepEqual(problems[0].occurrences?.map(({ start, end }) => text.slice(start, end)), ['御书房', '御书房'])
+  assert.ok(problems[2].start > text.indexOf('在哪里'))
+})
+
+test('an exact display name shared by multiple assets resolves from the shot’s selected ID', () => {
+  const assets = [character('阿宁', 'plain'), character('阿宁', 'guard')]
+  const text = '镜头 01（0–5秒）\n画面与动作：@阿宁推门。\n对白／音效：@阿宁：“请进。”'
+  const bound = assets.map(asset => asset.id)
+  const ambiguous = scan(text, assets, bound, { autoBind: true })
+  assert.deepEqual(ambiguous.problems[0]?.candidateIds, ['plain', 'guard'])
+  const resolved = scan(text, assets, bound, { autoBind: true, card: {
+    shots: [{ visualAssetIds: ['guard'], speakerAssetIds: ['plain'] }],
+  } })
+  assert.deepEqual(resolved.problems, [])
+  assert.deepEqual(resolved.mentions.map(hit => [hit.id, hit.usage]), [['guard', 'visual'], ['plain', 'speaker']])
+})
+
+test('delivery directions do not infer assets from prose and preserve deliberate references and dialogue', () => {
+  const assets = [
+    character('洛晓晓'),
+    { ...character('朝歌武比观众', 'a'), aliases: ['观众'] },
+    { ...character('武比观众', 'b'), aliases: ['观众'] },
+    { id: 'tray', name: '木托盘', kind: 'prop' },
+  ]
+  const text = '对白／音效：洛晓晓【观众急了后停连，同时看@木托盘】：「这时候观众急了，才愿意给。」'
+  const result = scan(text, assets, [], { autoBind: true, detectUnboundSpeakers: true })
+  assert.equal(result.text, text.replace('：洛晓晓', '：@洛晓晓'))
+  assert.deepEqual(result.assetIds, ['洛晓晓', 'tray'])
+  assert.deepEqual(result.problems, [])
+})
+
+test('a prop does not inherit a shorthand for what its name modifies', () => {
+  const assets = [
+    { id: 'snacks', name: '七巧点心', kind: 'prop', aliases: ['点心'] },
+    { id: 'spoon', name: '点心摊瓷勺', kind: 'prop', aliases: ['勺子'] },
+  ]
+  const text = '画面与动作：镜头轻推桌上的点心和勺子。'
+  const result = scan(text, assets, ['snacks', 'spoon'], { autoBind: true })
+  assert.equal(result.text, '画面与动作：镜头轻推桌上的@七巧点心和@点心摊瓷勺。')
+  assert.deepEqual(result.problems, [])
+})
+
 test('shared aliases use known or same-shot bindings while exact explicit names and unresolved variants stay distinct', () => {
   const guard = { ...character('陆宁官服', 'guard'), assetIdentity: '陆宁｜官服', aliases: ['小陆', '陆宁便装'] }
   const casual = { ...character('陆宁便装', 'casual'), assetIdentity: '陆宁｜便装', aliases: ['小陆'] }

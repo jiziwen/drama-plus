@@ -3,6 +3,7 @@ import { isScriptVideoChibiAppearance, scriptVideoCharacterBase, scriptVideoChar
 import { hasScriptVideoInnerOs } from './script-video-inner-os.js'
 import { scriptVideoVocalSubjects } from './script-video-vocal-subjects.js'
 import { isScriptVideoNonvisualMention, scriptVideoAssetScopeRanges, scriptVideoShotHeadings } from './script-video-asset-scope.js'
+import type { ScriptVideoAssetBindingRequirement } from './script-video-asset-scenes.js'
 
 export type MentionAsset = {
   id: string
@@ -41,9 +42,19 @@ export function scriptVideoAudioReferences<A extends MentionAsset>(assets: reado
   }
   return names
 }
-export type ScriptVideoReferenceProblem = { type: 'unknown' | 'ambiguous'; name: string; start: number; candidates?: string[] }
+// Offsets use the original prompt, including @ when it was typed explicitly.
+type ReferenceRange = { start: number; end: number }
+export type ScriptVideoReferenceProblem = ReferenceRange & {
+  type: 'unknown' | 'ambiguous'
+  name: string
+  candidates?: string[]
+  candidateIds?: string[]
+  occurrences?: ReferenceRange[]
+}
 type CardReferences = {
   openingAssetIds?: readonly string[]
+  sourceSceneIds?: readonly string[]
+  assetBindingRequirements?: readonly ScriptVideoAssetBindingRequirement[]
   shots: ReadonlyArray<{ dialogue?: string; visualAssetIds?: readonly string[]; speakerAssetIds?: readonly string[] }>
 }
 type Options = {
@@ -65,6 +76,7 @@ const soundHeading = /^\s*(?:对白\s*[/／]\s*音效|对白|台词|画外音|�
 const chineseWords = new Intl.Segmenter('zh', { granularity: 'word' })
 const collectiveRole = /(?:兵|卫|士|军|卒|众|队|臣|官|民|百姓|侍从)$/u
 const individualRole = /(?:小旗|侍卫长|指挥使|太医)$/u
+const genericCharacterRole = /(?:掌柜|老板娘|老板|店主|店家|店小二|小二|伙计|账房|客人|路人|捕头|捕快|衙役|官差|大夫|郎中|护卫|侍卫|丫鬟|仆人)$/u
 const qQualifier = /(?:3D)?Q版[ \t]*小?[ \t]*$/iu
 const foley = /^\s*(?:音效|环境音|环境声|拟音|音乐|配乐|BGM|SFX)\s*[:：]/iu
 const visualField = /^[ \t]*(?:←承上|→衔接|末镜停在|开场画面|场景(?:[一二三四五六七八九十\d]+)?|人物|角色设定|景别[^：:\n]*|画面与动作)[ \t]*[:：]/u
@@ -163,6 +175,7 @@ function speakerLabels(
   byName: ReadonlyMap<string, MentionAsset[]>,
 ) {
   const labels = new Map<number, { name: string; end: number; vocalization?: true }>()
+  const performanceRanges: ReferenceRange[] = []
   for (const line of lines) {
     if (storyboardField(line.value) && !line.headingLength) continue
     const body = line.value.slice(line.headingLength)
@@ -170,6 +183,8 @@ function speakerLabels(
     const offsets = [0]
     if (line.inDialogue) {
       const directions = scriptVideoPerformanceDirections(body, line.foleyCues)
+      for (const direction of directions)
+        performanceRanges.push({ start: start + direction.start, end: start + direction.end })
       const canStart = (offset: number) => !directions.some(({ start, end }) => start <= offset && offset < end) &&
         !protectedText.some(([from, to]) => from <= start + offset && start + offset < to)
       for (const actor of scriptVideoVocalSubjects(body, byName, directions)) {
@@ -211,7 +226,7 @@ function speakerLabels(
       }
     }
   }
-  return labels
+  return { labels, performanceRanges }
 }
 
 /** Bounds use offsets in the original text, so editing, hover hit-testing and
@@ -262,6 +277,14 @@ export function describeScriptVideoReferenceProblem(text: string, problem: Scrip
   return `${location}的「${problem.name}」有多个匹配，请用 @ 选定具体素材${problem.candidates?.length ? `（${problem.candidates.join('、')}）` : ''}`
 }
 
+export function isScriptVideoSingleHanName(name: string) {
+  return /^\p{Script=Han}$/u.test(name.normalize('NFKC'))
+}
+
+export function isScriptVideoGenericCharacterRole(name: string) {
+  return genericCharacterRole.exec(name)?.[0] === name
+}
+
 function assetNames(asset: MentionAsset) {
   if (asset.kind === 'audio') return [asset.name]
   const names = new Set([asset.name])
@@ -291,7 +314,15 @@ function assetNames(asset: MentionAsset) {
       if (location && location.length >= 2) names.add(location)
     }
   }
-  const usableAlias = (name: string) => name && name !== '群体' && name.normalize('NFKC') !== chibiSubject
+  // Generic character labels need evidence beyond a catalog alias. The
+  // underlying display name, a declared cast alias, or a confirmed selection
+  // can establish the role without trusting an unrelated extracted alias.
+  const character = !asset.kind || asset.kind === 'character'
+  const roleName = character && !chibiSubject
+    ? scriptVideoCharacterBase({ ...asset, assetIdentity: undefined })
+    : undefined
+  const usableAlias = (name: string) => name && name !== '群体' && name.normalize('NFKC') !== chibiSubject &&
+    (!character || !isScriptVideoGenericCharacterRole(name) || roleName?.endsWith(name))
   const resolvedNames = [...names].filter(name => name === asset.name || name.length > 1 && usableAlias(name))
   for (const saved of asset.aliases ?? []) {
     const alias = saved.trim()
@@ -343,6 +374,14 @@ export function annotateScriptVideoAssets(
     if (!matching) byName.set(name, [asset])
     else if (!matching.some(item => item.id === asset.id)) matching.push(asset)
   }
+  const declaredRoles = new Map<string, Set<string>>()
+  const declareRole = (name: string, asset: MentionAsset) => {
+    register(name, asset)
+    if (!isScriptVideoGenericCharacterRole(name)) return
+    const declared = declaredRoles.get(name)
+    if (declared) declared.add(asset.id)
+    else declaredRoles.set(name, new Set([asset.id]))
+  }
   for (const asset of assets) {
     if (asset.name) for (const name of assetNames(asset)) register(name, asset)
   }
@@ -376,10 +415,18 @@ export function annotateScriptVideoAssets(
     if (!['scene', 'prop', 'creature'].includes(asset.kind || '')) continue
     const filename = asset.originalName || asset.name.split('/').at(-1) || asset.name
     for (const [term, candidates] of byName) {
-      if (term.length > 1 && filename.includes(term) && candidates.some(item => item.kind === asset.kind)) register(term, asset)
+      const describesAsset = asset.kind === 'prop' ? filename.endsWith(term) : filename.includes(term)
+      if (term.length > 1 && describesAsset && candidates.some(item => item.kind === asset.kind)) register(term, asset)
     }
   }
-  addCastAliases(options, byName, register)
+  addCastAliases(options, byName, declareRole)
+  const card = options.card
+  for (const binding of card?.assetBindingRequirements ?? []) {
+    if (binding.kind !== 'character' || !binding.confirmed || !binding.assetId ||
+      binding.sceneId && (card?.sourceSceneIds?.length !== 1 || card.sourceSceneIds[0] !== binding.sceneId)) continue
+    const asset = assets.find(item => item.id === binding.assetId && item.kind === 'character')
+    if (asset && isScriptVideoGenericCharacterRole(binding.label)) declareRole(binding.label, asset)
+  }
   // A shot may call its foreground lead “家丁” while the household servants
   // laugh together. The crowd shorthand belongs only to a sound attribution.
   const servants = boundCrowds.filter(asset => scriptVideoCharacterBase(asset).endsWith('家丁/群体'))
@@ -417,7 +464,7 @@ export function annotateScriptVideoAssets(
     const end = cueEnds.get(start)
     return end !== undefined && end < scope.end ? { ...scope, end } : scope
   })
-  const labels = speakerLabels(speakerText, lines, scopes, protectedText, turnEnds, speakerNames)
+  const { labels, performanceRanges } = speakerLabels(speakerText, lines, scopes, protectedText, turnEnds, speakerNames)
   const speakerAliases = new Map<string, MentionAsset[]>()
   for (const { name } of labels.values()) {
     if (byName.has(name) || speakerAliases.has(name)) continue
@@ -431,12 +478,26 @@ export function annotateScriptVideoAssets(
   const excluded = new Set(options.excludedIds)
   const mentions: AssetMention[] = []
   const ambiguous = new Set<string>()
-  const ambiguityKeys = new Set<string>()
+  const problemsByKey = new Map<string, ScriptVideoReferenceProblem>()
   const unknown = new Set<string>()
   const assetIds = new Set<string>()
   const contextAssetIds = new Set<string>()
   const problems: ScriptVideoReferenceProblem[] = []
-  const card = options.card
+  function addProblem(key: string, problem: ScriptVideoReferenceProblem) {
+    const prior = problemsByKey.get(key)
+    if (prior) {
+      const occurrences = prior.occurrences ??= [{ start: prior.start, end: prior.end }]
+      occurrences.push({ start: problem.start, end: problem.end })
+    } else {
+      problemsByKey.set(key, problem)
+      problems.push(problem)
+    }
+  }
+  function addUnknown(name: string, start: number, end: number) {
+    const reference = '@' + name
+    unknown.add(reference)
+    addProblem(reference, { type: 'unknown', name: reference, start, end })
+  }
   const shots = card && Array.isArray(card.shots) ? card.shots as CardReferences['shots'] : []
   const headings = shots.length ? scriptVideoShotHeadings(text) : []
   const sections = headings.length ? [...text.matchAll(cardSection)] : []
@@ -447,13 +508,16 @@ export function annotateScriptVideoAssets(
     const match = new RegExp('^' + prefix.split('\n').map(escaped).join('(?:\\r\\n|\\r|\\n)')).exec(text)
     matcher.lastIndex = match?.[0].length || 0
   }
-  let output = '', previous = 0, range = 0, scopeIndex = 0, lineIndex = 0, shotIndex = -1, sectionIndex = -1
+  let output = '', previous = 0, range = 0, performanceIndex = 0, scopeIndex = 0, lineIndex = 0, shotIndex = -1, sectionIndex = -1
   for (let match; (match = matcher.exec(text));) {
     const start = match.index, end = matcher.lastIndex
     const name = match[1]
     const label = labels.get(start)
     const namedCandidates = byName.get(name) ?? (label?.name === name ? speakerAliases.get(name) : undefined)
     const explicit = text[start] === '@'
+    if (!explicit && name && isScriptVideoSingleHanName(name)) continue
+    while ((performanceRanges[performanceIndex]?.end ?? Infinity) <= start) performanceIndex++
+    if (!explicit && (performanceRanges[performanceIndex]?.start ?? Infinity) <= start) continue
     while (protectedText[range] && protectedText[range][1] <= start) range++
     const vocalization = label?.vocalization && label.end === end
     const spoken = !!vocalization || !!protectedText[range] && protectedText[range][0] <= start
@@ -474,10 +538,7 @@ export function annotateScriptVideoAssets(
       isScriptVideoNonvisualMention(text, start, referenceEnd))
     if (!namedCandidates || invalidEnd) {
       if (explicit) {
-        if (!contextual && !unknown.has('@' + token)) {
-          unknown.add('@' + token)
-          problems.push({ type: 'unknown', name: '@' + token, start })
-        }
+        if (!contextual) addUnknown(token, start, referenceEnd)
         matcher.lastIndex = Math.max(end, start + token.length + 1)
       }
       continue
@@ -503,12 +564,28 @@ export function annotateScriptVideoAssets(
     const shot = heading && heading.start > (section?.index ?? -1) ? shots[heading.index] : undefined
     const speakers = !contextual && attribution ? visualCandidates.filter(asset => !asset.kind || asset.kind === 'character') : []
     let candidates = speakers.length ? speakers : visualCandidates
+    // A general title is meaningful if the specific role is in this shot or
+    // it has been declared for this card. Legacy cards can use their own
+    // selection when they have no shot list for that use.
+    const usageIds = attribution ? shot?.speakerAssetIds : shot?.visualAssetIds
+    if (isScriptVideoGenericCharacterRole(name)) {
+      candidates = candidates.filter(asset =>
+        asset.kind && asset.kind !== 'character' || asset.name === name ||
+        usageIds?.includes(asset.id) || declaredRoles.get(name)?.has(asset.id) ||
+        usageIds === undefined && bound.has(asset.id))
+      if (!candidates.length) {
+        if (explicit && !contextual) addUnknown(name, start, end)
+        continue
+      }
+    }
+    const explicitMatches = explicit ? candidates.filter(asset => asset.name === name) : []
+    if (explicitMatches.length > 1) candidates = explicitMatches
     let scoped: MentionAsset[] | undefined
-    const exactSelection = explicit && candidates.some(asset => asset.name === name)
+    const exactSelection = explicitMatches.length === 1
     if (!contextual && !exactSelection) {
       if (speakers.length) {
         const ids = shot?.speakerAssetIds
-        const sameShot = ids?.length ? speakers.filter(asset => ids.includes(asset.id) && !excluded.has(asset.id)) : []
+        const sameShot = ids?.length ? candidates.filter(asset => ids.includes(asset.id) && !excluded.has(asset.id)) : []
         if (sameShot.length) scoped = sameShot
       } else if (!attribution) {
         const castHeader = !shot && !!section?.[4]
@@ -548,12 +625,25 @@ export function annotateScriptVideoAssets(
         return origin + cue.start <= start && start < origin + cue.end
       }))
     if (available.length !== 1) {
-      const ambiguityKey = `${explicit ? 'explicit' : 'implicit'}:${name}`
       const characterReference = (!spoken || soundDirection) && available.some(asset => asset.kind === 'character')
-      if (available.length > 1 && (usage !== 'context' || characterReference) && !ambiguityKeys.has(ambiguityKey)) {
-        ambiguityKeys.add(ambiguityKey)
+      if (available.length > 1 && (usage !== 'context' || characterReference)) {
+        // Shared descriptive aliases are not evidence that unrelated assets are
+        // in this segment. Keep explicit, canonical, and locally scoped choices.
+        if (!explicit && shots.length && !scoped && available.every(asset => {
+          const identity = asset.assetIdentity?.split(/[｜|]/u, 1)[0]
+          return !visibleIds.includes(asset.id) && !declaredRoles.get(name)?.has(asset.id) && identity !== name &&
+            !assetNames({ ...asset, aliases: [] }).includes(name)
+        })) {
+          const families = new Set(available.map(asset => asset.assetIdentity?.split(/[｜|]/u, 1)[0] ||
+            (asset.kind === 'character' ? scriptVideoCharacterBase(asset) : asset.originalName || asset.name)))
+          if (families.size > 1) continue
+        }
+        const candidateIds = available.map(asset => asset.id)
+        const key = JSON.stringify([explicit, name, [...candidateIds].sort()])
         ambiguous.add(name)
-        problems.push({ type: 'ambiguous', name, start, candidates: [...new Set(available.map(asset => asset.name))] })
+        addProblem(key, {
+          type: 'ambiguous', name, start, end, candidateIds, candidates: [...new Set(available.map(asset => asset.name))],
+        })
       }
       continue
     }
@@ -581,7 +671,8 @@ export function annotateScriptVideoAssets(
   const resolvedSpeakers = new Set(mentions.filter(mention => mention.usage === 'speaker' || mention.usage === 'audio').map(mention => mention.start))
   return { text: output + text.slice(previous), mentions, assetIds: [...assetIds], contextAssetIds: [...contextAssetIds],
     unboundSpeakers: options.detectUnboundSpeakers ? [...new Set([...labels].filter(([start, { name }]) =>
-      !resolvedSpeakers.has(start) && !ambiguous.has(name)).map(([, { name }]) => name))] : [],
+      !resolvedSpeakers.has(start) && !ambiguous.has(name) &&
+      (!isScriptVideoSingleHanName(name) || text[start] === '@')).map(([, { name }]) => name))] : [],
     problems, ambiguous: [...ambiguous], unknown: [...unknown] }
 }
 

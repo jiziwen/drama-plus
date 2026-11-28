@@ -38,24 +38,28 @@
         :aria-labelledby="assetBindingTitleId"
         tabindex="-1"
       >
-        <h3 :id="assetBindingTitleId">确认本片段素材</h3>
+        <h3 :id="assetBindingTitleId">{{ hasBindingConflicts ? '确认本片段素材' : '补齐本片段素材' }}</h3>
         <ul>
           <li v-for="row in assetBindingRows" :key="row.requirement.key">
             <strong>{{ row.requirement.label }} <small>{{ kindLabel(row.requirement.kind) }}</small></strong>
             <span v-if="row.source" class="sv-asset-binding-source">{{ row.source }}</span>
             <p>{{ row.message }}</p>
-            <div v-if="row.candidates.length" class="sv-asset-binding-options" :aria-label="`${row.requirement.label}的候选素材`" role="group">
+            <div v-if="row.conflict" class="sv-asset-binding-options" :aria-label="`${row.requirement.label}的候选素材`" role="group">
               <button
                 v-for="asset in row.candidates"
                 :key="asset.id"
                 class="sv-button sv-quiet"
                 type="button"
                 :disabled="isGenerating || !asset.image"
+                @pointerenter="showBindingCandidatePreview(asset, $event)"
+                @pointerleave="closeBindingCandidatePreview"
+                @focus="showBindingCandidatePreview(asset, $event)"
+                @blur="closeBindingCandidatePreview"
                 @click="confirmAssetBinding(row.requirement.key, asset.id)"
               >{{ asset.name }}<small v-if="!asset.image">缺少图片</small></button>
             </div>
-            <details v-if="row.otherOptions.length" class="sv-asset-binding-other" :open="!row.hasUsableCandidates">
-              <summary>选择其他{{ kindLabel(row.requirement.kind) }}素材</summary>
+            <details v-if="row.otherOptions.length" class="sv-asset-binding-other" :open="row.conflict && !row.hasUsableCandidates">
+              <summary>{{ row.conflict ? '选择其他' : '手动选择' }}{{ kindLabel(row.requirement.kind) }}素材</summary>
               <BaseSelect
                 :aria-label="`为 ${row.requirement.label} 选择其他素材`"
                 :options="row.otherOptions"
@@ -73,7 +77,8 @@
         <div class="sv-section-head">
           <div>
             <h3>视频提示词</h3>
-            <p>编辑本段画面与动作，输入 @ 引用素材。</p>
+            <p v-if="hasUnresolvedReferences">悬停在黄色标记上选择素材，或输入 @ 引用素材。</p>
+            <p v-else>编辑本段画面与动作，输入 @ 引用素材。</p>
           </div>
           <div class="sv-prompt-actions">
             <span class="sv-caption">{{ card.prompt.length }} 字</span>
@@ -328,8 +333,9 @@
     <footer v-if="tab !== 'revise'" class="sv-footer">
       <div v-if="actionWarnings.length || advisoryWarnings.length" :id="actionWarningId" class="sv-action-warning" role="status">
         <div><p v-for="warning in [...actionWarnings, ...advisoryWarnings]" :key="warning">{{ warning }}</p></div>
-        <div v-if="assetBindingRows.length || card.promptNeedsSync" class="sv-action-warning-actions">
-          <button v-if="assetBindingRows.length" class="sv-button sv-quiet" type="button" @click="showAssetBindingIssues">确认素材</button>
+        <div v-if="assetBindingRows.length || hasUnresolvedReferences || card.promptNeedsSync" class="sv-action-warning-actions">
+          <button v-if="assetBindingRows.length" class="sv-button sv-quiet" type="button" @click="showAssetBindingIssues">{{ hasBindingConflicts ? '确认素材' : '补齐素材' }}</button>
+          <button v-if="hasUnresolvedReferences" class="sv-button sv-quiet" type="button" @click="locateUnresolvedReference">定位待确认素材</button>
           <button v-if="card.promptNeedsSync" class="sv-button sv-quiet" type="button" @click="tab = 'revise'">
             <Sparkles :size="13" /> AI 调整
           </button>
@@ -389,6 +395,25 @@
       </div>
     </footer>
 
+    <Teleport to="body">
+      <figure
+        v-if="bindingCandidatePreview"
+        class="sv-binding-candidate-preview"
+        :style="bindingCandidatePreview.position"
+        aria-hidden="true"
+      >
+        <img
+          v-if="!bindingCandidateImageFailed"
+          :key="bindingCandidatePreview.asset.image"
+          :src="bindingCandidatePreview.asset.image"
+          alt=""
+          decoding="async"
+          @error="bindingCandidateImageFailed = true"
+        />
+        <span v-else>图片暂不可用</span>
+        <figcaption>{{ bindingCandidatePreview.asset.name }}</figcaption>
+      </figure>
+    </Teleport>
     <dialog
       ref="mediaDialog"
       class="sv-reference-dialog"
@@ -458,15 +483,15 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, ref, shallowRef, useId, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, useId, watch, type CSSProperties } from 'vue'
 import { Eye, Headphones, Maximize2, Minimize2, Sparkles, Upload, X } from 'lucide-vue-next'
 import MentionTextarea from './MentionTextarea.vue'
 import type { useScriptVideoReferenceFrames } from '~/composables/useScriptVideoReferenceFrames'
 import { getPreviewMaterialUse, inspectPreviewCardAssets, validatePreviewCards } from '~/utils/scriptVideoPreviewValidation'
 import { editScriptVideoPromptVoiceView, scriptVideoPromptVoiceView } from '~/utils/scriptVideoPromptVoiceView'
 import { getScriptVideoPromptVoices, type ScriptVideoPromptMode } from '../../../backend/src/services/script-video-delivery'
-import { resolveScriptVideoAssetBinding, scriptVideoAssetBindingIssues } from '../../../backend/src/services/script-video-asset-bindings'
-import { scriptVideoAudioReferences } from '../../../backend/src/services/script-video-mentions'
+import { resolveScriptVideoAssetBinding, scriptVideoAssetBindingIssues, scriptVideoSceneReferenceProblems } from '../../../backend/src/services/script-video-asset-bindings'
+import { scriptVideoAudioReferences, type ScriptVideoReferenceProblem } from '../../../backend/src/services/script-video-mentions'
 import { splitScriptVideoPromptStyle } from '../../../backend/src/services/script-video-style'
 import { officialScriptVideoUrl } from '../../../backend/src/services/script-video-versions'
 import type { ScriptVideoRevisionCandidate } from '~/utils/scriptVideoClient'
@@ -605,12 +630,55 @@ const assetBindingRows = computed(() => scriptVideoAssetBindingIssues(props.card
   const { requirement } = issue
   const { episodeNumber, sceneId, sceneTitle, candidateIds, kind } = requirement
   const source = [episodeNumber ? `第 ${episodeNumber} 集` : '', sceneTitle || (sceneId ? `场次 ${sceneId}` : '')].filter(Boolean).join(' · ')
-  const candidates = candidateIds.map(id => projectAssetsById.value.get(id))
+  const candidates = [...new Set(candidateIds)].map(id => projectAssetsById.value.get(id))
     .filter((asset): asset is PreviewAsset => asset?.kind === kind)
-  const otherOptions = props.assets.filter(asset => asset.kind === kind && asset.image && !candidateIds.includes(asset.id))
+  const conflict = issue.type === 'ambiguous' && candidates.length > 1
+  const otherOptions = props.assets.filter(asset => asset.kind === kind && asset.image && (!conflict || !candidateIds.includes(asset.id)))
     .map(asset => ({ label: asset.name, value: asset.id }))
-  return { ...issue, source, candidates, otherOptions, hasUsableCandidates: candidates.some(asset => !!asset.image) }
+  return { ...issue, source, candidates, conflict, otherOptions, hasUsableCandidates: candidates.some(asset => !!asset.image) }
 }))
+const hasBindingConflicts = computed(() => assetBindingRows.value.some(row => row.conflict))
+const bindingCandidatePreview = shallowRef<{ asset: PreviewAsset; position: CSSProperties }>()
+const bindingCandidateImageFailed = ref(false)
+
+function showBindingCandidatePreview(asset: PreviewAsset, event: FocusEvent | PointerEvent) {
+  if (!asset.image || ('pointerType' in event && event.pointerType === 'touch')) return
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+  const gap = 8
+  const width = Math.min(300, window.innerWidth - gap * 2)
+  const below = window.innerHeight - rect.bottom - gap * 2
+  const above = rect.top - gap * 2
+  const opensUp = below < 220 && above > below
+  const height = Math.min(220, opensUp ? above : below)
+  if (width <= 0 || height < 64) return
+  bindingCandidateImageFailed.value = false
+  bindingCandidatePreview.value = { asset, position: {
+    width: `${width}px`,
+    height: `${height}px`,
+    left: `${Math.max(gap, Math.min(rect.left, window.innerWidth - width - gap))}px`,
+    top: `${opensUp ? rect.top - gap - height : rect.bottom + gap}px`,
+  } }
+}
+
+function closeBindingCandidatePreview() {
+  bindingCandidatePreview.value = undefined
+}
+
+function closeBindingCandidateOnEscape(event: KeyboardEvent) {
+  if (event.key === 'Escape') closeBindingCandidatePreview()
+}
+
+onMounted(() => {
+  window.addEventListener('scroll', closeBindingCandidatePreview, true)
+  window.addEventListener('resize', closeBindingCandidatePreview)
+  window.addEventListener('keydown', closeBindingCandidateOnEscape)
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('scroll', closeBindingCandidatePreview, true)
+  window.removeEventListener('resize', closeBindingCandidatePreview)
+  window.removeEventListener('keydown', closeBindingCandidateOnEscape)
+})
+
 async function showAssetBindingIssues() {
   if (tab.value !== 'shots') tab.value = 'prompt'
   await nextTick()
@@ -620,7 +688,9 @@ function confirmAssetBinding(requirementKey: string, assetId: string) {
   if (isGenerating.value || !projectAssetsById.value.get(assetId)?.image) return
   if (!assetBindingRows.value.some(row => row.requirement.key === requirementKey)) return
   const next = resolveScriptVideoAssetBinding(props.card, requirementKey, assetId, props.assets)
-  if (next) emit('update', next)
+  if (!next) return
+  closeBindingCandidatePreview()
+  emit('update', next)
 }
 const assetContext = computed(() => ({
   stylePreset: props.production?.stylePreset || props.stylePreset,
@@ -740,6 +810,7 @@ function projectPrompt(card: PreviewCard) {
   const voices = getScriptVideoPromptVoices(editable, props.assets, {
     ...context, provider: props.videoProvider, model: props.videoModel, promptMode: props.promptMode,
   })
+  const sceneProblems = scriptVideoSceneReferenceProblems(editable, props.assets)
   const indices = new Map(voices.flatMap(({ roles }, i) => roles.map(role => [role.id, i + 1] as const)))
   const mentions = offsetMentions(analyzed.mentions, prefix.length)
   const authoredPrefix = editablePrompt(authored).prefix.length
@@ -758,7 +829,7 @@ function projectPrompt(card: PreviewCard) {
     return absolute + delta - prefix.length
   }
   return {
-    view: scriptVideoPromptVoiceView(body, mentions, indices), prefix, style, mentions, analyzed, voices,
+    view: scriptVideoPromptVoiceView(body, mentions, indices), prefix, style, mentions, analyzed, voices, sceneProblems,
     authoredMentions: references.mentions,
     normalizedText: source === authored ? card.prompt : source,
     normalizedOffset,
@@ -776,6 +847,10 @@ const activePrompt = computed(() => promptDraft.value?.id === props.card.id
 const compositionProjection = shallowRef<ReturnType<typeof projectPrompt>>()
 const promptProjection = computed(() => compositionProjection.value ?? activePrompt.value)
 const analyzedPrompt = computed(() => promptProjection.value.analyzed)
+const referenceConflicts = computed(() => referenceRanges(
+  analyzedPrompt.value.problems, promptProjection.value.sceneProblems, promptProjection.value.prefix.length,
+))
+const hasUnresolvedReferences = computed(() => referenceConflicts.value.length > 0)
 const materialUse = computed(() => analyzedPrompt.value.materialUse)
 const promptVoices = computed(() => promptProjection.value.voices)
 const promptVoiceView = computed(() => promptProjection.value.view)
@@ -785,6 +860,11 @@ const promptDialogBody = ref<HTMLElement>()
 const promptTitleId = useId()
 const promptExpanded = ref(false)
 let movingPromptEditor = false
+async function locateUnresolvedReference() {
+  tab.value = 'prompt'
+  await nextTick()
+  promptInput.value?.focusUnresolvedReference()
+}
 async function expandPromptEditor() {
   const dialog = promptDialog.value
   if (!dialog || promptExpanded.value) return
@@ -821,14 +901,40 @@ function previewRanges(text: string) {
   const { prefix, mentions } = promptProjection.value
   if (text !== view.text) {
     const full = joinPrompt(prefix, text)
-    return offsetMentions(analyzePrompt(full).mentions, full.length - text.length)
+    const { mentions, problems } = analyzePrompt(full)
+    const offset = full.length - text.length
+    const scenes = scriptVideoSceneReferenceProblems({ ...props.card, prompt: full }, props.assets)
+    return [...offsetMentions(mentions, offset), ...referenceRanges(problems, scenes, offset)]
+      .sort((a, b) => a.start - b.start)
   }
   return [
     ...mentions.filter(hit => hit.usage !== 'audio').map(hit => ({
       ...hit, start: view.displayOffset(hit.start), end: view.displayOffset(hit.end, true),
     })),
+    ...referenceConflicts.value.map(hit => ({
+      ...hit, start: view.displayOffset(hit.start), end: view.displayOffset(hit.end, true),
+    })),
     ...view.cues.map(cue => ({ id: `voice-${cue.index}`, start: cue.tokenStart, end: cue.tokenEnd })),
   ].sort((a, b) => a.start - b.start)
+}
+function referenceRanges(problems: readonly ScriptVideoReferenceProblem[], scenes: ReturnType<typeof scriptVideoSceneReferenceProblems>, offset: number) {
+  const existingCandidateIds = (ids: readonly string[]) => [...new Set(ids.filter(id => projectAssetsById.value.has(id)))]
+  const conflicts = problems.flatMap(problem => {
+    if (problem.type !== 'ambiguous') return []
+    const candidateIds = existingCandidateIds(problem.candidateIds ?? [])
+    if (candidateIds.length < 2) return []
+    return (problem.occurrences ?? [problem]).map(({ start, end }) => ({
+      start, end, name: problem.name, candidateIds, resolve: true,
+    }))
+  })
+  return offsetMentions([
+    ...conflicts,
+    ...scenes.flatMap(scene => {
+      const candidateIds = existingCandidateIds(scene.candidateIds)
+      if (candidateIds.length < 2 || conflicts.some(hit => hit.start < scene.end && hit.end > scene.start)) return []
+      return [{ ...scene, candidateIds, kind: 'scene', resolve: true }]
+    }),
+  ], offset)
 }
 let lastEdit: { display: string; source: string; changed: boolean } | undefined
 type PromptSelection = Pick<HTMLTextAreaElement, 'selectionStart' | 'selectionEnd' | 'selectionDirection'>
@@ -883,6 +989,7 @@ function clearPromptEdit() {
   lastEdit = undefined
 }
 watch([() => props.card.id, tab], () => {
+  closeBindingCandidatePreview()
   if (promptDialog.value?.open) promptDialog.value.close()
   clearPromptEdit()
   resetPromptHistory()
@@ -916,7 +1023,8 @@ function editPrompt(display: string, input: HTMLTextAreaElement, previousSelecti
 const actionWarningId = useId()
 const actionWarnings = computed(() => {
   const warnings: string[] = []
-  if (assetBindingRows.value.length && !props.recoveringVideoDelivery) warnings.push('请先确认本片段需要的参考素材。')
+  if (assetBindingRows.value.length && !props.recoveringVideoDelivery)
+    warnings.push(hasBindingConflicts.value ? '请先确认本片段需要的参考素材。' : '请先补齐本片段需要的参考素材。')
   if (props.card.manuallyAdded) return hasPromptBody.value ? warnings : [...warnings, '请输入视频提示词。']
   if (!props.card.shots.length) warnings.push('请先添加镜头。')
   else if (overLimit.value) warnings.push(`镜头合计 ${totalDuration.value} 秒，超过单段 30 秒上限。`)
@@ -927,7 +1035,12 @@ const actionWarnings = computed(() => {
     warnings.push(props.videoVoiceWarning)
   return warnings
 })
-const advisoryWarnings = computed(() => analyzedPrompt.value.warnings.map(issue => issue.message))
+const advisoryWarnings = computed(() => [...new Set([
+  ...analyzedPrompt.value.warnings.map(issue => issue.message),
+  ...promptProjection.value.sceneProblems.map(scene => scene.candidateIds.length > 1
+    ? `请选择「${scene.name}」的场景参考图。`
+    : `缺少「${scene.name}」的场景参考图，可输入 @ 引用项目资产。`),
+])])
 function updatePrompt(prompt: string): PreviewCard {
   const { mentions } = analyzePrompt(prompt)
   const characters = new Set(props.assets.filter(asset => asset.kind === 'character').map(asset => asset.id))
@@ -1274,6 +1387,37 @@ p {
 }
 .sv-asset-binding-options small {
   margin-inline-start: 4px;
+}
+.sv-binding-candidate-preview {
+  position: fixed;
+  z-index: var(--z-tooltip, 1200);
+  box-sizing: border-box;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 6px;
+  margin: 0;
+  padding: 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--text-1);
+  box-shadow: var(--shadow-lg);
+  pointer-events: none;
+}
+.sv-binding-candidate-preview img {
+  width: 100%;
+  height: 100%;
+  border-radius: 5px;
+  background: var(--bg-2);
+  object-fit: contain;
+}
+.sv-binding-candidate-preview span { place-self: center; }
+.sv-binding-candidate-preview figcaption {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 18px;
 }
 .sv-asset-binding-other {
   max-width: 360px;

@@ -10,7 +10,7 @@
       :rows="rows"
       :placeholder="placeholder"
       :value="text"
-      :aria-description="hasAudioPreviews ? '在参考音频标记内按 Alt + Enter 打开试听。' : undefined"
+      :aria-description="hasResolutionRanges ? '在待确认素材标记内按 Alt + Enter 打开选择。' : hasAudioPreviews ? '在参考音频标记内按 Alt + Enter 打开试听。' : undefined"
       :aria-keyshortcuts="searchable && mention.open ? 'Alt+ArrowDown' : undefined"
       @beforeinput="onBeforeInput"
       @input="onInput"
@@ -27,7 +27,39 @@
     />
     <Teleport :to="popupTarget || 'body'">
       <div
-        v-if="preview.option"
+        v-if="preview.reference"
+        ref="previewEl"
+        role="group"
+        :aria-label="resolutionTitle"
+        class="mention-dropdown mention-resolution"
+        :style="previewStyle"
+        @mouseenter="enterPreview"
+        @mouseleave="leavePreview"
+        @focusout="onResolutionFocusOut"
+      >
+        <div class="mention-group-label">{{ resolutionTitle }}</div>
+        <div class="mention-search">
+          <input v-model="resolutionQuery" type="search" placeholder="搜索项目素材" aria-label="搜索项目素材" autocomplete="off" />
+        </div>
+        <button
+          v-for="opt in resolutionOptions"
+          :key="opt.id || opt.value"
+          type="button"
+          class="mention-option"
+          @mousedown.prevent
+          @click="chooseReference(opt)"
+        >
+          <span :class="['mention-avatar', `mention-avatar-${mentionTokenGroup(opt.kind)}`]">
+            <img v-if="opt.image" :src="thumbOf(opt.image)" alt="" loading="lazy" decoding="async" />
+            <component v-else :is="groupIcon(opt.kind)" :size="12" :stroke-width="2" />
+          </span>
+          <span class="mention-name" :title="opt.label">{{ opt.label }}</span>
+          <span class="mention-type">{{ optionType(opt) }}</span>
+        </button>
+        <div v-if="!resolutionOptions.length" class="mention-empty">没有找到素材</div>
+      </div>
+      <div
+        v-else-if="preview.option"
         ref="previewEl"
         :role="preview.option.audioUrl ? 'group' : 'tooltip'"
         class="mention-preview"
@@ -146,9 +178,27 @@ const searchQuery = computed({
   },
 })
 const previewEl = ref(null)
-const preview = ref({ option: null, left: 0, top: 0 })
+const preview = ref({ option: null, reference: null, left: 0, top: 0 })
 const previewImageFailed = ref(false)
 const hasAudioPreviews = computed(() => props.previewOnHover && props.options.some(option => option.audioUrl))
+const highlightRanges = computed(() => props.resolvePreviewRanges?.(text.value))
+const hasResolutionRanges = computed(() => highlightRanges.value?.some(hit => hit.resolve))
+const resolutionQuery = ref('')
+const resolutionTitle = computed(() => `为「${preview.value.reference?.name.replace(/^[@＠]/u, '')}」选择素材`)
+const resolutionOptions = computed(() => {
+  const reference = preview.value.reference
+  if (!reference) return []
+  const available = props.options.filter(option => !option.previewOnly && (!reference.kind || reference.kind === option.kind))
+  const query = resolutionQuery.value.trim().toLowerCase()
+  if (query) return available.filter(option => matchesOption(option, query)).slice(0, 30)
+  if (reference.candidateIds.length) {
+    const ids = new Set(reference.candidateIds)
+    return available.filter(option => ids.has(option.id))
+  }
+  const name = reference.name.replace(/^[@＠]/u, '').toLowerCase()
+  const suggested = available.filter(option => matchesOption(option, name))
+  return (suggested.length ? suggested : available).slice(0, 12)
+})
 const { player: audioEl, scheduleAudioPreview, cancelAudioStart, stopAudioPreview } = useScriptVideoAudioPreview()
 let previewDismissal
 let pointerInPreview = false
@@ -175,18 +225,17 @@ function enterPreview() {
 
 function leavePreview() {
   pointerInPreview = false
-  if (!preview.value.option?.audioUrl) closePreview()
-  else {
-    cancelAudioStart()
-    if (previewDismissal === undefined) previewDismissal = setTimeout(closePreview, 180)
-  }
+  if (preview.value.reference && previewEl.value?.contains(document.activeElement)) return
+  if (!preview.value.reference && !preview.value.option?.audioUrl) return closePreview()
+  cancelAudioStart()
+  if (previewDismissal === undefined) previewDismissal = setTimeout(closePreview, preview.value.reference ? 280 : 180)
 }
 
 function closePreview() {
   cancelPreviewDismissal()
   stopAudioPreview()
   pointerInPreview = false
-  if (preview.value.option) preview.value = { option: null, left: 0, top: 0 }
+  if (preview.value.option || preview.value.reference) preview.value = { option: null, reference: null, left: 0, top: 0 }
 }
 
 // The textarea stays above the noninteractive mirror, so editing and selection
@@ -205,9 +254,14 @@ function onPreviewMove(event, autoplay = true) {
     leavePreview()
     return
   }
-  for (const token of backdrop.querySelectorAll('[data-mention-index]')) {
+  for (const token of backdrop.querySelectorAll('[data-mention-index], [data-reference-index]')) {
     for (const rect of token.getClientRects()) {
       if (x < rect.left || x >= rect.right || y < rect.top || y >= rect.bottom) continue
+      const reference = highlightRanges.value?.[Number(token.dataset.referenceIndex)]
+      if (reference?.resolve) {
+        showReferenceOptions(reference, rect, clip)
+        return
+      }
       const option = props.options[Number(token.dataset.mentionIndex)]
       if (!option || !autoplay && !option.audioUrl) continue
       showPreviewOption(option, rect, clip, autoplay)
@@ -217,6 +271,17 @@ function onPreviewMove(event, autoplay = true) {
   leavePreview()
 }
 
+function previewPosition(rect, clip, naturalWidth, naturalHeight) {
+  const height = Math.min(naturalHeight, window.innerHeight - PREVIEW_MARGIN * 2)
+  const width = Math.min(naturalWidth, window.innerWidth - PREVIEW_MARGIN * 2)
+  const below = Math.min(rect.bottom, clip.bottom) + PREVIEW_GAP
+  const top = below + height <= window.innerHeight - PREVIEW_MARGIN ? below : rect.top - PREVIEW_GAP - height
+  return {
+    left: Math.max(PREVIEW_MARGIN, Math.min(rect.left, window.innerWidth - width - PREVIEW_MARGIN)),
+    top: Math.max(PREVIEW_MARGIN, Math.min(top, window.innerHeight - height - PREVIEW_MARGIN)),
+  }
+}
+
 function showPreviewOption(option, rect, clip, autoplay) {
   cancelPreviewDismissal()
   if (preview.value.option !== option) {
@@ -224,15 +289,51 @@ function showPreviewOption(option, rect, clip, autoplay) {
     if (autoplay && option.audioUrl) scheduleAudioPreview()
     else stopAudioPreview()
   }
-  const height = Math.min(option.audioUrl ? AUDIO_PREVIEW_HEIGHT : PREVIEW_HEIGHT, window.innerHeight - PREVIEW_MARGIN * 2)
-  const width = Math.min(option.audioUrl ? AUDIO_PREVIEW_WIDTH : PREVIEW_WIDTH, window.innerWidth - PREVIEW_MARGIN * 2)
-  const below = Math.min(rect.bottom, clip.bottom) + PREVIEW_GAP
-  const top = below + height <= window.innerHeight - PREVIEW_MARGIN ? below : rect.top - PREVIEW_GAP - height
   preview.value = {
-    option,
-    left: Math.max(PREVIEW_MARGIN, Math.min(rect.left, window.innerWidth - width - PREVIEW_MARGIN)),
-    top: Math.max(PREVIEW_MARGIN, Math.min(top, window.innerHeight - height - PREVIEW_MARGIN)),
+    option, reference: null,
+    ...previewPosition(rect, clip, option.audioUrl ? AUDIO_PREVIEW_WIDTH : PREVIEW_WIDTH, option.audioUrl ? AUDIO_PREVIEW_HEIGHT : PREVIEW_HEIGHT),
   }
+}
+
+function showReferenceOptions(reference, rect, clip) {
+  cancelPreviewDismissal()
+  if (!sameReference(preview.value.reference, reference)) {
+    resolutionQuery.value = ''
+    stopAudioPreview()
+  }
+  preview.value = { option: null, reference, ...previewPosition(rect, clip, 280, 220) }
+}
+
+function sameReference(a, b) {
+  return a?.start === b.start && a.end === b.end && a.name === b.name
+}
+
+function chooseReference(option) {
+  const ta = taEl.value
+  const reference = preview.value.reference
+  if (!ta || !reference || !highlightRanges.value?.some(hit => hit.resolve && sameReference(hit, reference)) || ta.value !== text.value) return closePreview()
+  const replacement = `@${option.value}`
+  setText(ta.value.slice(0, reference.start) + replacement + ta.value.slice(reference.end), reference.start + replacement.length)
+}
+
+function onResolutionFocusOut(event) {
+  if (event.relatedTarget === taEl.value || previewEl.value?.contains(event.relatedTarget)) return
+  closePreview()
+  finishBlur(event)
+}
+
+function previewReferenceAtCaret() {
+  const ta = taEl.value
+  if (!ta || mention.value.open || ta.selectionStart !== ta.selectionEnd) return false
+  const index = highlightRanges.value?.findIndex(hit => hit.resolve && hit.start <= ta.selectionStart && ta.selectionStart <= hit.end) ?? -1
+  if (index < 0) return false
+  const token = backdropEl.value?.querySelector(`[data-reference-index="${index}"]`)
+  if (!token) return false
+  const clip = ta.getBoundingClientRect()
+  const rect = Array.from(token.getClientRects()).find(rect => rect.bottom > clip.top && rect.top < clip.bottom) ?? clip
+  showReferenceOptions(highlightRanges.value[index], rect, clip)
+  void nextTick(() => previewEl.value?.querySelector('button, input')?.focus({ preventScroll: true }))
+  return true
 }
 
 function onTouchPreview(event) {
@@ -283,7 +384,7 @@ const DROPDOWN_MAX_HEIGHT = 220
 
 // 外层滚动会移动锚点。浏览器也会滚动外层以让输入光标留在视口内。
 function closeOnOuterScroll(e) {
-  if (e?.target === dropdownEl.value || e?.target === backdropEl.value) return
+  if (e?.target === dropdownEl.value || e?.target === backdropEl.value || e?.target === previewEl.value) return
   if (mention.value.open && e?.target !== taEl.value) {
     if (e?.type === 'scroll' || e?.type === 'resize') {
       const focused = document.activeElement
@@ -296,6 +397,7 @@ function closeOnOuterScroll(e) {
 function closePreviewOnEscape(event) {
   if (event.key !== 'Escape') return
   const restoreFocus = previewEl.value?.contains(document.activeElement)
+  if (preview.value.reference) event.preventDefault()
   closePreview()
   if (restoreFocus) taEl.value?.focus()
 }
@@ -359,14 +461,21 @@ const highlightedHtml = computed(() => {
   let html = ''
   let last = 0
   const indexOf = new Map(props.options.map((option, index) => [option.value, index]))
-  const spans = props.resolvePreviewRanges?.(text.value)
+  const spans = highlightRanges.value
   const re = highlightRegex.value
   if (spans) {
     const indexById = new Map()
     props.options.forEach((option, index) => {
       if (option.id != null) indexById.set(option.id, index)
     })
-    for (const hit of spans) {
+    for (const [rangeIndex, hit] of spans.entries()) {
+      if (hit.start < last || hit.end <= hit.start || hit.end > text.value.length) continue
+      if (hit.resolve) {
+        html += escapeHtml(text.value.slice(last, hit.start))
+        html += `<span class="mention-token mention-token-unresolved" data-reference-index="${rangeIndex}">${escapeHtml(text.value.slice(hit.start, hit.end))}</span>`
+        last = hit.end
+        continue
+      }
       const index = indexById.size && hit.id != null ? indexById.get(hit.id) : indexOf.get(hit.name)
       if (index == null) continue
       const group = mentionTokenGroup(props.options[index].kind)
@@ -425,12 +534,11 @@ function mentionAfterCaret() {
 }
 
 const optionType = opt => opt.audioNumber ? `音频${opt.audioNumber}` : opt.group
+const matchesOption = (option, query) => [option.value, option.label, optionType(option)]
+  .some(value => String(value || '').toLowerCase().includes(query))
 const filteredOptions = computed(() => {
   const q = searchQuery.value.trim().toLowerCase()
-  return props.options.filter(o => !o.previewOnly &&
-    (!q || String(o.value).toLowerCase().includes(q) || String(o.label || '').toLowerCase().includes(q) ||
-      String(optionType(o) || '').toLowerCase().includes(q)),
-  )
+  return props.options.filter(option => !option.previewOnly && (!q || matchesOption(option, q)))
 })
 
 const groupedFiltered = computed(() => {
@@ -636,7 +744,7 @@ function onKeydown(e) {
       return
     }
   }
-  if (e.altKey && e.key === 'Enter' && previewAudioAtCaret()) {
+  if (e.altKey && e.key === 'Enter' && (previewReferenceAtCaret() || previewAudioAtCaret())) {
     e.preventDefault()
     return
   }
@@ -693,6 +801,7 @@ function pick(opt) {
 
 function onBlur(e) {
   if (mention.value.open && dropdownEl.value?.contains(e.relatedTarget)) return
+  if (preview.value.reference && previewEl.value?.contains(e.relatedTarget)) return
   finishBlur(e)
 }
 
@@ -754,7 +863,18 @@ function focusEditor(position) {
   syncBackdropScroll()
 }
 
-defineExpose({ syncDisplay, remapDisplay, editingPosition, focusEditor })
+function focusUnresolvedReference() {
+  const ta = taEl.value
+  if (!ta) return
+  const ranges = highlightRanges.value?.filter(hit => hit.resolve) ?? []
+  const range = ranges.find(hit => hit.start > ta.selectionEnd) ?? ranges[0]
+  if (!range) return
+  ta.scrollIntoView({ block: 'nearest' })
+  focusEditor({ selectionStart: range.start, selectionEnd: range.start, selectionDirection: 'none',
+    scrollTop: ta.scrollTop, scrollLeft: ta.scrollLeft })
+}
+
+defineExpose({ syncDisplay, remapDisplay, editingPosition, focusEditor, focusUnresolvedReference })
 </script>
 
 <style scoped>
@@ -821,6 +941,12 @@ defineExpose({ syncDisplay, remapDisplay, editingPosition, focusEditor })
   color: var(--warning);
   background: var(--warning-bg);
 }
+.mention-backdrop :deep(.mention-token-unresolved) {
+  color: var(--warning);
+  background: var(--warning-bg);
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
 .mention-dropdown {
   position: fixed;
   z-index: var(--z-menu);
@@ -836,6 +962,16 @@ defineExpose({ syncDisplay, remapDisplay, editingPosition, focusEditor })
   background: var(--surface-raised);
   box-shadow: var(--shadow-lg);
 }
+.mention-resolution {
+  z-index: var(--z-tooltip, 1200);
+  width: 280px;
+  max-height: min(220px, calc(100vh - 16px));
+}
+.mention-resolution .mention-option:hover,
+.mention-resolution .mention-option:focus-visible {
+  background: var(--accent-bg);
+}
+.mention-resolution .mention-name { overflow-wrap: anywhere; }
 .mention-search {
   position: sticky;
   top: 0;

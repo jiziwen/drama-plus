@@ -540,8 +540,9 @@
             <p v-if="batchVideoVoiceWarning" id="vp-batch-video-voice" class="vp-video-voice-warning" role="status">
               {{ batchVideoVoiceWarning }}
             </p>
-            <p v-if="batchVideoAssetBindingWarning" id="vp-batch-video-assets" class="vp-video-voice-warning" role="status">
-              {{ batchVideoAssetBindingWarning }}
+            <p v-if="batchVideoAssetBindingCheck.checking || batchVideoAssetBindingCheck.warning" id="vp-batch-video-assets"
+              :class="batchVideoAssetBindingCheck.checking ? 'vp-field-hint' : 'vp-video-voice-warning'" role="status">
+              {{ batchVideoAssetBindingCheck.checking ? '正在检查本集参考素材…' : batchVideoAssetBindingCheck.warning }}
             </p>
             <button v-if="activeVideoRun || videoCanceling" class="btn vp-wide" type="button" :disabled="videoCanceling" @click="cancelVideoGeneration()">
               <X :size="13" />{{ videoCanceling ? '正在取消…' : '取消本集视频生成' }}
@@ -549,8 +550,8 @@
             <button v-else
               class="btn vp-wide"
               type="button"
-              :disabled="!cards.length || running || !!activeCardIds.length || !!batchVideoVoiceWarning || !!batchVideoAssetBindingWarning"
-              :aria-describedby="[batchVideoVoiceWarning && 'vp-batch-video-voice', batchVideoAssetBindingWarning && 'vp-batch-video-assets'].filter(Boolean).join(' ') || undefined"
+              :disabled="!cards.length || running || !!activeCardIds.length || !!batchVideoVoiceWarning || batchVideoAssetBindingCheck.checking || !!batchVideoAssetBindingCheck.warning"
+              :aria-describedby="[batchVideoVoiceWarning && 'vp-batch-video-voice', (batchVideoAssetBindingCheck.checking || batchVideoAssetBindingCheck.warning) && 'vp-batch-video-assets'].filter(Boolean).join(' ') || undefined"
               @click="requestVideoGeneration(cards.map(card => card.id))"
             >
               <Layers :size="13" />批量生成视频
@@ -4060,14 +4061,35 @@ const batchVideoVoiceWarning = computed(() => {
   })
   return segments.length ? `批量生成需要补齐${segments.join('、')}的角色参考音频。${videoVoiceHelp}` : ''
 })
-const batchVideoAssetBindingWarning = computed(() => {
-  const segments = cards.value.flatMap((card, index) => {
-    const task = videoGenerationTaskByCard.value.get(card.id)
-    if (task?.status === 'processing' || isVideoDeliveryRecovery(task)) return []
-    return scriptVideoAssetBindingIssues(card, assets.value).length ? [`第 ${index + 1} 段`] : []
-  })
-  return segments.length ? `批量生成前，请先确认${segments.join('、')}的参考素材。` : ''
-})
+const batchVideoAssetBindingCheck = ref({ checking: false, warning: '' })
+watch(
+  () => episodeOpen.value && stage.value === 'production' ? {
+    episodeKey: episodeKey.value, cards: cards.value, assets: assets.value, tasks: videoGenerationTaskByCard.value,
+  } : undefined,
+  async (input, _, onCleanup) => {
+    if (!input?.cards.length) {
+      batchVideoAssetBindingCheck.value = { checking: false, warning: '' }
+      return
+    }
+
+    const controller = new AbortController()
+    onCleanup(() => controller.abort())
+    batchVideoAssetBindingCheck.value = { checking: true, warning: '' }
+    const segments: string[] = []
+    for (const [index, card] of input.cards.entries()) {
+      const task = input.tasks.get(card.id)
+      if (task?.status === 'processing' || isVideoDeliveryRecovery(task) || !card.assetBindingRequirements?.length) continue
+      // Let the browser handle scrolling and input while checking the next segment.
+      await new Promise<void>(resolve => setTimeout(resolve, 0))
+      if (controller.signal.aborted) return
+      if (scriptVideoAssetBindingIssues(card, input.assets).length) segments.push(`第 ${index + 1} 段`)
+    }
+    const warning = segments.length ? `批量生成前，请先确认${segments.join('、')}的参考素材。` : ''
+    batchVideoAssetBindingCheck.value = { checking: false, warning }
+  },
+  // Track card replacements and asset fields without traversing media and occurrence histories.
+  { immediate: true, deep: 3 },
+)
 const retryVideoVoiceWarning = computed(() => pendingVideoRetry.value ? videoVoiceWarningForRequest(pendingVideoRetry.value) : '')
 const remainingVideoVoiceWarning = computed(() => {
   const request = pendingVideoRetry.value

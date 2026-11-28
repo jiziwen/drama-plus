@@ -1727,9 +1727,9 @@ test('分镜场次素材待确认时不会提交视频，选择后按正确的�
   episode.script = episode.confirmedScript = '场次：1-01\n场景：宫门\n夜色渐浓。'
   episode.confirmed = episode.outlineConfirmed = true
   episode.cards = [{ id: 'board', title: '门前', duration: 5, status: 'draft', version: 1,
-    prompt: '镜头1\n画面与动作：@宫门_白天 宫灯渐亮。', assetIds: ['day'],
+    prompt: '镜头1\n画面与动作：宫门处灯影渐亮。', assetIds: [],
     sourceSceneIds: ['1-01'], assetBindingRequirements: [{ key: 'gate', kind: 'scene', label: '宫门', sceneId: '1-01', candidateIds: ['day', 'night'] }],
-    shots: [{ id: 'first', duration: 5, camera: '固定', action: '@宫门_白天 宫灯渐亮。', dialogue: '无对白。', visualAssetIds: ['day'] }],
+    shots: [{ id: 'first', duration: 5, camera: '固定', action: '宫门处灯影渐亮。', dialogue: '无对白。', visualAssetIds: [] }],
   }]
   project = await store.update(project.id, project, project.revision)
   const submissions: string[][] = []

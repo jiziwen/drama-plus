@@ -2,7 +2,7 @@ import { scriptVideoFoleyCues, scriptVideoNamedAudioCue, scriptVideoNextTurnStar
 import { isScriptVideoChibiAppearance, scriptVideoCharacterBase, scriptVideoCharacterName } from './script-video-asset-identity.js'
 import { hasScriptVideoInnerOs } from './script-video-inner-os.js'
 import { scriptVideoVocalSubjects } from './script-video-vocal-subjects.js'
-import { isScriptVideoNonvisualMention, scriptVideoAssetScopeRanges, scriptVideoShotHeadings } from './script-video-asset-scope.js'
+import { isScriptVideoCameraHeading, isScriptVideoNonvisualMention, plainScriptVideoCameraFields, plainScriptVideoCameraText, scriptVideoAssetScopeRanges, scriptVideoCameraRanges, scriptVideoShotHeadings } from './script-video-asset-scope.js'
 import type { ScriptVideoAssetBindingRequirement } from './script-video-asset-scenes.js'
 
 export type MentionAsset = {
@@ -53,6 +53,7 @@ export type ScriptVideoReferenceProblem = ReferenceRange & {
 }
 type CardReferences = {
   openingAssetIds?: readonly string[]
+  manualAssetIds?: readonly string[]
   sourceSceneIds?: readonly string[]
   assetBindingRequirements?: readonly ScriptVideoAssetBindingRequirement[]
   shots: ReadonlyArray<{ dialogue?: string; visualAssetIds?: readonly string[]; speakerAssetIds?: readonly string[] }>
@@ -79,12 +80,12 @@ const individualRole = /(?:小旗|侍卫长|指挥使|太医)$/u
 const genericCharacterRole = /(?:掌柜|老板娘|老板|店主|店家|店小二|小二|伙计|账房|客人|路人|捕头|捕快|衙役|官差|大夫|郎中|护卫|侍卫|丫鬟|仆人)$/u
 const qQualifier = /(?:3D)?Q版[ \t]*小?[ \t]*$/iu
 const foley = /^\s*(?:物理音效|背景音效|音效|环境音|环境声|背景音|动作音|拟音|音乐|配乐|BGM|SFX)\s*[:：]/iu
-const visualField = /^[ \t]*(?:←承上|→衔接|末镜停在|开场画面|场景(?:[一二三四五六七八九十\d]+)?|人物|角色设定|景别[^：:\n]*|画面与动作)[ \t]*[:：]/u
+const visualField = /^[ \t]*(?:←承上|→衔接|末镜停在|开场画面|场景(?:[一二三四五六七八九十\d]+)?|人物|角色设定|画面与动作)[ \t]*[:：]/u
 const visualDirection = /^[ \t]*补充(?:镜头指示|画面(?:说明|指示)?|动作)[ \t]*[:：]/u
 const shotTitle = /^[ \t]*镜头[ \t]*\d/u
 const otherField = /^[ \t]*(?:总时长|独立生成|本段事件|(?:编辑|制作|导演|手写)?备注|后续(?:计划|说明)|校验说明)[ \t]*[:：]/u
 const cardSection = /^[ \t]*(?:(←承上|开场画面)|(场景(?:[一二三四五六七八九十\d]+)?)|(独立生成|本段事件|→衔接|末镜停在)|前镜回顾|(人物|角色设定)|总时长)[ \t]*[：:]/gmu
-const storyboardField = (text: string) => visualField.test(text) || visualDirection.test(text) || shotTitle.test(text) || otherField.test(text)
+const storyboardField = (text: string) => visualField.test(text) || visualDirection.test(text) || isScriptVideoCameraHeading(text) || shotTitle.test(text) || otherField.test(text)
 const speakerCue = new RegExp('^(?<cue>(?:[ \\t]*(?:' + scriptVideoPerformanceBracket.source +
   '|心声|内心独白|内心|画外音|旁白|说|问|道|答))*)[ \\t]*[：:][ \\t]*(?<words>.+)', 'u')
 const attributionLabel = new RegExp(`^[ \\t]*(?<label>${scriptVideoSpeakerLabel.source}(?:${scriptVideoSpeakerSeparator.source}${scriptVideoSpeakerLabel.source})*)(?=[ \\t]*(?:[（(【\\[]|[：:]))`, 'u')
@@ -474,13 +475,21 @@ export function annotateScriptVideoAssets(
   for (const [name, asset] of audioNames) if (asset.kind === 'character') register(name, asset)
   const audioPattern = scriptVideoNamedAudioCue([...audioNames.keys()])
   const audioAt = new Map<number, MentionAsset>()
+  const cameraRanges = options.dialogue ? [] : scriptVideoCameraRanges(text)
+  const cameraMentions: { id: string; start: number }[] = []
+  let cameraEnd = 0, withoutCamera = ''
+  for (const { start, end } of cameraRanges) {
+    withoutCamera += text.slice(cameraEnd, start) + ' '.repeat(end - start)
+    cameraEnd = end
+  }
+  withoutCamera += text.slice(cameraEnd)
   // Ignore an adjacent hand-picked sound when parsing the speaker, but keep
   // the original offsets and text for the editable token and provider payload.
-  const speakerText = audioPattern ? text.replace(new RegExp(audioPattern, 'gu'), (token, start: number) => {
+  const speakerText = audioPattern ? withoutCamera.replace(new RegExp(audioPattern, 'gu'), (token, start: number) => {
     if (quoted.some(([from, to]) => from <= start && start < to)) return token
     audioAt.set(start, audioNames.get(token.slice(1))!)
     return ' '.repeat(token.length)
-  }) : text
+  }) : withoutCamera
   const lines = promptLines(speakerText, options.dialogue || false, speakerNames)
   const turnEnds = new Set(quoted.filter(([from, to]) => to - from > 1 && text[to - 1] === speechClosers[text[from]])
     .flatMap(([, to]) => [to, scriptVideoNextTurnStart(text, to)]))
@@ -542,7 +551,7 @@ export function annotateScriptVideoAssets(
     const match = new RegExp('^' + prefix.split('\n').map(escaped).join('(?:\\r\\n|\\r|\\n)')).exec(text)
     matcher.lastIndex = match?.[0].length || 0
   }
-  let output = '', previous = 0, range = 0, ignoredBareIndex = 0, scopeIndex = 0, lineIndex = 0, shotIndex = -1, sectionIndex = -1
+  let output = '', previous = 0, range = 0, ignoredBareIndex = 0, scopeIndex = 0, lineIndex = 0, shotIndex = -1, sectionIndex = -1, cameraIndex = 0
   for (let match; (match = matcher.exec(text));) {
     const start = match.index, end = matcher.lastIndex
     const name = match[1]
@@ -551,6 +560,18 @@ export function annotateScriptVideoAssets(
       : byName.get(name) ?? (label?.name === name ? speakerAliases.get(name) : undefined)
     const explicit = text[start] === '@'
     if (!explicit && name && isScriptVideoSingleHanName(name)) continue
+    while ((cameraRanges[cameraIndex]?.end ?? Infinity) <= start) cameraIndex++
+    const camera = cameraRanges[cameraIndex]
+    if (camera && camera.start <= start) {
+      if (namedCandidates?.length && !wordEnd.test(text[end] || '')) {
+        // Do not guess which asset an ambiguous camera landmark meant.
+        const exact = namedCandidates.filter(asset => asset.name === name)
+        const candidates = exact.length ? exact : namedCandidates
+        const selected = candidates.length === 1 ? candidates : candidates.filter(asset => bound.has(asset.id))
+        if (selected.length === 1) cameraMentions.push({ id: selected[0].id, start })
+      }
+      continue
+    }
     while ((ignoredBareRanges[ignoredBareIndex]?.end ?? Infinity) <= start) ignoredBareIndex++
     const ignoredBare = ignoredBareRanges[ignoredBareIndex]
     if (!explicit && ignoredBare && ignoredBare.start <= start) {
@@ -640,7 +661,8 @@ export function annotateScriptVideoAssets(
           // executable references belong to the individual shots. Explicit
           // aliases can also add a reference that was absent from the shot.
           if (visible.length && (!castHeader || visible.length === 1)) scoped = visible
-          else if (!explicit) contextual = true
+          else if (!explicit && !(shot && candidates.length === 1 && candidates[0].name === name &&
+              /^[\t ]*画面与动作[\t ]*[：:]/u.test(line?.value ?? ''))) contextual = true
         }
       }
     }
@@ -708,7 +730,7 @@ export function annotateScriptVideoAssets(
     previous = end
   }
   const resolvedSpeakers = new Set(mentions.filter(mention => mention.usage === 'speaker' || mention.usage === 'audio').map(mention => mention.start))
-  return { text: output + text.slice(previous), mentions, assetIds: [...assetIds], contextAssetIds: [...contextAssetIds],
+  return { text: output + text.slice(previous), mentions, cameraMentions, assetIds: [...assetIds], contextAssetIds: [...contextAssetIds],
     unboundSpeakers: options.detectUnboundSpeakers ? [...new Set([...labels].filter(([start, { name }]) =>
       !resolvedSpeakers.has(start) && !ambiguous.has(name) &&
       (!isScriptVideoSingleHanName(name) || text[start] === '@')).map(([, { name }]) => name))] : [],
@@ -737,7 +759,7 @@ export function scriptVideoMaterialEvidenceText(
     const shot = shots[index]
     if (!shot) return block
     const fields = [
-      shot.camera?.trim() && !/^景别(?:[／/]机位[／/]运动)?[：:]/mu.test(block) && '景别／机位／运动：' + shot.camera,
+      shot.camera?.trim() && !scriptVideoCameraRanges(block).length && '景别／机位／运动：' + shot.camera.replace(/\r?\n/gu, ' '),
       shot.action?.trim() && !/^画面与动作[：:]/mu.test(block) && '画面与动作：' + shot.action,
     ].filter(Boolean)
     if (!fields.length) return block
@@ -747,11 +769,96 @@ export function scriptVideoMaterialEvidenceText(
   }).join('')
 }
 
+type CameraReferenceCard = Omit<CardReferences, 'shots'> & {
+  prompt?: string
+  scene?: string
+  opening?: string
+  characters?: string
+  assetIds: readonly string[]
+  manuallyAdded?: true
+  shots: ReadonlyArray<CardReferences['shots'][number] & { camera?: string; action?: string }>
+}
+
+/** Older automatic bindings can contain a camera landmark as a shot asset.
+ * Keep selections supported by another field, another shot or manual confirmation. */
+export function withoutCameraOnlyScriptVideoAssets<T extends CameraReferenceCard>(
+  card: T, assets: readonly MentionAsset[], scan?: ReturnType<typeof annotateScriptVideoAssets>,
+  evidenceText?: string, evidenceScan?: ReturnType<typeof annotateScriptVideoAssets>,
+): T {
+  const prompt = card.prompt ?? ''
+  const ranges = scriptVideoCameraRanges(prompt)
+  if (!ranges.length && !card.shots.some(shot => shot.camera?.trim())) return card
+  const nextPrompt = plainScriptVideoCameraFields(prompt, ranges)
+  const shots = card.shots.map(shot => {
+    const camera = shot.camera && plainScriptVideoCameraText(shot.camera)
+    return camera === shot.camera ? shot : { ...shot, camera }
+  })
+  const normalized = nextPrompt === prompt && shots.every((shot, index) => shot === card.shots[index])
+    ? card : { ...card, ...(card.prompt !== undefined && { prompt: nextPrompt }), shots }
+  if (card.manuallyAdded) return normalized
+
+  const body = evidenceText ?? scriptVideoMaterialEvidenceText(prompt, card.shots)
+  const evidence = evidenceScan ?? (body === prompt ? scan : undefined) ?? annotateScriptVideoAssets(body, assets, card.assetIds, { card })
+  const cameraById = new Map<string, Set<number>>()
+  const headings = scriptVideoShotHeadings(body)
+  const recordCameraAsset = (id: string, index: number) => {
+    const positions = cameraById.get(id) ?? new Set<number>()
+    positions.add(index)
+    cameraById.set(id, positions)
+  }
+  let headingIndex = -1
+  for (const { id, start } of evidence.cameraMentions) {
+    while ((headings[headingIndex + 1]?.start ?? Infinity) <= start) headingIndex++
+    recordCameraAsset(id, headings[headingIndex]?.index ?? -1)
+  }
+  // A structured edit can be newer than the rendered prompt.
+  const detached = card.shots.flatMap((shot, index) => {
+    const camera = shot.camera?.trim().replace(/\r?\n/gu, ' ')
+    return camera && !body.includes(camera) ? [`镜头 ${index + 1}\n机位：${camera}`] : []
+  })
+  if (detached.length) {
+    const text = detached.join('\n')
+    const detachedHeadings = scriptVideoShotHeadings(text)
+    let index = 0
+    for (const mention of annotateScriptVideoAssets(text, assets, card.assetIds).cameraMentions) {
+      while ((detachedHeadings[index + 1]?.start ?? Infinity) <= mention.start) index++
+      recordCameraAsset(mention.id, detachedHeadings[index].index)
+    }
+  }
+  if (!cameraById.size) return normalized
+
+  const retained = new Set([
+    ...(card.openingAssetIds ?? []),
+    ...(card.manualAssetIds ?? []),
+    ...(card.assetBindingRequirements ?? []).flatMap(binding => binding.confirmed && binding.assetId ? [binding.assetId] : []),
+    ...evidence.mentions.filter(hit => !hit.literal).map(hit => hit.id),
+  ])
+  card.shots.forEach((shot, index) => {
+    for (const id of shot.speakerAssetIds ?? []) retained.add(id)
+    for (const id of shot.visualAssetIds ?? []) {
+      if (!cameraById.get(id)?.has(index)) retained.add(id)
+    }
+  })
+  const candidates = assets.filter(asset => cameraById.has(asset.id) && !retained.has(asset.id) && asset.kind !== 'audio')
+  if (!candidates.length) return normalized
+  const shotText = [card.scene && '场景：' + card.scene, card.opening && '开场画面：' + card.opening,
+    card.characters && '人物：' + card.characters, ...card.shots.flatMap(shot => [shot.action && '画面与动作：' + shot.action,
+      shot.dialogue && '对白：' + shot.dialogue])].filter(Boolean).join('\n')
+  const structured = annotateScriptVideoAssets(shotText, candidates, card.assetIds)
+  for (const hit of structured.mentions) if (!hit.literal) retained.add(hit.id)
+  const removed = new Set(candidates.filter(asset => !retained.has(asset.id)).map(asset => asset.id))
+  if (!removed.size) return normalized
+  const keep = (id: string) => !removed.has(id)
+  return { ...normalized, assetIds: card.assetIds.filter(keep), shots: shots.map(shot => shot.visualAssetIds?.some(id => removed.has(id))
+    ? { ...shot, visualAssetIds: shot.visualAssetIds.filter(keep) } : shot) }
+}
+
 export function scriptVideoMaterialIds(
   card: {
     assetIds: readonly string[]
     excludedAssetIds?: readonly string[]
     openingAssetIds?: readonly string[]
+    manualAssetIds?: readonly string[]
     shots: ReadonlyArray<{ dialogue?: string; visualAssetIds?: readonly string[]; speakerAssetIds?: readonly string[] }>
   },
   body: string,
@@ -759,11 +866,11 @@ export function scriptVideoMaterialIds(
 ) {
   const shots = scriptVideoShotHeadings(body)
   const excluded = new Set(card.excludedAssetIds)
-  const pictures = new Set(card.openingAssetIds)
+  const pictures = new Set([...(card.openingAssetIds ?? []), ...(card.manualAssetIds ?? [])])
   const speakers = new Set<string>()
   if (!shots.length) {
     return {
-      imageIds: scriptVideoVisualAssetIds(scan, card.assetIds),
+      imageIds: [...new Set([...scriptVideoVisualAssetIds(scan, card.assetIds), ...(card.manualAssetIds ?? [])])].filter(id => !excluded.has(id)),
       speakerIds: scan.mentions.filter(hit => hit.usage === 'speaker').map(hit => hit.id),
     }
   }
@@ -784,7 +891,7 @@ export function scriptVideoMaterialIds(
     const inShot = shot && shot.start > (section?.index ?? -1)
     if (inShot) {
       if (hit.usage === 'speaker') speakers.add(hit.id)
-      else if (hit.explicit || !card.shots[shot.index]?.visualAssetIds) pictures.add(hit.id)
+      else pictures.add(hit.id)
     } else if (hit.usage === 'visual' && (section?.[2] || section?.[1] && (hit.explicit || !card.openingAssetIds) ||
       hit.explicit && (!section || section[3]))) {
       pictures.add(hit.id)

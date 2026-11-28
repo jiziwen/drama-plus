@@ -15,7 +15,7 @@ const card: ScriptVideoDeliveryCard = {
   duration: 6, assetIds: assets.map(asset => asset.id),
   shots: [{ duration: 3, dialogue: '顾凌天：“萧将军，退下。”', speakerAssetIds: ['gu'] },
     { duration: 3, dialogue: '萧天策(OS)：“先等等。”', speakerAssetIds: ['xiao'] }],
-  prompt: ['场景：@北城门', '人物：@顾凌天_黑色锦袍与@萧天策_将军盔甲。',
+  prompt: ['场景：@北城门（唯一空间）', '人物：@顾凌天_黑色锦袍与@萧天策_将军盔甲。',
     '镜头 01（0–3秒）', '画面与动作：@顾凌天_黑色锦袍按住@绣春刀，望向@萧天策_将军盔甲。',
     '对白／音效：@顾凌天_黑色锦袍：“萧将军，退下。”',
     '镜头 02（3–6秒）', '画面与动作：@萧天策_将军盔甲抬眼。',
@@ -23,24 +23,27 @@ const card: ScriptVideoDeliveryCard = {
 }
 const options = { provider: 'jimeng', model: 'jimeng-seedance-2.5', promptMode: 'reference-guide' as const }
 const stylePreset = { id: 'custom' as const, name: '暖色调', prefix: '暖色调\n\n暖色电影光线，禁止字幕。' }
-const bodyOf = (prompt: string) => prompt.slice(prompt.indexOf('镜头 01'))
+const bodyOf = (prompt: string) => prompt.slice(prompt.search(/^镜头\s*01/mu))
 
-test('素材说明模式前置所有素材和音色说明，风格及正文在后，正文保留资产名和逐角色音频', () => {
+test('素材说明模式仅在开头编号，正文保留原资产名和对白', () => {
   const built = buildScriptVideoDelivery(card, assets, { ...options, stylePreset })
-  assert.ok(built.prompt.startsWith('参考素材：\n@图片1 是 @北城门 的场景布局参考图。'))
-  assert.match(built.prompt, /@图片2 是 @顾凌天_黑色锦袍 的人物造型参考图。/u)
-  assert.match(built.prompt, /@图片3 是 @萧天策_将军盔甲 的人物造型参考图。/u)
-  assert.match(built.prompt, /@图片4 是 @绣春刀 的道具形态参考图。/u)
-  assert.match(built.prompt, /@音频1 是 @顾凌天_黑色锦袍 的配音音色参考/u)
-  assert.match(built.prompt, /@音频2 是 @萧天策_将军盔甲 的配音音色参考/u)
+  assert.ok(built.prompt.startsWith('参考素材：\n@图片1 是 北城门 的场景布局参考图。'))
+  assert.match(built.prompt, /@图片2 是 顾凌天_黑色锦袍 的人物造型参考图。/u)
+  assert.match(built.prompt, /@图片3 是 萧天策_将军盔甲 的人物造型参考图。/u)
+  assert.match(built.prompt, /@图片4 是 绣春刀 的道具形态参考图。/u)
+  assert.match(built.prompt, /@音频1 是 顾凌天_黑色锦袍 的配音音色参考/u)
+  assert.match(built.prompt, /@音频2 是 萧天策_将军盔甲 的配音音色参考/u)
+  assert.match(built.prompt, /本段全程在北城门，机位和景别随分镜变化/u)
   assert.ok(built.prompt.indexOf('参考素材：') < built.prompt.indexOf('暖色电影光线'))
   assert.ok(built.prompt.indexOf('配音音色参考') < built.prompt.indexOf('暖色电影光线'))
   assert.match(built.prompt, /各角色沿用各自参考图的脸、发型和服装/u)
-  const body = bodyOf(built.prompt)
-  assert.doesNotMatch(body, /@图片\d+/u)
-  assert.match(body, /画面与动作：@顾凌天_黑色锦袍按住@绣春刀，望向@萧天策_将军盔甲。/u)
-  assert.match(body, /对白／音效：@顾凌天_黑色锦袍 @音频1：“萧将军，退下。”/u)
-  assert.match(body, /对白／音效：@萧天策_将军盔甲 @音频2\(OS\) ：“先等等。”/u)
+  const body = built.prompt.slice(built.prompt.indexOf('暖色电影光线'))
+  assert.doesNotMatch(body, /@(?:图片\d+|音频\d+|北城门|顾凌天_黑色锦袍|绣春刀|萧天策_将军盔甲)/u)
+  assert.match(body, /场景：北城门/u)
+  assert.match(body, /人物：顾凌天_黑色锦袍与萧天策_将军盔甲。/u)
+  assert.match(body, /画面与动作：顾凌天_黑色锦袍按住绣春刀，望向萧天策_将军盔甲。/u)
+  assert.match(body, /对白／音效：顾凌天_黑色锦袍：“萧将军，退下。”/u)
+  assert.match(body, /对白／音效：萧天策_将军盔甲\(OS\) ：“先等等。”/u)
   assert.match(body, /→衔接：两人留在原地。/u)
 })
 
@@ -49,6 +52,7 @@ test('逐处引用模式保留原来的图片和声音插入方式，切换不�
   const inline = buildScriptVideoDelivery(card, assets, { ...options, stylePreset, promptMode: 'inline' })
   assert.ok(inline.prompt.startsWith('暖色电影光线，禁止字幕。'))
   assert.doesNotMatch(inline.prompt, /参考素材：/u)
+  assert.match(inline.prompt, /本段全程在@图片1北城门/u)
   assert.match(inline.prompt, /@图片2顾凌天_黑色锦袍的对白音色参考@音频1/u)
   assert.match(bodyOf(inline.prompt), /@图片2顾凌天_黑色锦袍 @音频1：“萧将军，退下。”/u)
   assert.match(bodyOf(inline.prompt), /@图片3萧天策_将军盔甲 @音频2\(OS\) ：“先等等。”/u)
@@ -78,7 +82,11 @@ test('最终提示词和提交保留续接对白手改的内心 OS，沿用心�
       const dialogue = delivery.prompt.split('\n').find(line => line.includes(direct)) || ''
       const authored = `${acting} ${marker}`
       assert.ok(dialogue.includes(authored), `${provider.provider}/${promptMode}: ${dialogue}`)
-      assert.match(dialogue, /萧天策_将军盔甲 (?:@?音频2|<Audio 2>)/u)
+      if (promptMode === 'reference-guide') {
+        assert.doesNotMatch(dialogue, /@萧天策_将军盔甲|@?音频2|<Audio 2>/u)
+      } else {
+        assert.match(dialogue, /萧天策_将军盔甲 (?:@?音频2|<Audio 2>)/u)
+      }
       assert.match(dialogue.slice(dialogue.indexOf(authored) + authored.length), /^[ \t]*：“先等等。”$/u)
       assert.doesNotMatch(delivery.prompt, /萧天策_将军盔甲保持对应参考图的造型，是本镜画内发声者/u)
       assert.deepEqual(delivery.voices.map(group => group.asset.id), ['gu', 'xiao'])
@@ -107,26 +115,51 @@ test('续接和光线帧编号与专用语义集中在正文前，语音和素�
   assert.deepEqual(guide.lightingRanges, inline.lightingRanges)
 })
 
-test('独立手选声音在前置区明确对应说话角色，正文仍使用所选声音', () => {
+test('独立手选声音在前置区明确对应说话角色，正文去掉音色标记', () => {
   const picked: ScriptVideoDeliveryAsset = { id: 'picked', name: '沉稳男声', kind: 'audio', image: '',
     voiceAudio: { url: '/static/uploads/picked.wav', name: '沉稳.wav' } }
   const manual = { ...card, assetIds: [...card.assetIds, picked.id],
     prompt: card.prompt.replace('@顾凌天_黑色锦袍：“', '@顾凌天_黑色锦袍 @沉稳男声：“') }
   const built = buildScriptVideoDelivery(manual, [...assets, picked], options)
   assert.deepEqual(built.voices.map(group => group.asset.id), ['xiao', 'picked'])
-  assert.match(built.prompt, /@音频2 是 @顾凌天_黑色锦袍 的配音音色参考（声音素材：@沉稳男声）/u)
-  assert.match(bodyOf(built.prompt), /@顾凌天_黑色锦袍 @音频2：“萧将军，退下。”/u)
-  assert.match(bodyOf(built.prompt), /@萧天策_将军盔甲 @音频1\(OS\) ：“先等等。”/u)
+  assert.match(built.prompt, /@音频2 是 顾凌天_黑色锦袍 的配音音色参考（声音素材：沉稳男声）/u)
+  assert.match(bodyOf(built.prompt), /顾凌天_黑色锦袍：“萧将军，退下。”/u)
+  assert.match(bodyOf(built.prompt), /萧天策_将军盔甲\(OS\) ：“先等等。”/u)
+  assert.doesNotMatch(bodyOf(built.prompt), /@音频\d+|沉稳男声/u)
+})
+
+test('同角色手选两种声音时用纯音色名区分对白，编号仍只在开头', () => {
+  const tracks: ScriptVideoDeliveryAsset[] = ['平静男声', '急促男声'].map((name, i) => ({
+    id: 'voice-' + i, name, kind: 'audio', image: '',
+    voiceAudio: { url: `/static/uploads/take-${i}.wav`, name: name + '.wav' },
+  }))
+  const lines = ['@顾凌天_黑色锦袍 @平静男声：“请坐。”', '@顾凌天_黑色锦袍 @急促男声：“快走！”']
+  const selected: ScriptVideoDeliveryCard = {
+    ...card, assetIds: ['gu', ...tracks.map(track => track.id)],
+    shots: lines.map(dialogue => ({ duration: 3, dialogue, speakerAssetIds: ['gu'] })),
+    prompt: [
+      '镜头 01（0–3秒）', '画面与动作：@顾凌天_黑色锦袍抬手。', `对白／音效：${lines[0]}`,
+      '镜头 02（3–6秒）', '画面与动作：@顾凌天_黑色锦袍大步往外走。', `对白／音效：${lines[1]}`,
+    ].join('\n'),
+  }
+  const built = buildScriptVideoDelivery(selected, [...assets, ...tracks], options)
+  assert.deepEqual(built.voices.map(group => group.asset.id), ['voice-0', 'voice-1'])
+  assert.match(built.prompt, /@音频1 是 顾凌天_黑色锦袍 的配音音色参考（声音素材：平静男声）/u)
+  assert.match(built.prompt, /@音频2 是 顾凌天_黑色锦袍 的配音音色参考（声音素材：急促男声）/u)
+  const body = bodyOf(built.prompt)
+  assert.match(body, /对白／音效：顾凌天_黑色锦袍（使用平静男声音色）：“请坐。”/u)
+  assert.match(body, /对白／音效：顾凌天_黑色锦袍（使用急促男声音色）：“快走！”/u)
+  assert.doesNotMatch(body, /@/u)
 })
 
 test('画外对白、旁白、原话及音效不因素材说明模式丢失', () => {
   const offscreen = { ...card, prompt: card.prompt.replace('@顾凌天_黑色锦袍：“萧将军，退下。”',
     '@顾凌天_黑色锦袍（画外）：“图1是题目，音频1是答案。”；旁白：“城门未开。”；音效：衣甲摩擦。') }
   const built = buildScriptVideoDelivery(offscreen, assets, options)
-  assert.match(bodyOf(built.prompt), /@顾凌天_黑色锦袍 @音频1（画外）：“图1是题目，音频1是答案。”/u)
+  assert.match(bodyOf(built.prompt), /顾凌天_黑色锦袍（画外）：“图1是题目，音频1是答案。”/u)
   assert.match(bodyOf(built.prompt), /旁白：“城门未开。”/u)
   assert.match(bodyOf(built.prompt), /音效：衣甲摩擦。/u)
-  assert.doesNotMatch(bodyOf(built.prompt), /@图片\d+/u)
+  assert.doesNotMatch(bodyOf(built.prompt), /@(?:图片|音频)\d+/u)
 })
 
 test('没有角色归属的独立音效仍说明为声音参考，不改成角色配音', () => {
@@ -134,8 +167,8 @@ test('没有角色归属的独立音效仍说明为声音参考，不改成角�
     voiceAudio: { url: '/static/uploads/drum.wav', name: '鼓点.wav' } }
   const built = buildScriptVideoDelivery({ duration: 6, assetIds: ['drum'], shots: [],
     manuallyAdded: true, prompt: '音效：@鼓点。' }, [sound], options)
-  assert.match(built.prompt, /@音频1 是 @鼓点 的声音参考，按本段标注使用。/u)
-  assert.match(built.prompt, /音效：@音频1。/u)
+  assert.match(built.prompt, /@音频1 是 鼓点 的声音参考，按本段标注使用。/u)
+  assert.match(built.prompt, /音效：鼓点。/u)
   assert.doesNotMatch(built.prompt, /配音音色参考/u)
 })
 
@@ -143,8 +176,9 @@ test('同一声音文件只提交一次，说明仍列全角色，不把普通�
   const sameAudio = assets.map(asset => asset.id === 'xiao' ? { ...asset, voiceAudio: assets[1].voiceAudio } : asset)
   const built = buildScriptVideoDelivery(card, sameAudio, options)
   assert.equal(built.voices.length, 1)
-  assert.match(built.prompt, /@音频1 是 @顾凌天_黑色锦袍、@萧天策_将军盔甲 的配音音色参考/u)
-  assert.match(bodyOf(built.prompt), /@萧天策_将军盔甲 @音频1\(OS\) ：“先等等。”/u)
+  assert.match(built.prompt, /@音频1 是 顾凌天_黑色锦袍、萧天策_将军盔甲 的配音音色参考/u)
+  assert.match(bodyOf(built.prompt), /萧天策_将军盔甲\(OS\) ：“先等等。”/u)
+  assert.doesNotMatch(bodyOf(built.prompt), /@音频\d+/u)
 })
 
 test('各服务显式选择素材说明时沿用原生标签，未指定模式的纯构建继续沿用逐处引用', () => {
@@ -163,10 +197,10 @@ test('各服务显式选择素材说明时沿用原生标签，未指定模式�
     assert.deepEqual(buildScriptVideoDelivery(card, assets, { ...providerOptions, promptMode: 'inline' }), original)
     const guide = buildScriptVideoDelivery(card, assets, { ...providerOptions, promptMode: 'reference-guide' })
     assert.ok(guide.prompt.startsWith('参考素材：\n' + picture + '1'))
-    assert.ok(guide.prompt.includes(audio + '1' + (audio.startsWith('<') ? '>' : '') + ' 是 @顾凌天_黑色锦袍 的配音音色参考'))
-    const body = guide.prompt.slice(guide.prompt.search(/^镜头\s*01/mu))
-    assert.doesNotMatch(body, /@图片\d+|<Picture \d+>|图\d+/u)
-    assert.ok(body.includes('@顾凌天_黑色锦袍 ' + audio + '1' + (audio.startsWith('<') ? '>' : '') + '：'))
+    assert.ok(guide.prompt.includes(audio + '1' + (audio.startsWith('<') ? '>' : '') + ' 是 顾凌天_黑色锦袍 的配音音色参考'))
+    const body = bodyOf(guide.prompt)
+    assert.doesNotMatch(body, /(?:@?图(?:片)?|@?音频)\d+|<(?:Picture|Audio) \d+>|@顾凌天_黑色锦袍/u)
+    assert.ok(body.includes('顾凌天_黑色锦袍：'))
     assert.ok(body.includes('萧将军，退下。'))
     assert.ok(body.includes('先等等。'))
     assert.doesNotMatch(body, /�/u)
@@ -180,8 +214,8 @@ test('Seedance素材说明保留实际人声表演主体与随后现场台词，
     prompt: '镜头 01（0–6秒）\n画面与动作：@顾凌天_黑色锦袍望向@萧天策_将军盔甲。\n对白／音效：' + dialogue }
   const built = buildScriptVideoDelivery(selected, assets, { provider: 'libtv', model: 'star-video2.5', promptMode: 'reference-guide' })
   assert.deepEqual(built.voices.map(group => group.asset.id), ['gu', 'xiao'])
-  assert.match(built.prompt, /@顾凌天 @音频1短促发笑。@萧天策 @音频2：\{住手。\}/u)
-  assert.match(built.prompt, /@萧天策保持对应参考图的造型，说出本镜标注的台词。/u)
+  assert.match(built.prompt, /顾凌天短促发笑。萧天策：\{住手。\}/u)
+  assert.match(built.prompt, /萧天策保持对应参考图的造型，说出本镜标注的台词。/u)
   assert.doesNotMatch(built.prompt, /嘴唇闭合|是本镜画内发声者/u)
 })
 
@@ -197,13 +231,107 @@ test('素材说明上传本段已绑定但正文未提到的图片，不扩展�
     prompt: '镜头 01（0–6秒）\n画面与动作：@顾凌天_黑色锦袍抬眼。\n对白／音效：@顾凌天_黑色锦袍：“退下。”' }
   const built = buildScriptVideoDelivery(selected, [...assets, ...additions], options)
   assert.deepEqual(built.images.map(asset => asset.id), ['gu', 'sword', 'xiao', 'horse'])
-  assert.match(built.prompt, /@图片2 是 @绣春刀 的道具形态参考图（是否出镜以当前分镜为准）。/u)
-  assert.match(built.prompt, /@图片4 是 @白马 的生物外形参考图（是否出镜以当前分镜为准）。/u)
+  assert.match(built.prompt, /@图片2 是 绣春刀 的道具形态参考图（是否出镜以当前分镜为准）。/u)
+  assert.match(built.prompt, /@图片4 是 白马 的生物外形参考图（是否出镜以当前分镜为准）。/u)
   assert.doesNotMatch(built.prompt, /已排除玉佩|库中长枪/u)
   assert.deepEqual(built.voices.map(group => group.asset.id), ['gu'], '补全沉默角色图片不能附带其声音')
   assert.deepEqual(getScriptVideoMaterialUse(selected, [...assets, ...additions], options).imageIds, ['gu', 'sword', 'xiao', 'horse'])
   const inline = buildScriptVideoDelivery(selected, [...assets, ...additions], { ...options, promptMode: 'inline' })
   assert.deepEqual(inline.images.map(asset => asset.id), ['gu'], '逐处引用模式仍按正文选图')
+})
+
+test('旧稿只用来交代机位的看客群不进参考图，真正出镜和发声的资产仍保留', () => {
+  const crowd: ScriptVideoDeliveryAsset = { id: 'crowd', name: '茶铺喝茶看客群', kind: 'character', image: '/static/uploads/crowd.jpg' }
+  const camera = '中近景，机位摆在@茶铺喝茶看客群背后，缓慢推近。'
+  const action = '@顾凌天_黑色锦袍按住@绣春刀。'
+  const dialogue = '@顾凌天_黑色锦袍：“慢慢来。”'
+  const cameraLine = `景别／机位／运动：${camera}`
+  const shotHeader = '镜头 01（0–6秒）'
+  const actionLine = `画面与动作：${action}`
+  const dialogueLine = `对白／音效：${dialogue}`
+  const prompt = [shotHeader, cameraLine, actionLine, dialogueLine].join('\n')
+  const dirtyShotIds = ['crowd', 'gu', 'sword']
+  const cases = [
+    { name: '旧卡片绑定', body: prompt, shotCamera: camera, visualAssetIds: ['gu', 'sword'] },
+    { name: '旧镜头绑定', body: prompt, shotCamera: camera, visualAssetIds: dirtyShotIds },
+    { name: '仅结构化动作', body: [shotHeader, dialogueLine].join('\n'), shotCamera: camera },
+    { name: '仅结构化机位且未加标记', body: [shotHeader, actionLine, dialogueLine].join('\n'),
+      shotCamera: camera.replace('@', ''), visualAssetIds: dirtyShotIds },
+    { name: '机位跨行续写', body: [shotHeader, '景别／机位／运动：中近景。', '由@茶铺喝茶看客群背后缓推。', actionLine, dialogueLine].join('\n'),
+      visualAssetIds: dirtyShotIds },
+  ]
+  for (const { name, body, shotCamera, visualAssetIds } of cases) {
+    const legacy: ScriptVideoDeliveryCard = {
+      duration: 6, assetIds: dirtyShotIds,
+      shots: [{ duration: 6, camera: shotCamera, action, dialogue, visualAssetIds, speakerAssetIds: ['gu'] }],
+      prompt: body,
+    }
+    for (const promptMode of ['reference-guide', 'inline'] as const) {
+      const delivery = buildScriptVideoDelivery(legacy, [...assets, crowd], { ...options, promptMode })
+      assert.deepEqual(delivery.images.map(asset => asset.id), ['gu', 'sword'], `${name} ${promptMode}`)
+      assert.deepEqual(delivery.voices.map(group => group.asset.id), ['gu'])
+      if (body.includes(cameraLine)) assert.match(delivery.prompt, /机位摆在茶铺喝茶看客群背后，缓慢推近。/u)
+      if (name === '机位跨行续写') assert.match(delivery.prompt, /由茶铺喝茶看客群背后缓推。/u)
+      assert.match(delivery.prompt, /“慢慢来。”/u)
+    }
+  }
+})
+
+test('镜头参照同一资产时，实际出镜、发声或人工选用仍然有效', () => {
+  const crowd: ScriptVideoDeliveryAsset = { id: 'crowd', name: '茶铺喝茶看客群', kind: 'character', image: '/static/uploads/crowd.jpg',
+    voiceAudio: { url: '/static/uploads/crowd.wav', name: '看客群.wav' } }
+  const camera = '镜头由@茶铺喝茶看客群后方推近。'
+  const look = '画面与动作：@顾凌天_黑色锦袍回头。'
+  const response = '@茶铺喝茶看客群：“好！”'
+  const legacy: ScriptVideoDeliveryCard = {
+    duration: 6, assetIds: ['crowd', 'gu'],
+    shots: [{ duration: 6, camera, action: look, dialogue: '无台词。', visualAssetIds: ['crowd', 'gu'] }],
+    prompt: `镜头 01（0–6秒）\n景别／机位／运动：${camera}\n${look}`,
+  }
+  const catalog = [...assets, crowd]
+  const onScreen = { ...legacy, prompt: legacy.prompt + '\n画面与动作：@茶铺喝茶看客群抬手。' }
+  assert.ok(buildScriptVideoDelivery(onScreen, catalog, options).images.some(asset => asset.id === crowd.id))
+
+  const speaking = { ...legacy, shots: [{ ...legacy.shots[0], dialogue: response, speakerAssetIds: ['crowd'] }],
+    prompt: legacy.prompt + `\n对白／音效：${response}` }
+  const delivery = buildScriptVideoDelivery(speaking, catalog, options)
+  assert.ok(delivery.images.some(asset => asset.id === crowd.id))
+  assert.deepEqual(delivery.voices.map(group => group.asset.id), ['crowd'])
+
+  const confirmed: ScriptVideoDeliveryCard = {
+    ...legacy,
+    assetBindingRequirements: [{ key: 'crowd', label: crowd.name, kind: 'character', candidateIds: [crowd.id], assetId: crowd.id, confirmed: true }],
+  }
+  assert.ok(buildScriptVideoDelivery(confirmed, catalog, options).images.some(asset => asset.id === crowd.id))
+
+  const manualBinding = { ...legacy, manualAssetIds: [crowd.id] }
+  for (const promptMode of ['reference-guide', 'inline'] as const) {
+    const delivery = buildScriptVideoDelivery(manualBinding, catalog, { ...options, promptMode })
+    assert.ok(delivery.images.some(asset => asset.id === crowd.id), promptMode)
+  }
+
+  const manual = { ...legacy, assetIds: ['crowd'], shots: [], manuallyAdded: true as const, prompt: `机位：${camera}` }
+  assert.deepEqual(buildScriptVideoDelivery(manual, [crowd], options).images.map(asset => asset.id), ['crowd'])
+})
+
+test('画面与动作写出已绑定背景人物的完整名称时，补齐旧镜头漏掉的参考图', () => {
+  const crowd: ScriptVideoDeliveryAsset = { id: 'crowd', name: '茶铺喝茶看客群', kind: 'character', image: '/static/uploads/crowd.jpg' }
+  const otherCrowd: ScriptVideoDeliveryAsset = { ...crowd, id: 'other-crowd', name: '街口看客群', image: '/static/uploads/other-crowd.jpg' }
+  const action = '@顾凌天_黑色锦袍抬手，茶铺喝茶看客群在背景中起身让路。'
+  for (const visualAssetIds of [[], ['gu']]) {
+    const selected: ScriptVideoDeliveryCard = {
+      duration: 6, assetIds: ['gu', crowd.id],
+      shots: [{ duration: 6, action, visualAssetIds }],
+      prompt: `镜头 01（0–6秒）\n画面与动作：${action}`,
+    }
+    for (const promptMode of ['reference-guide', 'inline'] as const) {
+      const delivery = buildScriptVideoDelivery(selected, [...assets, crowd, otherCrowd], { ...options, promptMode })
+      assert.deepEqual(delivery.images.map(asset => asset.id), ['gu', crowd.id], `${promptMode} ${JSON.stringify(visualAssetIds)}`)
+      assert.deepEqual(delivery.imageBindings, [{ assetId: 'gu', index: 1 }, { assetId: crowd.id, index: 2 }])
+      if (promptMode === 'inline') assert.match(bodyOf(delivery.prompt), /@图片2茶铺喝茶看客群在背景中起身让路。/u)
+      else assert.match(bodyOf(delivery.prompt), /，茶铺喝茶看客群在背景中起身让路。/u)
+    }
+  }
 })
 
 test('补全图片按相同文件去重，素材别名共用编号且后续音频次序不受影响', () => {
@@ -213,9 +341,15 @@ test('补全图片按相同文件去重，素材别名共用编号且后续音�
   const built = buildScriptVideoDelivery(selected, [...assets, sameImage], options)
   assert.deepEqual(built.images.map(asset => asset.id), ['gu', 'sword'])
   assert.deepEqual(built.imageBindings, [{ assetId: 'gu', index: 1 }, { assetId: 'sword', index: 2 }, { assetId: 'sword-alias', index: 2 }])
-  assert.match(built.prompt, /@图片2 是 @绣春刀 的道具形态参考图（是否出镜以当前分镜为准）。/u)
-  assert.match(built.prompt, /@图片2 是 @另一把绣春刀 的道具形态参考图（是否出镜以当前分镜为准）。/u)
+  assert.match(built.prompt, /@图片2 是 绣春刀 的道具形态参考图（是否出镜以当前分镜为准）。/u)
+  assert.match(built.prompt, /@图片2 是 另一把绣春刀 的道具形态参考图（是否出镜以当前分镜为准）。/u)
   assert.deepEqual(built.voices.map(group => group.asset.id), ['gu'])
+
+  const cameraOnlyAlias = { ...selected, prompt: selected.prompt.replace('画面与动作：@顾凌天_黑色锦袍抬眼。',
+    '机位：贴着@另一把绣春刀向前。\n画面与动作：@顾凌天_黑色锦袍按住@绣春刀。') }
+  const filtered = buildScriptVideoDelivery(cameraOnlyAlias, [...assets, sameImage], options)
+  assert.deepEqual(filtered.images.map(asset => asset.id), ['gu', 'sword'])
+  assert.deepEqual(filtered.imageBindings, [{ assetId: 'gu', index: 1 }, { assetId: 'sword', index: 2 }])
 })
 
 test('自由提示词补全已选角色图时，不为未讲话角色发送音色文件，音频视图和摘要也一致', () => {
@@ -241,9 +375,9 @@ test('已绑定但未在正文引用的独立音频进入素材区，不生成�
     prompt: '镜头 01（0–6秒）\n画面与动作：@顾凌天_黑色锦袍抬眼。\n对白／音效：@顾凌天_黑色锦袍：“退下。”' }
   const built = buildScriptVideoDelivery(selected, [...assets, ...sounds], options)
   assert.deepEqual(built.voices.map(group => group.asset.id), ['gu', 'drum'])
-  assert.match(built.prompt, /@音频2 是 @drum 的声音参考，按本段标注使用。/u)
+  assert.match(built.prompt, /@音频2 是 drum 的声音参考，按本段标注使用。/u)
   assert.doesNotMatch(bodyOf(built.prompt), /@音频2|drum|excluded-sound|library-sound/u)
-  assert.doesNotMatch(built.prompt, /excluded-sound|library-sound|@萧天策_将军盔甲 的配音/u)
+  assert.doesNotMatch(built.prompt, /excluded-sound|library-sound|萧天策_将军盔甲 的配音/u)
   assert.deepEqual(getScriptVideoPromptVoices(selected, [...assets, ...sounds], options).map(group => group.asset.id), ['gu', 'drum'])
   assert.deepEqual([...getScriptVideoVoiceInputs(selected, [...assets, ...sounds], options).keys()], ['gu', 'drum'])
   const inline = buildScriptVideoDelivery(selected, [...assets, ...sounds], { ...options, promptMode: 'inline' })
@@ -274,16 +408,16 @@ for (const providerOptions of [
         '画面与动作：@顾凌天_黑色锦袍停在@萧天策_将军盔甲面前。',
         '对白／音效：音效：衣料轻响；', '', '@顾凌天_黑色锦袍【平静】：“' + spoken + '”'].join('\n') }
     const built = buildScriptVideoDelivery(selected, assets, { ...providerOptions, promptMode: 'reference-guide' })
-    assert.match(built.prompt, /@顾凌天_黑色锦袍是该动作的主体.*由同一人接续下一镜。/u)
-    assert.match(built.prompt, /@顾凌天_黑色锦袍保持对应参考图的造型，是本镜画内发声者。其他在画人物按本镜安排动作，嘴唇闭合。/u)
-    assert.ok(built.prompt.includes('@顾凌天_黑色锦袍 @音频1【平静】：{' + spoken + '}'))
+    assert.match(built.prompt, /顾凌天_黑色锦袍是该动作的主体.*由同一人接续下一镜。/u)
+    assert.match(built.prompt, /顾凌天_黑色锦袍保持对应参考图的造型，是本镜画内发声者。其他在画人物按本镜安排动作，嘴唇闭合。/u)
+    assert.ok(built.prompt.includes('顾凌天_黑色锦袍【平静】：{' + spoken + '}'))
     assert.deepEqual(built.voices.map(group => group.asset.id), ['gu'])
-    assert.doesNotMatch(built.prompt.slice(built.prompt.indexOf('镜头01')), /@图片\d+/u)
+    assert.doesNotMatch(bodyOf(built.prompt), /@(?:图片\d+|音频\d+|顾凌天_黑色锦袍)/u)
     const offscreen = buildScriptVideoDelivery({ ...selected,
       prompt: selected.prompt.replace('【平静】', '（画外）'),
     }, assets, { ...providerOptions, promptMode: 'reference-guide' })
     assert.doesNotMatch(offscreen.prompt, /是本镜画内发声者|是该动作的主体/u)
-    assert.ok(offscreen.prompt.includes('@顾凌天_黑色锦袍 @音频1（画外）：{' + spoken + '}'))
+    assert.ok(offscreen.prompt.includes('顾凌天_黑色锦袍（画外）：{' + spoken + '}'))
   })
 }
 

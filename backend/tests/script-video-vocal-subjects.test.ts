@@ -57,7 +57,8 @@ test('带门派前缀的明确人物引用只给实际人声补音色，保留�
       prompt: '镜头 01（0–3秒）\n对白／音效：' + dialogue }, people,
     { provider: 'jimeng', model: 'jimeng-seedance-2.5', promptMode: 'reference-guide' })
     assert.deepEqual(delivery.voices.map(voice => voice.asset.id), ['elder'])
-    assert.ok(delivery.prompt.includes(`${prefix}@大长老 @音频1咳嗽一声。`), delivery.prompt)
+    assert.match(delivery.prompt, /@音频1 是 大长老 的配音音色参考/u)
+    assert.ok(delivery.prompt.includes(`${prefix}大长老咳嗽一声。`), delivery.prompt)
   }
   for (const direction of [
     '〈听雪楼@大长老手边衣料摩擦。〉',

@@ -111,6 +111,25 @@ test('只有当前画面真正引用多个候选的已提取物件才需要确�
   assert.equal(scriptVideoAssetBindingIssues(picked, table.filter(asset => asset.id !== 'hall'))[0].type, 'missing')
 })
 
+test('仅作机位参照的同名候选不要求选图，实际在画面出现则要求确认', () => {
+  const props: ScriptVideoAsset[] = [
+    { id: 'long-bench-outside', name: '茶铺门口长椅', originalName: '长椅', kind: 'prop', image: '/outside.png' },
+    { id: 'long-bench-inside', name: '茶铺内侧长椅', originalName: '长椅', kind: 'prop', image: '/inside.png' },
+  ]
+  const assetIndex = [...assets, ...props]
+  const camera = '机位从长椅下方推近。'
+  const action = '阿宁_礼服回过头。'
+  const draft = board({
+    shots: [{ ...shot(action, 'formal'), camera }],
+    prompt: `镜头 01（0–10秒）\n景别／机位／运动：${camera}\n画面与动作：${action}`,
+    assetBindingRequirements: [{ key: 'long-bench', label: '长椅', kind: 'prop', candidateIds: props.map(prop => prop.id) }],
+  })
+  assert.deepEqual(scriptVideoAssetBindingIssues(draft, assetIndex), [])
+  const actionWithBench = '阿宁_礼服把长椅摆在门边。'
+  const visible = { ...draft, shots: [{ ...draft.shots[0], action: actionWithBench }], prompt: draft.prompt.replace(action, actionWithBench) }
+  assert.deepEqual(scriptVideoAssetBindingIssues(visible, assetIndex).map(issue => issue.requirement.key), ['long-bench'])
+})
+
 test('多条素材要求共享镜头解析，并按各自场次验证最新提示词', () => {
   const props: ScriptVideoAsset[] = [
     { id: 'bronze', name: '青铜令牌', originalName: '令牌', kind: 'prop', image: '/bronze.png' },

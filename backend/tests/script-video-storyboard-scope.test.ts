@@ -82,6 +82,8 @@ test('both storyboard modes send a delivery scope consistent with the submit_dra
     await t.test(mode, async () => {
       const first = await capture(mode, 0, 1)
       assert.match(first, /cards 只提交 targetCardIds 指定的 1 段/u)
+      assert.match(first, /只在 camera 中提到的对象不计入素材 ID/u)
+      assert.match(first, /实际拍到的对象写入 action，实际发声的角色写入 dialogue/u)
       assert.match(first, /从已保存的 0 段之后按新时间表顺序取最多 1 段/u)
       assert.match(first, /segments 是 confirmedOutline 中从 1 起算的段号/u)
       const tail = await capture(mode, 2, 2)
@@ -100,16 +102,21 @@ test('both storyboard modes send a delivery scope consistent with the submit_dra
     })
     const root = path.join(dir, 'skills/script-to-video')
     await mkdir(path.join(root, 'references'), { recursive: true })
+    const legacyCameraRule = '承上、机位、画面、对白说话人、音效和衔接都能关联资产。'
     const legacy = [
       ['references/validation.md', '模型在一次回答中按已确认的主干事件顺序写完整集分镜，并按原文检查相邻片段的首末镜承接。\n项目自定义校验：留意推门方向。'],
-      ['项目适配说明.md', '正式稿在一次请求中写完整集。项目自定义交付：保留右手状态。按已确认大纲的顺序输出所有片段，整集制作规格、人物与声音设定只写一次。每段开头接同一次回答里上一段的实际末镜。'],
+      ['项目适配说明.md', '正式稿在一次请求中写完整集。项目自定义交付：保留右手状态。按已确认大纲的顺序输出所有片段，整集制作规格、人物与声音设定只写一次。每段开头接同一次回答里上一段的实际末镜。\n' + legacyCameraRule],
     ]
     for (const [name, text] of legacy) await writeFile(path.join(root, name), text)
     process.env.WORKSPACE_PATH = dir
     for (const mode of ['cultivation', 'original'] as const) {
       const instructions = await capture(mode, 0, 1)
       assert.match(instructions, /项目自定义校验：留意推门方向/u)
-      if (mode === 'original') assert.match(instructions, /项目自定义交付：保留右手状态/u)
+      if (mode === 'original') {
+        assert.match(instructions, /项目自定义交付：保留右手状态/u)
+        assert.match(instructions, /景别、机位和运镜保留技术描述，仅出现在这一栏的名称不关联素材/u)
+        assert.ok(!instructions.includes(legacyCameraRule))
+      }
       assert.doesNotMatch(instructions, /按已确认大纲的顺序输出所有片段/u)
     }
     for (const [name, text] of legacy) assert.equal(await readFile(path.join(root, name), 'utf8'), text)

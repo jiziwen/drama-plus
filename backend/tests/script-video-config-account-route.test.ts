@@ -81,7 +81,7 @@ test('剧本转视频提交使用所选 LibTV 账号和提示词模式，页面�
   const guide = await post('/final-prompt', { ...preview, promptMode: 'reference-guide' })
   assert.equal(guide.status, 200, await guide.clone().text())
   const guidePrompt = (await guide.json()).data.prompt
-  assert.match(guidePrompt, /^参考素材：[\s\S]+@图片1 是 @古伞/u)
+  assert.match(guidePrompt, /^参考素材：[\s\S]+@图片1 是 古伞/u)
   assert.match(guidePrompt, authoredCue)
   for (const [index, config] of configs.entries()) {
     const response = await post(`/cards/part-${index}/video`, { configId: config.id, model, aspectRatio: '16:9',

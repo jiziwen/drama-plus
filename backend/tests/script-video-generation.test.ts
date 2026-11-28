@@ -529,13 +529,25 @@ test('AICost 按 PUBLIC_BASE_URL 选择公网参考图与角色音频或本地�
   t.after(() => setVideoPromptMode(priorMode))
   setVideoPromptMode('reference-guide')
   const prop = { id: 'blade', kind: 'prop', name: '绣春刀', image: '/static/uploads/aicost-blade.png' }
+  const crowd = { id: 'crowd', kind: 'character', name: '茶铺喝茶看客群', image: '/static/uploads/aicost-crowd.png' }
   await fs.writeFile(path.join(root, prop.image), png)
-  const guidedEpisode = { ...episode, assets: [...applicableAssets, prop], card: { ...card, assetIds: [...card.assetIds, prop.id] } }
+  await fs.writeFile(path.join(root, crowd.image), png)
+  const camera = '机位摆在@茶铺喝茶看客群背后。'
+  const guidedEpisode = {
+    ...episode, assets: [...applicableAssets, prop, crowd],
+    card: {
+      ...card, assetIds: [...card.assetIds, prop.id, crowd.id],
+      shots: [{ ...card.shots[0], camera, visualAssetIds: [...card.assetIds, crowd.id] }, ...card.shots.slice(1)],
+      prompt: card.prompt.replace('画面与动作：侍卫和戍卒站在门边。', `景别／机位／运动：${camera}\n画面与动作：侍卫和戍卒站在门边。`),
+    },
+  }
   const guidedPreview = await previewScriptVideoPrompt({ ...guidedEpisode, selection: guidedEpisode })
-  assert.match(guidedPreview.prompt, /^参考素材：[\s\S]+@图片3 是 @绣春刀/u)
+  assert.deepEqual(guidedPreview.images.map(image => image.url), ['/static/uploads/a.png', '/static/uploads/b.png', prop.image])
+  assert.match(guidedPreview.prompt, /^参考素材：[\s\S]+@图片3 是 绣春刀/u)
+  assert.match(guidedPreview.prompt, /@音频2 是 戍卒 的配音音色参考/u)
   const body = guidedPreview.prompt.split(/^镜头01/mu)[1]
-  assert.doesNotMatch(body, /@图片\d/u)
-  assert.match(body, /@戍卒 @音频2【克制】\(内心 OS\) ：“好。”/u)
+  assert.doesNotMatch(body, /@(?:图片\d+|音频\d+|戍卒)/u)
+  assert.match(body, /戍卒【克制】\(内心 OS\) ：“好。”/u)
   const guided = await startScriptVideoGeneration(guidedEpisode)
   assert.equal((await finish(guided.taskId)).status, 'completed')
   const guidedPayload = aicostSubmissions.at(-1)!

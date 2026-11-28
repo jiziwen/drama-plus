@@ -124,6 +124,7 @@ export type ScriptVideoShot = z.infer<typeof shotFields> & { id: string }
 export type ScriptVideoCard = z.infer<typeof outlineFields> &
   Partial<z.infer<typeof formalContext>> & {
     excludedAssetIds?: string[]
+    manualAssetIds?: string[]
     assetBindingRequirements?: ScriptVideoAssetBindingRequirement[]
     manuallyAdded?: true
     referenceFrameSettings?: ScriptVideoReferenceSettings

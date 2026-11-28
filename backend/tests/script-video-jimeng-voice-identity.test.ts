@@ -50,7 +50,7 @@ test('即梦真实提交准备链路保持说话角色、上传音频和画布�
     else if (command === 'resource upload') {
       resources.set(flag('resource-id')!, { kind: flag('type')!, file: path.basename(flag('file')!) })
       ok({ resourceId: flag('resource-id'), mediaType: flag('type') })
-    } else if (command === 'model list') ok({ items: [
+    } else if (command === 'model list' || command === 'model ls') ok({ items: [
       { model: 'seedance_2.5', displayName: 'Seedance 2.5' },
       { model: 'seedance_2.5_flash', displayName: 'Seedance 2.5 Flash' },
     ] })
@@ -114,11 +114,13 @@ test('即梦真实提交准备链路保持说话角色、上传音频和画布�
     const prompt = ['镜头 01（0–6秒）', '画面与动作：@王禄走到@顾凌天_龙袍身前。',
       '对白／音效：@王禄：“臣遵旨。”；@顾凌天_龙袍(OS)：“先等等。”；@王禄：“陛下？”'].join('\n')
     for (const selected of [assets, [...assets].reverse()]) {
-      const actual = (await prepare(prompt, selected)).prompt.split('镜头 01')[1]
-      assert.match(actual, /@王禄 \[bravo\.wav\]：“臣遵旨。”/u)
-      assert.match(actual, /@顾凌天_龙袍 \[alpha\.wav\]\(OS\) ：“先等等。”/u)
-      assert.match(actual, /@王禄 \[bravo\.wav\]：“陛下？”/u)
-      assert.doesNotMatch(actual, /\[\w+\.png\]/u)
+      const [guide, body] = (await prepare(prompt, selected)).prompt.split('镜头 01')
+      assert.match(guide, /\[bravo\.wav\] 是 王禄 的配音音色参考/u)
+      assert.match(guide, /\[alpha\.wav\] 是 顾凌天_龙袍 的配音音色参考/u)
+      assert.match(body, /王禄：“臣遵旨。”/u)
+      assert.match(body, /顾凌天_龙袍\(OS\) ：“先等等。”/u)
+      assert.match(body, /王禄：“陛下？”/u)
+      assert.doesNotMatch(body, /@|\[\w+\.(?:png|wav)\]/u)
     }
   })
 
@@ -127,10 +129,13 @@ test('即梦真实提交准备链路保持说话角色、上传音频和画布�
       voiceAudio: { url: '/static/uploads/picked.wav', name: '临时.wav' } }]
     const prompt = ['镜头 01（0–6秒）', '画面与动作：@顾凌天_龙袍望向@王禄。',
       '对白／音效：@顾凌天_龙袍 @临时嗓音：“请退下。”；@王禄：“臣遵旨。”'].join('\n')
-    const actual = (await prepare(prompt, selected)).prompt
-    assert.match(actual, /@顾凌天_龙袍 \[picked\.wav\]：“请退下。”/u)
-    assert.match(actual, /@王禄 \[bravo\.wav\]：“臣遵旨。”/u)
-    assert.doesNotMatch(actual, /alpha\.wav/u)
+    const [guide, body] = (await prepare(prompt, selected)).prompt.split('镜头 01')
+    assert.match(guide, /\[picked\.wav\] 是 顾凌天_龙袍 的配音音色参考（声音素材：临时嗓音）/u)
+    assert.match(guide, /\[bravo\.wav\] 是 王禄 的配音音色参考/u)
+    assert.match(body, /顾凌天_龙袍：“请退下。”/u)
+    assert.match(body, /王禄：“臣遵旨。”/u)
+    assert.doesNotMatch(guide, /alpha\.wav/u)
+    assert.doesNotMatch(body, /@|\[\w+\.(?:png|wav)\]/u)
   })
 
   await t.test('旧提示词中未绑定的音频序号被拦截，不能静默覆盖角色自己的音色', async () => {
@@ -150,12 +155,15 @@ test('即梦真实提交准备链路保持说话角色、上传音频和画布�
 
     const guide = await preview()
     assert.deepEqual(guide.audios.map(({ name, tag }) => [name, tag]), [['顾凌天_龙袍', '@音频4'], ['王禄', '@音频5']])
-    assert.match(guide.prompt, /@图片3 是 @绣春刀/u)
-    assert.match(guide.prompt, /@顾凌天_龙袍 @音频4：“请退下。”/u)
-    assert.doesNotMatch(guide.prompt.split('镜头 01')[1], /@图片\d/u)
+    assert.match(guide.prompt, /@图片3 是 绣春刀/u)
+    assert.match(guide.prompt, /@音频4 是 顾凌天_龙袍 的配音音色参考/u)
+    assert.match(guide.prompt, /顾凌天_龙袍：“请退下。”/u)
+    assert.doesNotMatch(guide.prompt.split('镜头 01')[1], /@(?:图片\d+|音频\d+|顾凌天_龙袍|王禄)/u)
     const guided = await prepare(prompt, withProp)
-    assert.match(guided.prompt, /\[blade\.png\] 是 @绣春刀/u)
-    assert.match(guided.prompt, /@顾凌天_龙袍 \[alpha\.wav\]：“请退下。”/u)
+    assert.match(guided.prompt, /\[blade\.png\] 是 绣春刀/u)
+    assert.match(guided.prompt, /\[alpha\.wav\] 是 顾凌天_龙袍 的配音音色参考/u)
+    assert.match(guided.prompt, /顾凌天_龙袍：“请退下。”/u)
+    assert.doesNotMatch(guided.prompt.split('镜头 01')[1], /\[(?:alpha|bravo)\.wav\]/u)
 
     setVideoPromptMode('inline')
     const inline = await preview()

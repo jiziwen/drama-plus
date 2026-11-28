@@ -37,7 +37,15 @@ const actualQuestion = () => new ScriptVideoAIError('USER_INPUT_REQUIRED', '第4
 
 test('the writer can compress a confirmed 137s plan to four slots, in one call with the entire source', async () => {
   const lines = ['信上写着春天的消息。', '这是大家等了很久的答复。', '他们都可以踏上归途了。', '明天早晨我们就走。']
-  const original = input(lines, [30, 30, 30, 30, 17])
+  const original = {
+    ...input(lines, [30, 30, 30, 30, 17]),
+    assets: [
+      { id: 'paperweight', name: '雕花铜镇纸', kind: 'prop' },
+      { id: 'letterbox', name: '旧信盒', kind: 'prop' },
+    ],
+  }
+  original.outline[0] = { ...original.outline[0], assetIds: ['paperweight'], manualAssetIds: ['paperweight'] }
+  original.outline[4] = { ...original.outline[4], assetIds: ['letterbox'], manualAssetIds: ['letterbox'] }
   const result = await generateScriptVideoCards(original, async req => {
     const data = JSON.parse(req.message)
     assert.equal(data.confirmedOutline.length, 5)
@@ -52,6 +60,8 @@ test('the writer can compress a confirmed 137s plan to four slots, in one call w
   })
   assert.equal(result.attempts, 1)
   assert.deepEqual(result.cards.map(c => c.duration), [30, 30, 30, 30])
+  assert.deepEqual(result.cards.map(c => c.manualAssetIds ?? []), [['paperweight'], [], [], []])
+  assert.deepEqual(result.cards.map(c => c.assetIds), [['paperweight'], [], [], []])
   assert.equal(original.outline.length, 5)
 })
 

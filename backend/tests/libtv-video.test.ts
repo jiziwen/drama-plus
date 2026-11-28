@@ -174,10 +174,11 @@ test('LibTV binds real delivery prompts in both video prompt layouts without mix
   const guideBody = guidePrompt.slice(guidePrompt.search(/^镜头\s*\d+/mu))
   assert.deepEqual(guide.images.map(asset => asset.id), ['hero', 'sword'])
   assert.match(guidePrompt, /^参考素材：\n@图片1\{\{Node image-hero\}\}/u)
-  assert.match(guidePrompt, /@图片2\{\{Node image-sword\}\} 是 @绣春刀 的道具形态参考图/u,
+  assert.match(guidePrompt, /@图片2\{\{Node image-sword\}\} 是 绣春刀 的道具形态参考图/u,
     '已绑定但正文未点名的道具仍在开头绑定到真实图片节点')
-  assert.doesNotMatch(guideBody, /@图片\d+|\{\{Node image-/u)
-  assert.match(guideBody, /@萧天策 @音频1\{\{Node voice-hero\}\}：/u)
+  assert.match(guidePrompt, /@音频1\{\{Node voice-hero\}\} 是 萧天策 的配音音色参考/u)
+  assert.doesNotMatch(guideBody, /@(?:图片\d+|音频\d+|萧天策)|\{\{Node (?:image|voice)-/u)
+  assert.match(guideBody, /萧天策：/u)
   assert.match(guideBody, /退下。/u)
 
   const inline = buildScriptVideoDelivery(card, assets, { ...options, promptMode: 'inline' })

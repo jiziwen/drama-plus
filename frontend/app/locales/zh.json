@@ -407,7 +407,7 @@
       "referenceGuideName": "素材说明置前",
       "referenceGuide": "素材说明置前（默认）",
       "inline": "逐处素材引用",
-      "referenceGuideDesc": "将本段已选的角色、场景、道具等图片素材及音色说明放在开头，分镜正文仅插入音频引用。",
+      "referenceGuideDesc": "在最终提示词开头列出图片和音频的编号及对应素材。分镜正文用素材名称引用，保留原有对白。",
       "inlineDesc": "在分镜各处插入图片及音频素材引用。",
       "loadFailed": "提示词入参模式读取失败，请重试。",
       "saveFailed": "提示词入参模式保存失败，请重试。",

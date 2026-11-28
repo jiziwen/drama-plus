@@ -153,7 +153,8 @@ test('裸称带门派时使用本镜唯一吻合的发声资产，保留前缀�
 
   const delivery = buildScriptVideoDelivery(card, assets, { provider: 'jimeng', model: 'jimeng-seedance-2.5', promptMode: 'reference-guide' })
   assert.deepEqual(delivery.voices.map(voice => voice.asset.id), [elder.id])
-  assert.match(delivery.prompt, /听雪楼@大长老 @音频1【/u)
+  assert.match(delivery.prompt, /@音频1 是 大长老 的配音音色参考/u)
+  assert.match(delivery.prompt, /对白／音效：听雪楼大长老【/u)
   assert.deepEqual(getScriptVideoMissingVoices(card, assets), [])
   assert.deepEqual(getScriptVideoMissingVoices(card, [{ ...elder, voiceAudio: undefined }, master]), ['大长老'])
 })
@@ -256,7 +257,7 @@ test('structured identities preserve editable display names and separate a Q for
   assert.deepEqual(scan('陆宁回头，@陆宁-2跳起来。', [disambiguated], [q.id], { autoBind: true }).mentions.map(hit => hit.explicit), [true])
 })
 
-test('camera, action, OS attribution and established aliases bind to the same costume while literal dialogue is preserved', () => {
+test('camera directions stay plain, while action and OS attribution bind the costume and preserve literal dialogue', () => {
   const text = [
     '人物：@火枪卫小旗_飞鱼服（张浩）：立在阶前。',
     '景别／机位／运动：侧面跟随顾凌天',
@@ -266,12 +267,26 @@ test('camera, action, OS attribution and established aliases bind to the same co
   const result = scan(text, cast, bound, options)
   assert.equal(result.text, [
     '人物：@火枪卫小旗_飞鱼服（张浩）：立在阶前。',
-    '景别／机位／运动：侧面跟随@顾凌天_龙袍',
+    '景别／机位／运动：侧面跟随顾凌天',
     '画面与动作：@顾凌天_龙袍抬手，@火枪卫小旗_飞鱼服望向@王禄。',
     '对白／音效：@顾凌天_龙袍(OS)【低声】：“张浩，王禄呢？”',
   ].join('\n'))
   assert.deepEqual(result.mentions.filter(m => m.spoken).map(m => [text.slice(m.start, m.end), m.id]), [['张浩', '火枪卫小旗_飞鱼服'], ['王禄', '王禄']])
   assert.equal(scan(result.text, cast, result.assetIds, options).text, result.text)
+})
+
+test('景别、机位和运镜字段里的参照不参与解析，后续画面和对白继续绑定', () => {
+  const people = [character('司琴'), character('茶铺喝茶看客群')]
+  const action = '画面与动作：@司琴回身。'
+  const dialogue = '对白／音效：@司琴：“等一下。”'
+  for (const heading of ['景别／机位／运动', '景别 / 机位 / 运镜', '景别', '机位', '运镜']) {
+    const text = [`${heading}：由@茶铺喝茶看客群背后推过@未入库木窗。`, action, dialogue].join('\n')
+    const result = scan(text, people, [], { autoBind: true, detectUnboundSpeakers: true })
+    assert.deepEqual(result.assetIds, ['司琴'], heading)
+    assert.deepEqual(result.mentions.filter(item => item.usage === 'visual' || item.usage === 'speaker')
+      .map(item => [item.id, item.usage]), [['司琴', 'visual'], ['司琴', 'speaker']], heading)
+    assert.deepEqual(result.problems, [], heading)
+  }
 })
 
 test('sources, unbound variants, ambiguous bare roles and deliberate unbinding cannot fall back to a shorter or different costume', () => {

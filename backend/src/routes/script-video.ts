@@ -981,19 +981,20 @@ export function createScriptVideoRoutes(
       }
       const queued = queuedReferenceCards(project, episodeId)
       const lightingPlan = planScriptVideoLighting(project, episodeId, jobs, queued)[card.id] || []
-      const source = await continuationSource(project, jobs, episodeId, card.id, queued, true)
-      const tailChoice = card.referenceFrameSettings?.tail
-      if (!source && tailChoice?.mode === 'manual' && tailChoice.sourceCardId)
-        warnings.add('手选尾帧的来源成片已不可用，请重新选帧。')
-      const input = { card, assets: project.assets, cast, stylePreset }
-      const continuationSourceForPreview = typeof source === 'string' ? undefined : source
-      const pending = source === 'pending' ? '上一段成片仍在生成，出片后将自动补入尾帧。'
-        : source === 'missing' ? '先生成上一段视频，系统会自动补入成片尾帧。'
-          : lightingPlan.some(range => range.pendingCardId) ? '同场上一段正在制作，出片后将自动补入光线参考图。' : undefined
       try {
-        const lighting = await prepareScriptVideoLighting(lightingPlan)
+        const [source, lighting] = await Promise.all([
+          continuationSource(project, jobs, episodeId, card.id, queued, true),
+          prepareScriptVideoLighting(lightingPlan),
+        ])
+        const tailChoice = card.referenceFrameSettings?.tail
+        if (!source && tailChoice?.mode === 'manual' && tailChoice.sourceCardId)
+          warnings.add('手选尾帧的来源成片已不可用，请重新选帧。')
+        const continuationSourceForPreview = typeof source === 'string' ? undefined : source
+        const pending = source === 'pending' ? '上一段成片仍在生成，出片后将自动补入尾帧。'
+          : source === 'missing' ? '先生成上一段视频，系统会自动补入成片尾帧。'
+            : lightingPlan.some(range => range.pendingCardId) ? '同场上一段正在制作，出片后将自动补入光线参考图。' : undefined
         for (const warning of lighting.warnings) warnings.add(warning)
-        const result = await previewScriptVideoPrompt({ ...input, projectId: id, episodeId,
+        const result = await previewScriptVideoPrompt({ card, assets: project.assets, cast, stylePreset, projectId: id, episodeId,
           selection: hasSelection ? {
             configId: body.configId, model: body.model, aspectRatio: body.aspectRatio,
             resolution: body.resolution ?? episodeVideoResolution(project, episode, { cardId: card.id, model: body.model }),

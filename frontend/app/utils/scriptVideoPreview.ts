@@ -3,7 +3,7 @@ import { formatJimengScriptPrompt } from '../../../backend/src/services/jimeng-r
 import { annotateScriptVideoAssets, type AssetMention } from '../../../backend/src/services/script-video-mentions'
 import { renderScriptVideoPrompt } from '../../../backend/src/services/script-video-format'
 import { renderScriptVideoCultivationTimeline, scriptVideoCultivationVoiceSummary } from '../../../backend/src/services/script-video-cultivation'
-import { scriptVideoShotHeadings } from '../../../backend/src/services/script-video-asset-scope'
+import { scriptVideoCameraRanges, scriptVideoShotHeadings } from '../../../backend/src/services/script-video-asset-scope'
 import { formatScriptVideoStylePreset, scriptVideoPromptStylePrefix, type ScriptVideoStylePreset } from '../../../backend/src/services/script-video-style'
 import type { ScriptVideoAssetExtractionFields, ScriptVideoAssetImageFields, ScriptVideoVoiceDescription, ScriptVideoVoiceMode } from '../../../backend/src/services/script-video-types'
 import type { ScriptVideoVoiceProfile } from '../../../backend/src/services/script-video-project-voices'
@@ -81,6 +81,7 @@ export type PreviewCard = {
   duration: number
   summary: string
   assetIds: string[]
+  manualAssetIds?: string[]
   shots: PreviewShot[]
   sourceSceneIds?: string[]
   assetBindingRequirements?: ScriptVideoAssetBindingRequirement[]
@@ -195,9 +196,12 @@ function promptMaterialSections(prompt: string, mentions: readonly AssetMention[
     const body = text.slice(bodyStart, start + block.length)
       .split(/^[ \t]*(?:→衔接(?:至[^：:\n]*)?|末镜停在)[：:]/mu, 1)[0]!
     const sound = body.search(/^[ \t]*(?:对白\s*[/／]\s*音效|对白|台词|画外音|心声)[：:]/mu)
+    const visual = sound < 0 ? body : body.slice(0, sound)
+    const visualWithoutCamera = scriptVideoCameraRanges(visual).reduceRight((value, { start, end }) =>
+      value.slice(0, start) + value.slice(end), visual)
     return [index, {
       visual: {
-        text: (sound < 0 ? body : body.slice(0, sound)).trim(),
+        text: visualWithoutCamera.trim(),
         ids: references('visual', bodyStart, bodyStart + body.length),
       },
       speaker: {
@@ -249,6 +253,11 @@ export function rebindCardAssets(
   for (const id of card.assetIds) if (!assetIds.includes(id)) excluded.add(id)
   for (const id of assetIds) excluded.delete(id)
   const next = { ...card, assetIds: [...assetIds] }
+  const previouslyBound = new Set(card.assetIds)
+  const manual = new Set(card.manualAssetIds)
+  const manualAssetIds = [...new Set(assetIds.filter(id => manual.has(id) || !previouslyBound.has(id)))]
+  if (manualAssetIds.length) next.manualAssetIds = manualAssetIds
+  else delete next.manualAssetIds
   if (excluded.size) {
     next.excludedAssetIds = [...excluded]
     const keep = (id: string) => !excluded.has(id)

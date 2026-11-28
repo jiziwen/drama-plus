@@ -6,6 +6,7 @@ import {
 import {
   annotateScriptVideoAssets,
   describeScriptVideoReferenceProblem,
+  withoutCameraOnlyScriptVideoAssets,
 } from "../../../backend/src/services/script-video-mentions";
 import { scriptVideoPromptStylePrefix } from "../../../backend/src/services/script-video-style";
 import { scriptVideoStoryboardBody } from "../../../backend/src/services/script-video-format";
@@ -38,7 +39,6 @@ export function inspectPreviewCardAssets(
   context: PreviewAssetContext = {},
 ) {
   const prompt = typeof card.prompt === "string" ? card.prompt : "";
-  const shots = Array.isArray(card.shots) ? card.shots : [];
   const references = annotateScriptVideoAssets(prompt, assets, card.assetIds, {
     card,
     characters: card.characters,
@@ -47,9 +47,11 @@ export function inspectPreviewCardAssets(
     autoBind: true,
     protectedPrefix: context.stylePreset && scriptVideoPromptStylePrefix(context.stylePreset),
   });
-  const bound = new Set(card.assetIds);
+  const effectiveCard = withoutCameraOnlyScriptVideoAssets({ ...card, shots: Array.isArray(card.shots) ? card.shots : [] }, assets, references);
+  const shots = effectiveCard.shots;
+  const bound = new Set(effectiveCard.assetIds);
   const byId = new Map(assets.map(asset => [asset.id, asset]));
-  const materialUse = getPreviewMaterialUse(card, assets, context);
+  const materialUse = getPreviewMaterialUse(effectiveCard, assets, context);
   const visual = new Set([
     ...(card.openingAssetIds || []),
     ...shots.flatMap(shot => shot.visualAssetIds || []),
@@ -67,7 +69,7 @@ export function inspectPreviewCardAssets(
        hit.usage === "audio" && materialUse.audioIds.includes(hit.id)))
     .map(hit => `@${hit.name}`))];
   const warnings: { code: string; message: string }[] = [];
-  if (bound.size !== card.assetIds.length)
+  if (bound.size !== effectiveCard.assetIds.length)
     warnings.push({ code: "DUPLICATE_ASSET", message: "存在重复配图。" });
   for (const id of bound)
     if (!byId.has(id)) warnings.push({ code: "UNKNOWN_ASSET_ID", message: `素材 ID 不在本项目中：${id}` });
@@ -108,7 +110,7 @@ export function inspectPreviewCardAssets(
     .map(hit => hit.name))];
   if (inferredUnbound.length)
     warnings.push({ code: "UNBOUND_ASSET", message: `文案可能使用了尚未绑定的「${inferredUnbound.join("、")}」，可在分镜中补充素材。` });
-  return { ...references, materialUse, issues: [] as { code: string; message: string }[], warnings };
+  return { ...references, selectedAssetIds: effectiveCard.assetIds, materialUse, issues: [] as { code: string; message: string }[], warnings };
 }
 
 /** Only execution requirements block automatic actions. Natural-language
@@ -166,7 +168,7 @@ export function validatePreviewCards(
       error("SHOT_FORMAT", `${prefix}镜头字段格式无效。`);
       continue;
     }
-    const references = [card.assetIds, card.openingAssetIds, card.excludedAssetIds,
+    const references = [card.assetIds, card.openingAssetIds, card.manualAssetIds, card.excludedAssetIds,
       ...card.shots.flatMap(shot => [shot.visualAssetIds, shot.speakerAssetIds])];
     if (!Array.isArray(card.assetIds) || references.some(ids => ids !== undefined &&
       (!Array.isArray(ids) || ids.some(id => typeof id !== "string" || !id.trim())))) {

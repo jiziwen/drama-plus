@@ -659,6 +659,32 @@ test('素材引用警告与最终提示词一起返回，仍可原样复制正�
   assert.equal(app.submissions.length, 0)
 })
 
+test('准备尾帧和光线参考时立即显示分镜正文，服务端核对后才可复制最终提示词', async () => {
+  let completeSave, completePreview, requested
+  const saving = new Promise(resolve => { completeSave = resolve })
+  const preparing = new Promise(resolve => { completePreview = resolve })
+  const previewRequested = new Promise(resolve => { requested = resolve })
+  const app = controller([], { onSave: () => saving, onFinalPrompt: () => { requested(); return preparing } })
+  app.episode.cards[0].prompt = '画面与动作：@吴良展开折扇。'
+  const opened = app.showFinalPrompt({ cardId: 'a', title: '当前分镜' })
+  assert.equal(app.dialog.value, 'prompt-preview')
+  assert.equal(app.promptPreview.value.draft, app.episode.cards[0].prompt)
+  assert.equal(app.promptPreview.value.pending, true)
+  assert.equal(app.calls.length, 0)
+  completeSave()
+  await previewRequested
+  await app.copyPromptPreview()
+  assert.deepEqual(app.copied, [])
+
+  const final = finalDelivery({ prompt: '以@图片1作为尾帧参考。@吴良展开折扇。' })
+  completePreview(final)
+  await opened
+  assert.equal(app.promptPreview.value.pending, false)
+  assert.equal(app.promptPreview.value.delivery.prompt, final.prompt)
+  await app.copyPromptPreview()
+  assert.deepEqual(app.copied, [final.prompt])
+})
+
 test('保存遇到已删除素材时直接预览和复制本机当前草稿，保留现存素材编号', async () => {
   const message = '引用的素材已移除，请更新本地草稿后再保存'
   const app = controller([], {

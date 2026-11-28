@@ -1581,6 +1581,33 @@ test('读取 SQLite 旧稿补齐人物正式引用和参考绑定，保留版本
   }
 }))
 
+test('读取 SQLite 旧稿补齐画面人物时，不把机位参照还原为本段素材', async () => fixture(async (store, directory) => {
+  const project = await store.create('旧稿机位参照')
+  project.assets = [
+    { id: 'lead', name: '司琴', kind: 'character', image: '/static/uploads/lead.png' },
+    { id: 'crowd', name: '茶铺喝茶看客群', kind: 'character', image: '/static/uploads/crowd.png' },
+  ]
+  const [episode] = project.episodes
+  const camera = '机位摆在@茶铺喝茶看客群背后。'
+  const action = '@司琴回身。'
+  const prompt = `镜头 01（0–4秒）\n景别／机位／运动：${camera}\n画面与动作：${action}`
+  const card = { id: 'card', prompt, assetIds: [], shots: [{ id: 'shot', camera, action, duration: 4 }], duration: 4, version: 7 }
+  episode.cards = [card]
+  await store.update(project.id, project, project.revision)
+  const db = new Database(join(directory, 'workspace.sqlite3'))
+  try {
+    db.prepare("UPDATE episodes SET document=json_set(document,'$.cards',json(?)) WHERE project_id=?").run(JSON.stringify([card]), project.id)
+    const disk = db.prepare('SELECT document FROM episodes WHERE project_id=?').pluck().get(project.id)
+    const read = (await store.episode(project.id, episode.id)).episode.cards[0]
+    assert.deepEqual(read.assetIds, ['lead'])
+    assert.equal(read.version, 7)
+    assert.match(read.prompt, /机位摆在@?茶铺喝茶看客群背后。/u)
+    assert.equal(db.prepare('SELECT document FROM episodes WHERE project_id=?').pluck().get(project.id), disk)
+  } finally {
+    db.close()
+  }
+}))
+
 test('当前集旧稿读取与生成快照使用同一场景补齐，保留手动解绑和历史成片', async () => fixture(async (store, directory) => {
   const project = await store.create('旧分镜场景参考')
   const image = '/static/uploads/lobby.png'

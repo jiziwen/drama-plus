@@ -18,7 +18,16 @@ const dialogueHeading = /^[ \t]*(?:对白[ \t]*[/／][ \t]*音效|对白|台词|
 const foleyHeading = /^[ \t]*(?:物理音效|音效|环境音|环境声|背景音效|背景音|拟音|动作音|音乐|配乐|BGM|SFX)(?:[（(][^）)\n]*[）)])?[ \t]*[：:]/iu
 const foleySuffix = /[（(](?:物理音效|音效|环境音|环境声|背景音效|背景音|拟音|动作音|BGM|SFX)[）)][。.!！?？ \t]*$/iu
 const speakerHeading = /^[ \t]*(?:@(?=[\p{L}\p{N}])|(?=[^：:\r\n]+[：:][ \t]*[“「『"{]))[\p{L}\p{N}·・、_ /-]+(?:[ \t]*(?:（[^）]*）|\([^)]*\)|【[^】]*】|\[[^\]]*\]))*[ \t]*[：:]/u
-const visualHeading = /^[ \t]*(?:镜头[ \t]*\d|(?:前镜回顾|←承上|→衔接(?:至[^：:\r\n]*)?|末镜停在|开场画面|场景(?:[一二三四五六七八九十\d]+)?|人物|角色设定|总时长|景别(?:[ \t]*[／/][ \t]*机位[ \t]*[／/][ \t]*运动)?|画面与动作|独立生成|本段事件)[ \t]*[：:])/u
+const cameraLabel = '(?:景别|机位|运镜|镜头运动|镜头移动|摄影机运动|运动)'
+const cameraHeading = `${cameraLabel}(?:[\\t ]*[／/、][\\t ]*${cameraLabel})*[\\t ]*[：:]`
+const cameraStart = new RegExp(`^[\\t ]*${cameraHeading}`, 'u')
+const inlineCamera = new RegExp(`(?:^|[；;。])[\\t ]*${cameraHeading}`, 'u')
+const inlineFields = new RegExp(`(?:^|[；;。])[\\t ]*(?:(${cameraHeading})|(?:画面与动作|画面|动作|对白(?:[\\t ]*[/／][\\t ]*音效)?|台词|旁白|画外音|心声|情绪提示|音效|环境音|拟音|补充镜头指示)[\\t ]*[：:])`, 'gu')
+const visualHeading = /^[ \t]*(?:镜头[ \t]*\d|(?:前镜回顾|←承上|→衔接(?:至[^：:\r\n]*)?|末镜停在|开场画面|场景(?:[一二三四五六七八九十\d]+)?|人物|角色设定|总时长|画面与动作|独立生成|本段事件)[ \t]*[：:])/u
+
+export function isScriptVideoCameraHeading(text: string) {
+  return cameraStart.test(text)
+}
 
 export function scriptVideoShotHeadings(prompt: string) {
   return [...prompt.matchAll(numberedShot)].map(match => ({ start: match.index!, index: Number(match[1]) - 1 }))
@@ -36,6 +45,47 @@ function enclosedText(text: string) {
 
 function outside(spans: ReturnType<typeof enclosedText>, index: number) {
   return !spans.some(span => span.start <= index && index < span.end)
+}
+
+/** Only camera-field contents are excluded, including in older same-line prompts. */
+export function scriptVideoCameraRanges(text: string): { start: number; end: number }[] {
+  const ranges: { start: number; end: number }[] = []
+  let continuation: { start: number; end: number } | undefined
+  for (const line of text.matchAll(/[^\r\n]+/gu)) {
+    if (!inlineCamera.test(line[0])) {
+      if (continuation && /^(?:\r\n|\r|\n)$/u.test(text.slice(continuation.end, line.index)) &&
+          /^(?:[\t ]+\S|(?:由|从|沿|以|镜头向|摄影机|相机|缓慢推|缓慢拉|缓慢移))/u.test(line[0]) &&
+          !visualHeading.test(line[0]) && !dialogueHeading.test(line[0]) && !speakerHeading.test(line[0]) && !foleyHeading.test(line[0]) &&
+          !/^[\t ]*(?:情绪提示|补充镜头指示|画面|动作)[\t ]*[：:]/u.test(line[0])) {
+        continuation.end = line.index! + line[0].length
+      } else continuation = undefined
+      continue
+    }
+    const spans = enclosedText(line[0])
+    const fields = [...line[0].matchAll(inlineFields)].filter(field => outside(spans, field.index!))
+    continuation = undefined
+    for (const [index, field] of fields.entries()) {
+      if (!field[1]) continue
+      const next = fields[index + 1]
+      const range = { start: line.index! + field.index! + field[0].length, end: line.index! + (next?.index ?? line[0].length) }
+      ranges.push(range)
+      if (!next) continuation = range
+    }
+  }
+  return ranges
+}
+
+export function plainScriptVideoCameraText(text: string) {
+  return text.replace(/(?<![A-Za-z0-9_.-])@(?=[\p{L}\p{N}])/gu, '')
+}
+
+export function plainScriptVideoCameraFields(text: string, ranges = scriptVideoCameraRanges(text)) {
+  let cursor = 0, output = ''
+  for (const { start, end } of ranges) {
+    output += text.slice(cursor, start) + plainScriptVideoCameraText(text.slice(start, end))
+    cursor = end
+  }
+  return output + text.slice(cursor)
 }
 
 function priorOpeningEnd(line: string) {
@@ -98,7 +148,7 @@ function soundRanges(line: string, origin: number): ScriptVideoAssetScopeRange[]
     const value = current.slice(start, end)
     // A same-line visual column starts a new context, even if a manual edit
     // uses punctuation instead of a newline between the two columns.
-    if (visualHeading.test(value)) break
+    if (visualHeading.test(value) || isScriptVideoCameraHeading(value)) break
     if (foleyHeading.test(value) || (foleySuffix.test(value) && !speakerHeading.test(value))) {
       result.push({ start: origin + start, end: origin + end, kind: 'sound' })
     } else {
@@ -137,7 +187,7 @@ export function scriptVideoAssetScopeRanges(text: string, dialogue = false): Scr
       inSound = false
       continue
     }
-    if (recap && !visualHeading.test(line)) {
+    if (recap && !visualHeading.test(line) && !isScriptVideoCameraHeading(line)) {
       recap.end = end
       continue
     }
@@ -165,13 +215,13 @@ export function scriptVideoAssetScopeRanges(text: string, dialogue = false): Scr
     const heading = dialogueHeading.exec(line)
     const explicitSound = foleyHeading.test(line)
     const attributed = speakerHeading.test(line)
-    if (summary && !heading && !explicitSound && !attributed && !visualHeading.test(line)) {
+    if (summary && !heading && !explicitSound && !attributed && !visualHeading.test(line) && !isScriptVideoCameraHeading(line)) {
       summary.end = end
       continue
     }
     summary = undefined
     if (heading || attributed) inSound = true
-    else if (visualHeading.test(line)) inSound = false
+    else if (visualHeading.test(line) || isScriptVideoCameraHeading(line)) inSound = false
     if (inSound || explicitSound) {
       const offset = heading?.[0].length ?? 0
       result.push(...soundRanges(line.slice(offset), start + offset))

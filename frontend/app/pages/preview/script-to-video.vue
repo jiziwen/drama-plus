@@ -756,7 +756,12 @@
                 <span>{{ promptPreview.context }}</span>
                 <span v-if="promptPreview.delivery" class="vp-final-prompt-count">{{ promptPreview.delivery.prompt.length }} 字</span>
               </p>
-              <p v-if="promptPreview.pending" class="vp-muted" role="status">正在准备提示词…</p>
+              <template v-if="promptPreview.pending">
+                <p class="vp-muted" role="status">{{ promptPreview.draft
+                  ? '当前分镜正文。正在核对最终提示词与参考素材…'
+                  : '正在准备提示词…' }}</p>
+                <pre v-if="promptPreview.draft" class="vp-final-prompt-draft" tabindex="0" aria-label="当前分镜正文">{{ promptPreview.draft }}</pre>
+              </template>
               <p v-else-if="promptPreview.error" class="vp-ai-error-detail" role="alert">{{ promptPreview.error }}</p>
               <template v-else-if="promptPreview.delivery">
                 <p v-if="promptPreview.delivery.pending" class="vp-final-prompt-warning" role="status">{{ promptPreview.delivery.pending }}</p>
@@ -2992,6 +2997,7 @@ function chooseBinding(asset: PreviewAsset) {
     return {
       ...item,
       assetIds: ids,
+      manualAssetIds: [...new Set([...(item.manualAssetIds ?? []).filter(id => ids.includes(id)), ...(!remove ? [asset.id] : [])])],
       summary,
       version: item.version + 1,
       status: 'draft' as const,
@@ -4012,6 +4018,7 @@ const promptPreview = ref<{
   request: number
   title: string
   context: string
+  draft?: string
   delivery: FinalPromptDelivery | null
   pending: boolean
   error: string
@@ -4715,7 +4722,8 @@ async function showFinalPrompt({ cardId, title, task, event }: {
   const request = ++promptPreviewRequest
   promptReturnFocus = (event?.currentTarget as HTMLElement | undefined) || null
   const context = task ? ['任务记录', task.modelLabel].filter(Boolean).join(' · ') : '当前设置预览'
-  promptPreview.value = { request, title, context, delivery: null, pending: true, error: '', copied: null }
+  const draft = task ? undefined : currentEpisode.value.cards.find(item => item.id === cardId)?.prompt?.trim()
+  promptPreview.value = { request, title, context, draft, delivery: null, pending: true, error: '', copied: null }
   dialog.value = 'prompt-preview'
   const active = () => alive && dialog.value === 'prompt-preview' && promptPreview.value?.request === request &&
     currentProject.value.id === projectId && currentEpisode.value.id === episodeId
@@ -4985,7 +4993,8 @@ async function uploadPromptMedia(file: File, kind: 'image' | 'audio') {
     project.assets.push(asset)
     const episode = project.episodes.find(item => item.id === episodeId)
     const card = episode?.cards.find(item => item.id === cardId)
-    if (episode && card) updateCard({ ...card, assetIds: [...card.assetIds, asset.id] }, episode)
+    if (episode && card) updateCard({ ...card, assetIds: [...card.assetIds, asset.id],
+      ...(kind === 'image' && { manualAssetIds: [...(card.manualAssetIds ?? []), asset.id] }) }, episode)
     await saveProjectNow(projectId)
     toast.success(card ? `已加入本段参考素材，输入 @${name} 引用` : `${label}已保存到项目资产，输入 @${name} 引用`)
   } catch (error) {
@@ -6893,6 +6902,17 @@ onBeforeUnmount(() => {
 }
 .vp-final-prompt-count {
   margin-inline-start: auto;
+}
+.vp-final-prompt-draft {
+  margin: 0;
+  padding: 14px;
+  border-radius: 10px;
+  background: var(--surface-input);
+  color: var(--text-2);
+  font: inherit;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .vp-final-prompt-warning {
   margin: 0;

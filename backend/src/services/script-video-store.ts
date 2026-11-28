@@ -11,9 +11,9 @@ import { isDeepStrictEqual } from 'node:util'
 import 'dotenv/config'
 import { SCRIPT_VIDEO_CUSTOM_STYLE_LIMIT, isScriptVideoCustomStyleId, isScriptVideoStylePreset, scriptVideoPromptStylePrefix, styleVisualSpecs, type ScriptVideoStylePreset } from './script-video-style.js'
 import { getCurrentScriptVideoStyleRevision, resolveBuiltinStyleSnapshot } from './script-video-style-source.js'
-import { annotateScriptVideoAssets, scriptVideoAudioReferences, scriptVideoMaterialIds, type MentionAsset } from './script-video-mentions.js'
+import { annotateScriptVideoAssets, scriptVideoAudioReferences, scriptVideoMaterialIds, withoutCameraOnlyScriptVideoAssets, type MentionAsset } from './script-video-mentions.js'
 import { annotateScriptVideoInnerOs } from './script-video-inner-os.js'
-import { hasScriptVideoShotHeadings } from './script-video-asset-scope.js'
+import { hasScriptVideoShotHeadings, plainScriptVideoCameraFields } from './script-video-asset-scope.js'
 import { replaceScriptVideoPromptStyle } from './script-video-format.js'
 import { getScriptVideoOutlineDurationIssues, scriptVideoAssetImageStatuses, scriptVideoVoiceDescriptionSchema, type ScriptVideoVoiceAudio, type ScriptVideoVoiceDescription } from './script-video-types.js'
 import { confirmScriptVideoVoiceAge, scriptVideoVoiceProfileSchema, setScriptVideoProfileAudio } from './script-video-project-voices.js'
@@ -343,13 +343,15 @@ function restoreSavedPromptReferences(project: ScriptVideoProject, episodes = pr
     const prefix = validStyle(style) ? scriptVideoPromptStylePrefix(style) : undefined
     const speakers = [...characters.values()].map(asset => asset.name).concat(episode.production?.characters?.map((role: { name: string }) => role.name) ?? [])
     for (const card of episode.cards || []) {
-      const { prompt: savedPrompt, assetIds } = card
+      const { prompt: savedPrompt } = card
       if (typeof savedPrompt !== 'string' || !savedPrompt.trim()) continue
       const referenceAudioNames = [...scriptVideoAudioReferences(project.assets, savedPrompt).keys()]
       const prompt = annotateScriptVideoInnerOs(savedPrompt, { protectedPrefix: prefix, speakers, referenceAudioNames, preserveExplicitInnerOs: true })
       card.prompt = prompt
-      if (!project.assets.length || !Array.isArray(assetIds)) continue
+      if (!project.assets.length || !Array.isArray(card.assetIds)) continue
       const scan = scanCardReferences(card, prompt, project.assets, episode.production?.characters, prefix)
+      if (Array.isArray(card.shots)) Object.assign(card, withoutCameraOnlyScriptVideoAssets(card, project.assets, scan))
+      const { assetIds } = card
       const missing = missingExplicitCardAssets(card, prompt, scan)
       const excluded = new Set(card.excludedAssetIds)
       const references = scan.mentions.filter(hit => !hit.literal && characters.has(hit.id) && !excluded.has(hit.id))
@@ -360,7 +362,7 @@ function restoreSavedPromptReferences(project: ScriptVideoProject, episodes = pr
         output += prompt.slice(cursor, hit.start) + '@' + hit.name
         cursor = hit.end
       }
-      if (references.length) card.prompt = output + prompt.slice(cursor)
+      if (references.length) card.prompt = plainScriptVideoCameraFields(output + prompt.slice(cursor))
       if (missing.length || references.length) card.assetIds = [...new Set([...assetIds, ...missing, ...references.map(hit => hit.id)])]
       if (!card.manuallyAdded && !card.promptNeedsSync && !card.videoUrl && card.status !== 'ready' && Array.isArray(card.shots)) {
         const completed = completeScriptVideoSceneReferences(card, { script: episode.confirmedScript, assets: project.assets })
@@ -384,6 +386,7 @@ function cardReferences(card: any, assets: MentionAsset[], production: any, styl
   })
   if (!assets.length) return { ...card, prompt }
   const result = scanCardReferences(card, prompt, assets, production?.characters, protectedPrefix)
+  if (Array.isArray(card.shots)) card = withoutCameraOnlyScriptVideoAssets({ ...card, prompt }, assets, result)
   const explicit = new Set(missingExplicitCardAssets(card, prompt, result))
   const references = result.mentions.filter(mention => (mention.usage !== 'context' || !mention.literal) &&
     (!mention.explicit || explicit.has(mention.id))).map(mention => mention.id)
@@ -392,7 +395,7 @@ function cardReferences(card: any, assets: MentionAsset[], production: any, styl
   const assigned = hasScriptVideoShotHeadings(prompt)
     ? card.assetIds
     : card.assetIds.filter((id: string) => !contextual.has(id) || used.has(id))
-  return { ...card, prompt: result.text, assetIds: [...new Set([...assigned, ...references])] }
+  return { ...card, prompt: plainScriptVideoCameraFields(result.text), assetIds: [...new Set([...assigned, ...references])] }
 }
 
 /** Built-in presets follow the source; authored custom snapshots and archived
@@ -512,6 +515,8 @@ function sanitizeProject(
           (!Array.isArray(card.excludedAssetIds) || !card.excludedAssetIds.every(validId))) {
         throw new ScriptVideoStoreError('分镜的已移除参考素材标识无效')
       }
+      if (card.manualAssetIds !== undefined && (!Array.isArray(card.manualAssetIds) || !card.manualAssetIds.every(validId)))
+        throw new ScriptVideoStoreError('分镜的手选参考素材标识无效')
       if ((card.sourceSceneIds !== undefined && (!Array.isArray(card.sourceSceneIds) ||
           card.sourceSceneIds.some((id: unknown) => typeof id !== 'string' || !id || id.length > 80))) ||
           (card.assetBindingRequirements !== undefined && (!Array.isArray(card.assetBindingRequirements) ||
@@ -534,7 +539,10 @@ function sanitizeProject(
         : prior?.prompt
       // Only a new card added to an existing video-production episode can use
       // a free-form prompt. A snapshot edit cannot change a saved card's origin.
-      const { manuallyAdded, videoVersions: _incomingVersions, referenceFrameSettings, ...cardContent } = card
+      const { manuallyAdded, videoVersions: _incomingVersions, referenceFrameSettings, manualAssetIds, ...cardContent } = card
+      const manualImages = (manualAssetIds ?? (partialWrite ? undefined : prior?.manualAssetIds))?.filter((id: string) =>
+        card.assetIds?.includes(id) && !card.excludedAssetIds?.includes(id))
+      if (manualImages?.length) cardContent.manualAssetIds = [...new Set(manualImages)]
       const incomingReferences = referenceFrameSettings === undefined && !partialWrite
         ? prior?.referenceFrameSettings : referenceFrameSettings
       try {
@@ -665,7 +673,7 @@ function propagateSharedEdits(before: ScriptVideoProject, after: ScriptVideoProj
       for (const key of ['prompt', 'openingRecap', 'opening', 'scene', 'characters', 'independentGeneration', 'ending']) {
         if (typeof card[key] === 'string') card[key] = rewrite(card[key])
       }
-      for (const key of ['assetIds', 'openingAssetIds', 'excludedAssetIds']) {
+      for (const key of ['assetIds', 'openingAssetIds', 'manualAssetIds', 'excludedAssetIds']) {
         if (removed.size && Array.isArray(card[key])) card[key] = card[key].filter((id: string) => !removed.has(id))
       }
       for (const shot of card.shots || []) {

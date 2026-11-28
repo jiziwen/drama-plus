@@ -1,6 +1,6 @@
 import { scriptVideoCharacterBase } from './script-video-asset-identity.js'
 import { normalizeScriptVideoSceneNumbers, scriptVideoAssetSourceScenes, type ScriptVideoAssetBindingRequirement } from './script-video-asset-scenes.js'
-import { scriptVideoAssetScopeRanges, scriptVideoShotHeadings } from './script-video-asset-scope.js'
+import { scriptVideoAssetScopeRanges, scriptVideoCameraRanges, scriptVideoShotHeadings } from './script-video-asset-scope.js'
 import { annotateScriptVideoAssets, isScriptVideoGenericCharacterRole, isScriptVideoSingleHanName, scriptVideoMaterialEvidenceText, type MentionAsset } from './script-video-mentions.js'
 import type { ScriptVideoAsset, ScriptVideoInput } from './script-video-types.js'
 
@@ -242,7 +242,7 @@ function pruneObsoleteSceneBindings<T extends BindingCard>(card: T, assets: read
     return candidateIds.length === requirement.candidateIds.length ? [requirement] : [{ ...requirement, candidateIds }]
   })
   if (!dropped.size && next.length === requirements.length && next.every((item, index) => item === requirements[index])) return card
-  for (const text of [card.prompt, card.scene, card.opening, ...card.shots.flatMap(shot => [shot.camera, shot.action])]) {
+  for (const text of [card.prompt, card.scene, card.opening, ...card.shots.map(shot => shot.action)]) {
     if (!dropped.size) break
     if (!text?.includes('@')) continue
     for (const hit of annotateScriptVideoAssets(text, assets, card.assetIds).mentions) {
@@ -311,7 +311,7 @@ export function completeScriptVideoSceneReferences<T extends BindingCard>(card: 
       if (!card.assetIds.includes(id)) added.add(id)
       return shot
     }
-    const visualIds = [...(shot.visualAssetIds ?? []), ...explicitIds([shot.camera, shot.action, promptShots.get(index)].join('\n')),
+    const visualIds = [...(shot.visualAssetIds ?? []), ...explicitIds([shot.action, promptShots.get(index)].join('\n')),
       ...(index === 0 ? card.openingAssetIds ?? [] : [])].filter(id => backgroundIds.has(id))
     if (visualIds.some(prior => prior !== id)) return shot
     if (!shot.visualAssetIds) {
@@ -400,12 +400,14 @@ function scopedAssets(text: string | undefined, assets: readonly Asset[], boundI
 
 function visibleBindingText(text: string) {
   const mask = (value: string) => value.replace(/[^\r\n]/g, ' ')
+  const ranges = [...scriptVideoAssetScopeRanges(text), ...scriptVideoCameraRanges(text)].sort((a, b) => a.start - b.start)
   let start = 0
-  const visible = scriptVideoAssetScopeRanges(text).map(range => {
-    const part = text.slice(start, range.start) + mask(text.slice(range.start, range.end))
+  const visible: string[] = []
+  for (const range of ranges) {
+    if (range.end <= start) continue
+    visible.push(text.slice(start, range.start), mask(text.slice(Math.max(start, range.start), range.end)))
     start = range.end
-    return part
-  })
+  }
   visible.push(text.slice(start))
   return visible.join('')
     .replace(/^[ \t]*(?:对白(?:[ \t]*[/／][ \t]*音效)?|台词|画外音|心声)[ \t]*[：:].*$/gmu, mask)
@@ -427,7 +429,7 @@ function activeAssetBindingRequirements(card: BindingCard, assets: readonly Asse
   const visual = [
     { index: 0, ids: card.openingAssetIds ?? [], text: opening ?? card.opening ?? (sections.size === 1 ? header : '') },
     ...card.shots.map((shot, index) => ({ index, ids: [...(shot.visualAssetIds ?? []), ...(shot.speakerAssetIds ?? [])],
-      text: sections.get(index) ?? [shot.camera, shot.action].join('\n') })),
+      text: sections.get(index) ?? shot.action ?? '' })),
   ].map(({ index, ids, text }) => {
     const prose = visibleBindingText(text)
     const named = text.includes('@') ? scopedAssets(text, assets, card.assetIds).filter(hit => hit.explicit) : []
@@ -485,7 +487,7 @@ export function scriptVideoAssetBindingIssues(card: BindingCard, assets: readonl
     : []
   const shotReferences = (shot: BindingShot, index: number) => shotAssetIds[index] ??= [
     ...(shot.visualAssetIds ?? []), ...(shot.speakerAssetIds ?? []),
-    ...scopedAssets([shot.camera, shot.action].join('\n'), assets, card.assetIds).map(hit => hit.id),
+    ...scopedAssets(shot.action, assets, card.assetIds).map(hit => hit.id),
     ...explicitReferences(shot.dialogue, true),
   ]
   return list.flatMap(requirement => {
@@ -567,7 +569,7 @@ export function resolveScriptVideoAssetBinding<T extends BindingCard>(card: T, k
   const withReference = (ids: string[] | undefined) => [...new Set([...(ids ?? []), assetId])]
   const shots = bound.shots.map((shot, index) => {
     if (!bindingScope(bound, index).some(item => item.key === key)) return shot
-    const text = sections.get(index) ?? [shot.camera, shot.action, shot.dialogue && `对白：${shot.dialogue}`].filter(Boolean).join('\n')
+    const text = sections.get(index) ?? [shot.action, shot.dialogue && `对白：${shot.dialogue}`].filter(Boolean).join('\n')
     const visual = contains(visibleBindingText(text), target.label)
     const speaker = selected.kind === 'character' && scopedAssets(text, [selected], [assetId]).some(hit => hit.usage === 'speaker')
     return { ...shot, ...(visual && { visualAssetIds: withReference(shot.visualAssetIds) }),
@@ -590,7 +592,7 @@ export function planScriptVideoCardBindings<T extends BindingCard>(card: T, inpu
   const proposed = approvedScenes.length ? approvedScenes : scriptVideoCardSceneIds(card, scenes)
   const byId = new Map(input.assets.map(asset => [asset.id, asset]))
   const explicitIds = new Set(assetIdsInCard(card))
-  const visualText = [card.scene, card.opening, ...card.shots.flatMap(shot => [shot.camera, shot.action])].filter(Boolean).join('\n')
+  const visualText = [card.scene, card.opening, ...card.shots.map(shot => shot.action)].filter(Boolean).join('\n')
   const inferred = new Set([
     ...scopedAssets(visualText, input.assets, card.assetIds).map(hit => hit.id),
     ...card.shots.flatMap(shot => scopedAssets(shot.dialogue, input.assets, card.assetIds, true).map(hit => hit.id)),

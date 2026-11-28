@@ -56,7 +56,7 @@ test('相同的资产身份贯穿简称、OS、缩略图、实际音色和原话
   const result = buildScriptVideoDelivery(card, assets, options)
   assert.deepEqual(result.images.map(a => a.id), ['costume','first'])
   assert.deepEqual(result.voices.map(v => v.asset.id), ['costume'])
-  assert.match(result.prompt, /跟随@图片1顾凌天。/)
+  assert.match(result.prompt, /^景别／机位／运动：跟随顾凌天。$/mu)
   assert.match(result.prompt, /对白／音效：@图片1顾凌天_龙袍 @音频1【缓慢】\(OS\) ：“王禄拿走了玉佩。”/)
   assert.match(result.prompt, /@图片1顾凌天_龙袍的角色音色参考@音频1/)
   assert.doesNotMatch(result.prompt, /@图片\d+\s*(?:玉佩|同图)/)
@@ -132,9 +132,11 @@ test('ZIP 内模型提示词与 Markdown、JSON 完全一致，附件去重且�
   })
   const jimengFiles = await zipFiles(zip)
   const jimengPrompt = jimengFiles.get('片段01/视频提示词.txt')!.toString()
-  assert.match(jimengPrompt, /^参考素材：[\s\S]+@图片3 是 @同图 的道具形态参考图/u)
-  assert.match(jimengPrompt, /@音频6 是 @顾凌天_龙袍/u)
-  assert.match(jimengPrompt.split('镜头 01')[1], /@顾凌天_龙袍 @音频6/u)
+  assert.match(jimengPrompt, /^参考素材：[\s\S]+@图片3 是 同图 的道具形态参考图/u)
+  assert.match(jimengPrompt, /@音频6 是 顾凌天_龙袍/u)
+  const jimengBody = jimengPrompt.split('镜头 01')[1]
+  assert.match(jimengBody, /顾凌天_龙袍[^\r\n]*“王禄拿走了玉佩。”/u)
+  assert.doesNotMatch(jimengBody, /@(?:图片\d+|音频\d+|顾凌天_龙袍|王禄)/u)
   assert.ok(jimengFiles.get('分镜脚本.md')!.toString().includes(jimengPrompt))
   assert.equal(JSON.parse(jimengFiles.get('分镜数据.json')!.toString()).cards[0].prompt, jimengPrompt)
   assert.ok(jimengFiles.has('片段01/音频6-顾凌天_龙袍.wav'))
@@ -462,12 +464,12 @@ test('Seedance 2.5 以实际镜头决定角色顺序，现场对白和纯心声�
     assert.match(move, /@图片1王禄是该动作的主体.*由同一人接续下一镜/u)
     assert.match(first, /@图片1王禄保持对应参考图的造型，是本镜画内发声者/u)
     assert.match(first, /@图片1王禄 @音频1：\{臣遵旨！\}/u)
-    assert.match(inner, /景别／机位／运动：中近景正面，@图片1王禄面部与胸前。/u)
+    assert.match(inner, /景别／机位／运动：中近景正面，王禄面部与胸前。/u)
     assert.match(inner, /@图片1王禄抱拳的手收紧/u)
     assert.match(inner, /台词：@图片1王禄 @音频1\(OS\) ：“我也照抓不误！”/u)
     assert.doesNotMatch(inner, /角色闭口|嘴唇不动|不对口型|嘴部始终在画框外|声音：/u)
-    assert.match(reaction, /反打@图片2顾凌天_龙袍的面部特写/u)
-    assert.match(mixed, /@图片1王禄正面近景/u)
+    assert.match(reaction, /反打顾凌天_龙袍的面部特写/u)
+    assert.match(mixed, /景别／机位／运动：王禄正面近景/u)
     assert.match(mixed, /@图片1王禄 @音频1：\{请听我说。\}/u)
   }
 })
@@ -478,7 +480,10 @@ test('当前项目的 ComfyUI、火山 2.0 与外部交付均使用所选模型�
     assert.equal(portableDeliveryCard(card,assets,{model}).prompt,delivery.prompt)
     if (model === 'wf-minimax-h3') assert.ok(delivery.prompt.includes('<Picture 2>顾凌天'))
     if (model === 'doubao-seedance-2-0-fast') assert.ok(delivery.prompt.includes('镜头01\n'))
-    if (model === 'wan3.0-video') assert.match(delivery.prompt, /跟随图2顾凌天/)
+    if (model === 'wan3.0-video') {
+      assert.match(delivery.prompt, /^景别／机位／运动：跟随顾凌天。$/mu)
+      assert.match(delivery.prompt, /画面与动作：图2顾凌天_龙袍转身。/u)
+    }
   }
 })
 

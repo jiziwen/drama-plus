@@ -698,7 +698,7 @@ const assetContext = computed(() => ({
 }))
 const selectedAssets = computed(() => {
   const { imageIds, speakerIds, audioIds } = materialUse.value
-  const ids = new Set([...props.card.assetIds, ...imageIds, ...speakerIds, ...audioIds])
+  const ids = new Set([...analyzedPrompt.value.selectedAssetIds, ...imageIds, ...speakerIds, ...audioIds])
   return [...ids].map(id => projectAssetsById.value.get(id)).filter((asset): asset is PreviewAsset => !!asset)
 })
 function materialStatus(asset: PreviewAsset) {
@@ -1131,7 +1131,7 @@ function updateShot(
     if (shot[field] === value) return shot
     const next = { ...shot, [field]: value }
     if (field === 'dialogue') delete next.speakerAssetIds
-    else delete next.visualAssetIds
+    else if (field === 'action') delete next.visualAssetIds
     return next
   })
   updateShots(shots)

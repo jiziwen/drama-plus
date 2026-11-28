@@ -123,7 +123,13 @@ test('修仙分镜的说话人带门派前缀时按明确引用的角色附上�
   for (const promptMode of ['reference-guide', 'inline'] as const) {
     const delivery = buildScriptVideoDelivery(card, [elder, other], { provider: 'jimeng', model: 'jimeng-seedance-2.5', promptMode })
     assert.deepEqual(delivery.voices.map(voice => voice.asset.id), [elder.id])
-    assert.match(delivery.prompt, /【配音指令】：听雪楼@(?:图片\d+)?大长老｜[^\n]*音色参考@音频1[^\n]*「你这个师傅怎么当的，连徒弟都看不好！」/u)
+    if (promptMode === 'reference-guide') {
+      assert.match(delivery.prompt, /@音频1 是 大长老 的配音音色参考/u)
+      assert.match(delivery.prompt, /【配音指令】：听雪楼大长老｜[^\n]*「你这个师傅怎么当的，连徒弟都看不好！」/u)
+      assert.doesNotMatch(delivery.prompt.split('【配音指令】')[1], /@音频\d+/u)
+    } else {
+      assert.match(delivery.prompt, /【配音指令】：听雪楼@(?:图片\d+)?大长老｜[^\n]*音色参考@音频1[^\n]*「你这个师傅怎么当的，连徒弟都看不好！」/u)
+    }
     assert.doesNotMatch(delivery.prompt, /^动作：.*@音频/mu)
   }
   assert.deepEqual(getScriptVideoMissingVoices(card, [{ ...elder, voiceAudio: undefined }, other]), ['大长老'])
@@ -143,7 +149,11 @@ test('独立音效、署名旁白和显式齐声都使用实际发声者各自�
     const delivery = buildScriptVideoDelivery(source, roles, { promptMode: 'reference-guide' })
     assert.deepEqual(delivery.voices.map(voice => voice.asset.name), [...expected], line)
     const sound = delivery.prompt.split('\n').at(-1)!
-    for (const [index, name] of expected.entries()) assert.match(sound, new RegExp(`${name} @音频${index + 1}`, 'u'))
+    for (const [index, name] of expected.entries()) {
+      assert.ok(delivery.prompt.includes(`@音频${index + 1} 是 ${name} 的配音音色参考`))
+      assert.ok(sound.includes(name))
+    }
+    assert.doesNotMatch(sound, /@/u)
     assert.deepEqual(getScriptVideoMissingVoices(source, roles.map(role => ({ ...role, voiceAudio: undefined }))), [...expected])
   }
   assert.deepEqual(buildScriptVideoDelivery({ ...card, prompt: header + '音效：门轴轻响。' }, roles).voices, [])

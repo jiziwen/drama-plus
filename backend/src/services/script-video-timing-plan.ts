@@ -55,6 +55,7 @@ export function applyEpisodeTiming(
     combat: original[index]?.combat ?? false,
     dialogueThrough: plan.dialogueThrough?.[index] ?? (sameTiming ? original[index]?.dialogueThrough : undefined),
     assetIds,
+    ...(original[index]?.manualAssetIds?.length && { manualAssetIds: original[index].manualAssetIds }),
     duration,
     shots: [],
     prompt: '',

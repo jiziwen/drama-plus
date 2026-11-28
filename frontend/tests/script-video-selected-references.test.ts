@@ -67,6 +67,28 @@ function editPrompt(textarea: any, text: string) {
   return textarea.props['onUpdate:modelValue'](text, { value: text, selectionStart: text.length, selectionEnd: text.length })
 }
 
+test('提示词里只改机位时保留镜头已确认的配图', () => {
+  const card = setup(['guard']).props.card
+  card.prompt = '镜头 01（0–3秒）\n景别／机位／运动：中景，从门侧缓推。\n画面与动作：他回过头。'
+  card.shots = [{ id: 'shot', duration: 3, camera: '中景，从门侧缓推。', action: '他回过头。', dialogue: '', visualAssetIds: ['guard'] }]
+  const reframed = preview.replacePreviewPrompt(card, card.prompt.replace('从门侧缓推', '从窗边平移'))
+  assert.deepEqual(reframed.shots[0].visualAssetIds, ['guard'])
+  const newAction = preview.replacePreviewPrompt(card, card.prompt.replace('他回过头', '房间空无一人'))
+  assert.equal(newAction.shots[0].visualAssetIds, undefined)
+})
+
+test('直接打开本地旧稿时，参考素材列表排除只出现在机位的自动绑图', () => {
+  const crowd = makeAsset('crowd', '茶铺喝茶看客群')
+  const editor = setup(['guard', crowd.id], { assetList: [assets[0]!, crowd] })
+  editor.props.card.prompt = '镜头 01（0–3秒）\n景别／机位／运动：从@茶铺喝茶看客群旁缓推。\n画面与动作：@侍卫回身。'
+  editor.props.card.shots = [{ id: 'shot', duration: 3, camera: '从@茶铺喝茶看客群旁缓推。',
+    action: '@侍卫回身。', dialogue: '', visualAssetIds: ['guard', crowd.id] }]
+  assert.deepEqual(editor.names(), ['移除参考素材 侍卫'])
+
+  editor.props.card.manualAssetIds = [crowd.id]
+  assert.deepEqual(editor.names(), ['移除参考素材 侍卫', '移除参考素材 茶铺喝茶看客群'])
+})
+
 test('待确认素材按钮悬停和键盘聚焦显示原图，只有点击提交选择', async () => {
   const wooden: preview.PreviewAsset = { id: 'wooden', kind: 'prop', name: '县衙待客木椅', image: '/static/wooden.png', originalName: '木椅' }
   const rocking: preview.PreviewAsset = { id: 'rocking', kind: 'prop', name: '客房木摇椅', image: '/static/rocking.png', originalName: '木椅' }
@@ -211,6 +233,10 @@ test('编辑正式镜头后配图随画面更新，保留候选和未修改的�
   const duration = editor.nodes().find(n => n.props?.['aria-label'] === '镜头 1 时长（秒）')
   duration.props.onChange({ target: { value: '4' } })
   assert.deepEqual(Array.from(editor.props.card.shots[0]!.visualAssetIds ?? []), ['guard'])
+  const camera = editor.nodes().find(n => n.props?.['aria-label'] === '镜头 1 景别／机位／运动')
+  camera.props.onInput({ target: { value: '从门边转成侧面近景。' } })
+  assert.equal(editor.props.card.shots[0]!.camera, '从门边转成侧面近景。')
+  assert.deepEqual(Array.from(editor.props.card.shots[0]!.visualAssetIds ?? []), ['guard'])
   const action = editor.nodes().find(n => n.props?.['aria-label'] === '镜头 1 画面与动作')
   action.props.onInput({ target: { value: '@第三人 从门外进来。' } })
   editor.tabButtons().find(n => n.children === '视频提示词').props.onClick()
@@ -340,16 +366,30 @@ test('冷暖色预设折叠显示，编辑正文后仍保存完整风格内容�
 test('移除绑定也会从开场、逐镜配图和声音标注移除该素材', () => {
   const editor = setup(['guard', 'night'])
   Object.assign(editor.props.card, {
+    manualAssetIds: ['guard', 'night'],
     openingAssetIds: ['guard', 'night'],
     prompt: '←承上：@侍卫 和 @侍卫_夜行 站在门边。\n镜头 01（0–3秒）\n画面与动作：@侍卫_夜行 推门。\n对白／音效：@侍卫_夜行：“随我来。”',
     shots: [{ id: 'shot', duration: 3, camera: '中景', action: '@侍卫_夜行 推门。', dialogue: '@侍卫_夜行：“随我来。”', visualAssetIds: ['guard', 'night'], speakerAssetIds: ['night'] }],
   })
   editor.nodes().find(n => n.props?.['aria-label'] === '移除参考素材 侍卫_夜行').props.onClick()
   assert.deepEqual(Array.from(editor.props.card.assetIds), ['guard'])
+  assert.deepEqual(Array.from(editor.props.card.manualAssetIds ?? []), ['guard'])
   assert.deepEqual(Array.from(editor.props.card.excludedAssetIds ?? []), ['night'])
   assert.deepEqual(Array.from(editor.props.card.openingAssetIds ?? []), ['guard'])
   assert.deepEqual(Array.from(editor.props.card.shots[0]!.visualAssetIds ?? []), ['guard'])
   assert.deepEqual(Array.from(editor.props.card.shots[0]!.speakerAssetIds ?? []), [])
+})
+
+test('手动改绑只标记新加入的素材，取消时清除手动选择', () => {
+  const card = setup(['guard', 'night']).props.card
+  card.manualAssetIds = ['night']
+  const selected = preview.rebindCardAssets(card, ['guard', 'night', 'other'], assets)
+  assert.deepEqual(selected.manualAssetIds, ['night', 'other'])
+  assert.deepEqual(card.manualAssetIds, ['night'])
+
+  const cleared = preview.rebindCardAssets(selected, ['guard'], assets)
+  assert.equal(cleared.manualAssetIds, undefined)
+  assert.deepEqual(cleared.excludedAssetIds, ['night', 'other'])
 })
 
 test('空片段可通过全项目 @ 菜单新增素材，移除后不影响同名前缀或配图顺序', async () => {
@@ -615,7 +655,13 @@ test('本片段参考素材优先，手动选角色音色可补正文漏标并�
   for (const promptMode of [undefined, 'reference-guide'] as const) {
     const delivery = buildScriptVideoDelivery(editor.props.card, assetList, { promptMode })
     assert.equal(delivery.voices.filter(voice => voice.asset.voiceAudio?.url === lead.voiceAudio.url).length, 1)
-    assert.match(delivery.prompt, /@音频\d+[ \t]*【暗自心惊】/u)
+    if (promptMode === 'reference-guide') {
+      assert.match(delivery.prompt, /@音频\d+ 是 侍卫[^\r\n]*的配音音色参考/u)
+      assert.match(delivery.prompt, /侍卫[ \t]*【暗自心惊】/u)
+      assert.doesNotMatch(delivery.prompt, /@音频\d+[ \t]*【暗自心惊】/u)
+    } else {
+      assert.match(delivery.prompt, /@音频\d+[ \t]*【暗自心惊】/u)
+    }
     assert.doesNotMatch(delivery.prompt, /音色\[侍卫\]/u)
   }
 })
@@ -732,8 +778,10 @@ test('手选音色只覆盖这一句，音频跟随素材替换，重复使用�
 
   const delivery = buildScriptVideoDelivery(props.card, assetList, { promptMode: 'reference-guide' })
   assert.deepEqual(delivery.voices.map(voice => voice.asset.voiceAudio?.url), [other.voiceAudio.url, guard.voiceAudio.url])
-  assert.match(delivery.prompt, /@音频2 是 @第三人 的配音音色参考/u)
-  assert.match(delivery.prompt, /@第三人 @音频2：\{先别走。\}；@第三人 @音频1：\{我还有话说。\}；@第三人 @音频2：\{你听。\}/u)
+  assert.match(delivery.prompt, /@音频2 是 第三人 的配音音色参考/u)
+  const dialogue = delivery.prompt.split('\n').find(line => line.includes('先别走。'))!
+  assert.match(dialogue, /第三人[^：；]*：\{先别走。\}；第三人[^：；]*：\{我还有话说。\}；第三人[^：；]*：\{你听。\}/u)
+  assert.doesNotMatch(dialogue, /@/u)
   assert.deepEqual(delivery.images.map(asset => asset.id), [other.id, guard.id], '素材说明置前保留已绑定的图片')
   assert.deepEqual(buildScriptVideoDelivery(props.card, assetList).images.map(asset => asset.id), [other.id], '借用声音不添加配图')
 })

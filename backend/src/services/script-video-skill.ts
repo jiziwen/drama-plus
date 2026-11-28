@@ -183,9 +183,9 @@ export async function loadScriptVideoAssetSkill() {
   return (await readScriptVideoSkillDocuments([assetExtraction], new Set([assetExtraction]))).instructions
 }
 
-// Installed workspaces keep editable copies. Update the old delivery instructions
+// Installed workspaces keep editable copies. Update the old storyboard instructions
 // in the model's copy without replacing the surrounding custom guidance.
-function workspaceStoryboardScope(name: string, text: string) {
+function workspaceStoryboardInstructions(name: string, text: string) {
   if (name === files.validation)
     return text.replaceAll('模型在一次回答中按已确认的主干事件顺序写完整集分镜',
       '生成正式分镜时，模型按本次请求指定的片段范围和确认的事件顺序提交 cards')
@@ -193,6 +193,8 @@ function workspaceStoryboardScope(name: string, text: string) {
     return text.replaceAll('正式稿在一次请求中写完整集。', '生成正式分镜时，按本次请求的片段范围交付。')
       .replaceAll('按已确认大纲的顺序输出所有片段', '按生效时间表的顺序输出本次目标片段')
       .replaceAll('同一次回答里上一段的实际末镜', '上一段的实际末镜')
+      .replaceAll('承上、机位、画面、对白说话人、音效和衔接都能关联资产。',
+        '承上、画面、对白说话人、音效和衔接可按实际入画或发声关联资产。景别、机位和运镜保留技术描述，仅出现在这一栏的名称不关联素材，也不加 @ 引用。')
   return text
 }
 
@@ -216,7 +218,7 @@ async function readScriptVideoSkillDocuments(requested: Iterable<string>, allowe
         if (!full.startsWith(parent + path.sep))
           throw new Error('参考资料路径超出当前 Skill')
         const text = await readFile(full, 'utf8')
-        const content = root === templateDirectory ? text : workspaceStoryboardScope(name, text)
+        const content = root === templateDirectory ? text : workspaceStoryboardInstructions(name, text)
         documents.set(name, content)
         return content
       } catch (err) {

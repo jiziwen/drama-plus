@@ -98,7 +98,7 @@ switch (command) {
 
   for (const [mode, prompt] of [
     ['inline', '画面：@图片8角色甲看向@图片2角色乙。对白：角色甲@音频1：“请看图片8。”角色乙@音频3：“好。”'],
-    ['reference-guide', '素材说明：@图片8是角色甲，@图片2是角色乙。@音频1是角色甲声音，@音频3是角色乙声音。\n\n画面：角色甲看向角色乙。对白：角色甲@音频1：“请看图片8。”角色乙@音频3：“好。”'],
+    ['reference-guide', '素材说明：@图片8是角色甲，@图片2是角色乙。@音频1是角色甲声音，@音频3是角色乙声音。\n\n画面：角色甲看向角色乙。对白：角色甲：“请看图片8。”角色乙：“好。”'],
   ]) await t.test(`${mode}：八图三音显示音频9至11，绑定仍选第一至第三条音频`, async () => {
     await reset({ reverse: true })
     await prepareJimengVideo(input(prompt), config)
@@ -112,8 +112,15 @@ switch (command) {
     const create = (await commands()).find(command => command.command === 'node create')
     const sent = create.args.find((arg: string) => arg.startsWith('--prompt=')).slice('--prompt='.length)
     assert.ok(sent.includes(`{{res:${saved.uploads[7].resourceId}}}是角色甲`) || sent.includes(`{{res:${saved.uploads[7].resourceId}}}角色甲`))
-    assert.ok(sent.includes(`角色甲{{res:${saved.uploads[8].resourceId}}}`))
-    assert.ok(sent.includes(`角色乙{{res:${saved.uploads[10].resourceId}}}`))
+    if (mode === 'reference-guide') {
+      const [guide, body] = sent.split('\n\n')
+      assert.ok(guide.includes(`{{res:${saved.uploads[8].resourceId}}}是角色甲声音`))
+      assert.ok(guide.includes(`{{res:${saved.uploads[10].resourceId}}}是角色乙声音`))
+      assert.equal(body, '画面：角色甲看向角色乙。对白：角色甲：“请看图片8。”角色乙：“好。”')
+    } else {
+      assert.ok(sent.includes(`角色甲{{res:${saved.uploads[8].resourceId}}}`))
+      assert.ok(sent.includes(`角色乙{{res:${saved.uploads[10].resourceId}}}`))
+    }
     assert.ok(sent.includes('请看图片8。'), '对白内的字面图片编号不被误绑定')
     assert.ok(!sent.includes('@音频9'), '展示用全局编号不回流到内部类型编号')
   })
